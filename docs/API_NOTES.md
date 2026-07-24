@@ -1,7 +1,7 @@
 # API_NOTES.md — Freedom Broker / Tradernet Integration
 
-> **Status:** Draft — research in progress  
-> **Last updated:** 2025-07-24  
+> **Status:** Draft — research in progress
+> **Last updated:** 2025-07-24
 > **Maintainer:** KASE Pilot team
 
 ---
@@ -112,14 +112,15 @@ The following are explicitly excluded from MVP and must not be implemented:
 
 ### Method
 
-The REST API uses an MD5-based signature scheme embedded in the request body.
-There is no HTTP authentication header for REST requests. See Research Log F-04
-for details.
+The REST API uses a signature scheme embedded in the request body. There is no
+HTTP authentication header for REST requests. See Research Log F-04 for the
+README description; see F-16 for the finding that REST and WebSocket use
+different signing protocols.
 
 A credential key pair is required: a public key and a secret key, generated
 via the user profile interface. See Research Log F-05 and F-06.
 
-### REST Signature Algorithm (Partially Confirmed)
+### REST Signature Algorithm (Partially Confirmed — README only; no code implementation exists)
 
 Source: https://github.com/tradernet/tn.api README — Partially Confirmed
 (official ownership of the repository is not yet proven)
@@ -129,11 +130,32 @@ of all `parameter_name=parameter_value` pairs sorted alphabetically by parameter
 name (applied recursively for nested parameters), with the `API_SECRET`
 appended at the end of the string.
 
-> ⚠️ The official documentation describes this as MD5 of a concatenated string
-> with an appended secret. This is **not the same as HMAC-MD5**. It is a
-> keyed MD5 constructed by concatenation. Whether the implementation in
-> `tn-crypto.js` differs is not yet confirmed — the source has not been read.
-> Until verified, this is described as an "MD5-based signature algorithm".
+> ⚠️ **Accuracy note:** The README describes this as MD5 of sorted parameters
+> with the secret appended. No working REST example exists in the repository
+> that implements this algorithm — `tn-crypto.js` is used exclusively for
+> WebSocket authentication in all example files. The live REST endpoint may
+> use a different algorithm. Do not implement REST signing based on the README
+> description alone. See Research Log F-16.
+
+### WebSocket Signature Algorithm (Confirmed)
+
+Source: `examples/tn-crypto.js`, https://github.com/tradernet/tn.api
+
+The WebSocket `auth` event signature is computed using **HMAC-SHA256**:
+
+- The message is the recursive `key=value` representation of the auth data
+  object, with keys sorted alphabetically and pairs joined by `&`.
+- The secret key is used as the HMAC key (passed to `crypto.createHmac`).
+- The output is a hex-encoded string.
+
+This is confirmed from reading the source of `examples/tn-crypto.js` directly.
+The `sign` function calls `crypto.createHmac('sha256', key)` — this is true
+HMAC-SHA256, not MD5 of any construction.
+
+> ⚠️ **Protocol separation:** REST and WebSocket signing must be treated as
+> separate protocols. The repository contains no evidence that `tn-crypto.js`
+> is used or intended for REST. Do not introduce a shared generic signing
+> abstraction that assumes both protocols use the same algorithm.
 
 ### Credential Identifiers (Partially Confirmed)
 
@@ -144,9 +166,13 @@ interchangeably in different contexts. The relationship between:
 - the `uid` REST request body field;
 - the `apiKey` WebSocket auth field;
 
-is **not yet confirmed** from an authoritative request example or verified
-source code. These may be the same value or may differ. Do not assume identity
-until confirmed.
+is not uniformly confirmed. The WebSocket `apiKey` field is confirmed to carry
+the public key value — the `examples/auth.js` file explicitly assigns
+`apiKey: pubKey` where `pubKey` holds the public key. The relationship between
+the public key and the REST `uid` field remains **Unknown** — the README
+describes `uid` as an integer type, which conflicts with the assumption that it
+carries the public key string. Do not assume `uid` equals the public key until
+a verified REST request example confirms it.
 
 ### HTTP Authentication Headers
 
@@ -158,10 +184,11 @@ carried entirely in the request body (`uid` and `sig` fields).
 - Does the key pair expire? If so, what is the TTL and renewal process?
 - Can key pair permissions be restricted to read-only operations?
 - Is IP allowlisting mandatory or optional alongside key-based auth?
-- What is the exact relationship between `public_key`, `uid`, and `apiKey`?
+- What is the exact relationship between `public_key` and `uid` (REST)?
+  The WebSocket `apiKey = public_key` mapping is confirmed. The REST `uid`
+  mapping remains Unknown.
 - Does the REST API return a specific HTTP status code (e.g. 401) on
   authentication failure, or always HTTP 200 with an error code in the body?
-- What is the exact algorithm in `tn-crypto.js` for the WebSocket signature?
 - Which specific read-only endpoints require an active security session?
 
 ---
@@ -203,9 +230,8 @@ is **Partially Confirmed**.
 
 Source: https://github.com/tradernet/tn.api README
 
-```
 https://tradernet.ru/api/
-```
+
 
 HTTP method: POST. GET is stated as permitted for testing only.
 Data format: JSON.
@@ -223,10 +249,10 @@ No HTTP authentication header is used.
 
 | Field | Description | Required |
 |---|---|---|
-| `uid` | User identifier | Yes, for non-anonymous requests |
+| `uid` | User identifier (described as integer type in README; relationship to public key credential is Unknown — see §8) | Yes, for non-anonymous requests |
 | `cmd` | Command name | Yes |
 | `params` | Command parameters (object) | Yes |
-| `sig` | MD5-based signature | Yes |
+| `sig` | Signature (algorithm Partially Confirmed from README only — see §8) | Yes |
 
 ### Pagination
 
@@ -261,23 +287,26 @@ Source: https://github.com/tradernet/tn.api README
 
 ### WebSocket Servers (Partially Confirmed)
 
-```
 Production: https://ws.tradernet.ru
-Demo:       https://wsbeta.tradernet.ru
-```
+Demo: https://wsbeta.tradernet.ru
 
-### Authentication Flow (Partially Confirmed)
+
+### Authentication Flow (Confirmed for algorithm; Partially Confirmed for structure)
 
 After connecting, emit an `auth` Socket.IO event with:
 
-```
 data = { apiKey: <public_key>, cmd: 'getAuthInfo', nonce: <timestamp> }
-sig  = <MD5-based signature computed with secret_key>
+sig = HMAC-SHA256(sorted key=value pairs joined by &, secret_key as HMAC key)
 ws.emit('auth', data, sig, callback)
-```
 
-The exact signature algorithm used for WebSocket (`tn-crypto.js`) has not yet
-been verified from source code.
+
+The assignment of `apiKey` to the public key value is **Confirmed** from
+`examples/auth.js`. The signature algorithm is **Confirmed** as HMAC-SHA256
+from `examples/tn-crypto.js` (see Research Log F-16).
+
+WebSocket signing uses a separate component from REST signing. Do not
+introduce a shared generic signing abstraction. When WebSocket support is
+implemented it will require its own component that encapsulates HMAC-SHA256.
 
 ### Heartbeat / Ping-Pong
 
@@ -489,14 +518,14 @@ list before every commit.
 | # | Question | Priority | Status |
 |---|---|---|---|
 | 1 | Is the GitHub repository https://github.com/tradernet/tn.api officially maintained by Freedom Broker / Tradernet? | Critical | Open |
-| 2 | What is the exact relationship between `public_key`, `uid` (REST), and `apiKey` (WebSocket)? | Critical | Open |
-| 3 | Is the REST signature plain MD5-with-concatenated-secret, or true HMAC-MD5? | Critical | Open |
+| 2 | What is the exact relationship between `public_key` and `uid` (REST)? WebSocket `apiKey = public_key` is Confirmed (F-16). REST `uid` mapping remains Unknown. | Critical | Open |
+| 3 | What is the live REST signature algorithm? README describes MD5-with-concatenated-secret, but no REST code implementation exists in the repository. Repository evidence is insufficient to confirm the live algorithm. | Critical | Open |
 | 4 | Does the key pair expire? If so, what is the TTL and renewal process? | High | Open |
 | 5 | Can key pair permissions be restricted to read-only operations? | High | Open |
 | 6 | Is IP allowlisting mandatory or optional for key-based authentication? | High | Open |
 | 7 | Which specific REST endpoints require a security session? | High | Open |
 | 8 | Does the REST API return HTTP 401 on authentication failure, or always HTTP 200 with an error code? | High | Open |
-| 9 | What is the exact algorithm in `tn-crypto.js` for the WebSocket signature? | High | Open |
+| 9 | What is the exact algorithm in `tn-crypto.js` for the WebSocket signature? | High | Resolved — HMAC-SHA256 (see F-16) |
 | 10 | What is the exact rate limit policy? | High | Open |
 | 11 | Is there a REST sandbox or test environment? | Medium | Open |
 | 12 | What is the official ownership status of the `tradernet-sdk` PyPI package? | Medium | Open |
@@ -516,7 +545,8 @@ list before every commit.
 | AD-003 | Every API error is mapped to a KASE Pilot exception at the broker boundary. | Callers outside `kase_pilot.broker` never handle raw broker errors; the exception hierarchy is the public contract. |
 | AD-004 | Responses are validated before storage. | Prevents corrupted or unexpected data from reaching the database. |
 | AD-005 | FIX protocol is out of scope. | Complexity is disproportionate to MVP requirements. |
-| AD-006 | `broker/auth.py` will not be fully implemented until the signature algorithm and credential mapping are confirmed. | Implementing against unverified assumptions produces a module that appears complete but contains a latent defect. |
+| AD-006 | `broker/auth.py` will not be fully implemented until the REST signature algorithm and credential mapping are confirmed. The WebSocket signing algorithm is now confirmed (HMAC-SHA256) but WebSocket implementation is post-MVP. | Implementing against unverified assumptions produces a module that appears complete but contains a latent defect. REST and WebSocket signing are separate protocols and must not share a generic abstraction prematurely. |
+| AD-007 | REST and WebSocket signing are treated as separate protocols. No shared generic signing abstraction will be introduced until both algorithms are confirmed and a concrete need is demonstrated. | The repository shows the README (REST) and `tn-crypto.js` (WebSocket) describe different constructions. A premature shared abstraction would encode an unverified assumption. |
 
 ---
 
@@ -528,8 +558,8 @@ Use this template for every research session. Append entries; do not overwrite.
 
 ### Entry Template
 
-**Date:** YYYY-MM-DD  
-**Source:** *(documentation URL, support ticket, sandbox test, colleague)*  
+**Date:** YYYY-MM-DD
+**Source:** *(documentation URL, support ticket, sandbox test, colleague)*
 **Findings:**
 
 - Finding 1
@@ -544,8 +574,8 @@ Use this template for every research session. Append entries; do not overwrite.
 
 ### 2025-07-24 — Initial Setup
 
-**Date:** 2025-07-24  
-**Source:** Internal — project kickoff  
+**Date:** 2025-07-24
+**Source:** Internal — project kickoff
 **Findings:**
 
 - Document created; all sections marked TBD pending official API access.
@@ -598,9 +628,8 @@ Tradernet. All documentation and SDK references use the Tradernet name.
 
 Source: https://github.com/tradernet/tn.api README
 
-```
 https://tradernet.ru/api/
-```
+
 
 HTTP method: POST (GET permitted for testing only). Data format: JSON.
 
@@ -609,7 +638,7 @@ source is not yet proven.
 
 ---
 
-#### F-04 — REST authentication: MD5-based signature in request body, no HTTP header | Partially Confirmed
+#### F-04 — REST authentication: signature in request body, no HTTP header | Partially Confirmed
 
 Source: https://github.com/tradernet/tn.api README (section "Формирование подписи")
 
@@ -621,14 +650,12 @@ The `sig` field is described as the MD5 hash of the concatenation of all
 name and applied recursively for nested parameters, with the `API_SECRET`
 appended at the end of the concatenated string.
 
-> ⚠️ **Accuracy note:** This construction — MD5 of (sorted parameters +
-> appended secret) — is **not HMAC-MD5**. HMAC uses a defined padding and
-> XOR construction around the hash function. This is a keyed MD5 by
-> concatenation, which is a different and weaker construction. It is described
-> here as an "MD5-based signature algorithm" until the source code of
-> `tn-crypto.js` is read and the exact algorithm is verified.
+> ⚠️ **Accuracy note:** This is the README description only. No REST signing
+> implementation exists in the repository — `tn-crypto.js` uses HMAC-SHA256
+> and is called exclusively from WebSocket example files. The live REST
+> endpoint may use a different algorithm than the README describes. See F-16.
 
-Status: Partially Confirmed (source ownership not yet proven).
+Status: Partially Confirmed (README description only; no code implementation).
 
 ---
 
@@ -642,19 +669,17 @@ The credential consists of two values:
 
 The secret key is never transmitted. Only the signature derived from it is sent.
 
-**Unconfirmed relationship:** The repository README uses `uid` as a REST request
-body field and `apiKey` as a WebSocket field, both appearing to carry the
-public key value. However, no authoritative request example explicitly confirms
-that `public_key == uid == apiKey`. This mapping is **Unknown** until a
-verified request example or source code confirms it.
+**Partially confirmed relationship:** The WebSocket `apiKey` field is confirmed
+to carry the public key string — see F-16. The relationship between the public
+key and the REST `uid` field remains Unknown. The README describes `uid` as an
+integer type, which conflicts with the assumption that it carries the public key
+string.
 
 ---
 
 #### F-06 — Key pair generated in user profile | Partially Confirmed
 
 Source: https://github.com/tradernet/tn.api README
-
-> "Сгенерировать публичный и секретный ключи на странице профиля."
 
 Generation is done through the user interface. Status: Partially Confirmed.
 
@@ -669,8 +694,9 @@ WebSocket uses the Socket.IO library. After connecting, the client emits an
 - `data`: `{ apiKey: pubKey, cmd: 'getAuthInfo', nonce: Date.now() }`
 - `sig`: a signature computed by `tncrypto.sign(data, secKey)`
 
-The exact algorithm inside `tncrypto.sign` has not yet been verified from
-source code.
+The assignment of `apiKey` to `pubKey` (the public key) is confirmed — see
+F-16. The exact algorithm inside `tncrypto.sign` is now confirmed as
+HMAC-SHA256 — see F-16.
 
 WebSocket servers stated in the README:
 - Production: `https://ws.tradernet.ru`
@@ -742,16 +768,16 @@ confirmed. KASE Pilot will not use this package as a dependency.
 
 The research changes the implementation model in the following confirmed ways:
 
-1. **No HTTP header for REST.** The current `auth.py` design — a callable
-   returning a header dict — is the wrong abstraction for this API.
+1. **No HTTP header for REST.** Authentication is in the request body.
 2. **REST authentication requires signing the request body**, not injecting a
    header.
 3. **The credential is a key pair**, not a single key.
 4. **WebSocket authentication is a distinct protocol** (Socket.IO `auth` event
-   with a nonce and signature).
-5. **The exact signature algorithm and credential field mapping remain
-   unconfirmed.** Full implementation of `auth.py` must wait until these are
-   verified.
+   with a nonce and HMAC-SHA256 signature — confirmed from `tn-crypto.js`).
+5. **The REST signature algorithm and `uid` credential mapping remain
+   unconfirmed.** Full implementation of `auth.py` for REST must wait.
+6. **REST and WebSocket signing must not share a generic abstraction.**
+   When WebSocket support is implemented it will be a separate component.
 
 ---
 
@@ -759,11 +785,134 @@ The research changes the implementation model in the following confirmed ways:
 
 - Is the GitHub repository https://github.com/tradernet/tn.api officially
   maintained by Freedom Broker / Tradernet?
-- What is the exact algorithm in `tn-crypto.js`? Is it keyed MD5 by
-  concatenation, or true HMAC-MD5?
-- What is the exact relationship between `public_key`, `uid` (REST body),
-  and `apiKey` (WebSocket)?
+- What is the live REST signature algorithm? The README describes MD5 but no
+  REST code implementation exists.
+- What is the exact relationship between `public_key` and `uid` (REST body)?
+  The WebSocket `apiKey = public_key` mapping is confirmed (F-16).
 - Does the key pair expire? If so, what is the TTL?
 - Which specific read-only REST endpoints require a security session?
 - Does the REST API return HTTP 401 on authentication failure, or always
   HTTP 200 with `code: 12`?
+
+---
+
+### 2025-07-24 — tn-crypto.js Source Code Analysis
+
+**Date:** 2025-07-24
+**Sources consulted:**
+- https://raw.githubusercontent.com/tradernet/tn.api/master/examples/tn-crypto.js
+  (fetched directly via raw.githubusercontent.com)
+- https://raw.githubusercontent.com/tradernet/tn.api/master/examples/auth.js
+- https://raw.githubusercontent.com/tradernet/tn.api/master/examples/putOrder.js
+- https://raw.githubusercontent.com/tradernet/tn.api/master/nodejs.js
+- https://api.github.com/repos/tradernet/tn.api/git/trees/master?recursive=1
+  (full repository file tree)
+
+---
+
+#### F-12 — `tn-crypto.js` signing function confirmed as HMAC-SHA256 | Confirmed
+
+Source: `examples/tn-crypto.js`, fetched from
+`https://raw.githubusercontent.com/tradernet/tn.api/master/examples/tn-crypto.js`
+
+The complete repository file tree was obtained. The repository contains exactly
+four JavaScript files: `nodejs.js`, `examples/tn-crypto.js`,
+`examples/auth.js`, `examples/putOrder.js`.
+
+The `sign` function in `examples/tn-crypto.js`:
+
+sign(data, apiSec)
+→ hash_hmac('sha256', preSign(data), apiSec)
+→ crypto.createHmac('sha256', apiSec).update(preSign(data)).digest('hex')
+
+
+The `preSign` function recursively sorts object keys alphabetically, formats
+each as `key=value`, and joins them with `&`.
+
+**Algorithm:** True HMAC-SHA256. The secret key is the HMAC key
+(`crypto.createHmac`). The message is the recursively sorted
+`key=value&key=value` string. This is not MD5 of any construction.
+
+Status: **Confirmed** — source code read directly.
+
+---
+
+#### F-13 — WebSocket `apiKey` carries the public key | Confirmed
+
+Source: `examples/auth.js`
+
+```javascript
+var pubKey = '*** PUBLIC KEY ***';
+var data = { apiKey: pubKey, ... };
+var sig = tncrypto.sign(data, secKey);
+ws.emit('auth', data, sig, cb);
+```
+
+`apiKey` is explicitly assigned from `pubKey` (the public key variable).
+
+Status: **Confirmed** — explicit assignment in source code.
+
+---
+
+#### F-14 — No REST signing implementation exists in the repository | Confirmed
+
+Source: Complete repository file tree and all four JavaScript files read.
+
+All three call sites of `tncrypto.sign` are in WebSocket authentication
+examples (`examples/auth.js`, `examples/putOrder.js`, README inline example).
+No file constructs or sends a REST request with a computed `sig` field. The
+README's MD5 description of the REST algorithm has no corresponding code
+implementation in the repository.
+
+**Implication:** The live REST signature algorithm cannot be confirmed from
+the repository alone. Q3 remains open. The README description (MD5) and the
+only code in the repository (HMAC-SHA256 for WebSocket) are different
+constructions used for different protocols.
+
+Status: **Confirmed** finding — no REST code exists. REST algorithm: Open.
+
+---
+
+#### F-15 — REST `uid` field type conflicts with public-key assumption | Partially Confirmed
+
+Source: https://github.com/tradernet/tn.api README, request format table
+
+The README describes `uid` as "id пользователя (int)" — integer type. This
+conflicts with the assumption that `uid` carries the public key string. No
+example in the repository constructs a REST request that traces the `uid`
+value to a named credential variable.
+
+Status: Partially Confirmed — integer type from README; actual mapping Unknown.
+
+---
+
+#### F-16 — REST and WebSocket signing are separate protocols | Confirmed
+
+Source: All four JavaScript files and README read in this session.
+
+The repository consistently uses `tn-crypto.js` (HMAC-SHA256) only for
+WebSocket. The README describes a different algorithm (MD5-based) for REST.
+No file bridges the two. They are separate protocols and must be implemented
+as separate components.
+
+**Architectural impact:**
+
+- `broker/auth.py` remains blocked for REST implementation. Q3 (REST
+  algorithm) and Q2 (REST `uid` mapping) are still unresolved.
+- WebSocket signing is confirmed as HMAC-SHA256. When WebSocket support is
+  implemented (post-MVP), it will use a separate component implementing
+  HMAC-SHA256 over the sorted `key=value&key=value` message format.
+- No shared generic signing abstraction should be introduced until both
+  protocols are confirmed and a concrete need is demonstrated.
+
+Status: **Confirmed** — fully supported by source code evidence.
+
+---
+
+**Unresolved questions after this session:**
+
+- Q2 (REST): What does the `uid` field carry? Integer type in README conflicts
+  with public key string assumption. Requires a verified REST request example.
+- Q3: What is the live REST signature algorithm? README says MD5-based, but no
+  REST implementation exists to verify. Requires a working REST request test
+  or direct confirmation from Tradernet.
