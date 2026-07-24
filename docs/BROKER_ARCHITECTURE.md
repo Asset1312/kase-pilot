@@ -1,6 +1,6 @@
 # BROKER_ARCHITECTURE.md — `kase_pilot.broker` Package Design
 
-> **Status:** Approved — implementation baseline
+> **Status:** Revised — authentication boundary finalised
 > **Last updated:** 2025-07-24
 > **Scope:** Architecture only. No implementation details.
 
@@ -61,7 +61,12 @@ means that concern changes in exactly one place.
 
 - HTTP session management (creation, reuse, teardown)
 - Base URL and timeout configuration, sourced from `core/config.py`
-- Calling the injected auth provider to obtain headers before each request
+- Calling the injected auth provider to obtain an authentication contribution
+  before each request
+- **The sole authority over request assembly** — `BrokerClient` determines
+  exactly where and how authentication artefacts are placed in the request
+  (headers, body, query parameters). This is not delegated to any other
+  component.
 - Unified HTTP error handling — mapping broker HTTP errors to KASE Pilot
   exceptions from `core/exceptions.py`
 - Request timeout and retry policy
@@ -72,6 +77,10 @@ means that concern changes in exactly one place.
 - Knowledge of any specific endpoint path or resource
 - Business logic (parsing a portfolio, interpreting order status)
 - Authentication credential management — that is `auth.py`
+- Computing signatures or generating nonces — that belongs to `BrokerAuth`
+- Mutating or modifying the contribution object — it reads it immutably
+- Knowledge of which cryptographic algorithm was used — it only knows the
+  output shape
 - Security session lifecycle — that is `security.py`
 - Data models — that is `models.py`
 - WebSocket connections — that is `websocket.py`
@@ -81,8 +90,21 @@ means that concern changes in exactly one place.
 
 `BrokerClient` never imports `auth.py`. Instead, it receives an auth provider
 at construction time. The provider is a callable or a minimal object that
-returns the headers required for the current request. `client.py` has no
-knowledge of how those headers are produced.
+returns a broker-specific authentication contribution. `client.py` has no
+knowledge of how that contribution is produced.
+
+**The authentication boundary**
+
+`BrokerClient` receives a complete contribution object from its auth provider —
+not raw headers, not a mutable params dict. The contribution contains
+broker-specific authentication artefacts as named, typed fields. `BrokerClient`
+then maps these artefacts into the protocol-specific request representation.
+
+The key separation:
+
+- `BrokerAuth` knows how to **produce** authentication artefacts.
+- `BrokerClient` knows how to **place** them in the request.
+- Neither knows how to do the other's job.
 
 Conceptually:
 
@@ -130,9 +152,9 @@ the service module maps them to domain types.
 **Responsibility**
 
 `auth.py` owns the broker credential lifecycle: reading the API key from
-configuration, producing the correct authorisation headers for each request, and
-refreshing or replacing credentials if the verified broker authentication scheme
-supports expiration and renewal.
+configuration, producing authentication artefacts (signatures, nonces, tokens)
+based on the cryptographic requirements of the broker, and returning them as a
+broker-specific immutable typed value.
 
 **`auth.py` does not import `client.py`**
 
@@ -144,24 +166,59 @@ exchange, login endpoint), that transport is supplied to the auth object from
 outside — for example, a minimal transport callable passed in at construction.
 `auth.py` does not import `client.py` to obtain it.
 
+**Critical design rule — `BrokerAuth` does not assemble requests**
+
+`BrokerAuth` receives only the information required to compute authentication
+artefacts (for example, a signing input containing the credential and request
+context). It does not assemble, modify, or mutate any transport structure. Its
+sole responsibility is producing a broker-specific contribution object
+containing the computed artefacts.
+
+**What `BrokerAuth` does:**
+
+- Reads the API key from configuration (or receives it via injection)
+- Computes the authentication artefacts required by the broker
+- Returns a typed object with named fields representing these artefacts
+- Uses immutable data and pure computation where possible
+
+**What `BrokerAuth` does NOT do:**
+
+- Know where artefacts should be placed in the request (headers, body, etc.)
+- Modify the request params, headers, or body
+- Have any knowledge of HTTP, sessions, or transport
+- Import `client.py` or depend on it in any way
+
 **Interaction with `security.py`**
 
 `auth.py` does not import `security.py`. The relationship is coordinative, not
 hierarchical. When a service module determines that an operation requires an
 elevated security session, it obtains a session token from `security.py`
-independently and passes it alongside the standard headers. `auth.py` produces
-API-key-level credentials only.
+independently. `auth.py` produces API-key-level credentials only.
+
+**Authentication Contribution Type — Broker-Specific**
+
+Each broker defines its own contribution type with explicitly typed fields
+matching its authentication artefacts. Field names match the authentication
+artefacts produced by the cryptographic algorithm, not transport placement
+names. Transport placement mapping is exclusively the responsibility of
+`BrokerClient`.
+
+This type is broker-specific by design and internal — not exported from
+`__init__.py`. If a second broker is introduced, it defines its own
+contribution type in its own package. No shared contribution base type exists
+for MVP — broker-specificity is explicit and type-checked.
 
 **Public surface**
 
-- `BrokerAuth` class — produces auth headers; implements the provider interface
-  that `BrokerClient` accepts.
+- `BrokerAuth` class — produces a broker-specific authentication contribution;
+  implements the provider interface that `BrokerClient` accepts.
 
 **Dependencies**
 
 - `core/config.py` — API key source
 - `core/exceptions.py` — raises `AuthenticationError` on failure
 - `core/logger.py` — logs authentication events, never credential values
+- Standard library for cryptographic operations
 
 **Must NOT import**
 
@@ -581,11 +638,37 @@ defined by convention — the callable or object shape that `BrokerClient`
 expects. A formal `Protocol` can be introduced when a second auth strategy or
 a second broker makes it necessary.
 
+### Boundary Clarity — Production vs Assembly
+
+A key architectural boundary separates the production of authentication
+artefacts from their assembly into transport structures:
+
+- `BrokerAuth` produces a contribution object containing named authentication
+  artefacts.
+- `BrokerClient` assembles requests by mapping these artefacts to
+  protocol-specific locations.
+- Neither component does the other's job. This boundary is enforced by the
+  type system and the import rules.
+
+This boundary exists for a single-broker MVP and is not over-abstracted. If a
+second broker is introduced, the same pattern is repeated with broker-specific
+contribution types, and a common interface is extracted only when demonstrated
+to be needed.
+
 ### Low Coupling
 
 No two service modules import each other. `client.py` does not import
 `auth.py`. `auth.py` does not import `client.py`. `models.py` imports nothing
 from the package. The dependency graph is shallow and acyclic.
+
+`BrokerAuth` and `BrokerClient` are decoupled at the module level. Their
+relationship is expressed through the stable contribution type and injection at
+construction time. This allows:
+
+- Independent testing of authentication logic without HTTP
+- Independent testing of transport logic without cryptographic computation
+- Changes to the cryptographic algorithm without affecting transport code
+- Changes to the transport protocol without affecting authentication code
 
 ### High Cohesion
 
@@ -605,6 +688,17 @@ into a shared package such as `kase_pilot.domain` or `kase_pilot.broker_base`.
 This extraction should not be performed before it is needed. Premature
 abstraction adds complexity without demonstrated benefit.
 
+When a second broker is added, its `auth.py` will define its own contribution
+type with fields matching that broker's authentication artefacts. No changes to
+the existing Tradernet contribution type are required. The new broker's
+`BrokerClient` will contain the mapping from its contribution type to its own
+protocol-specific request representation.
+
+If a generic handler that processes contributions without broker knowledge is
+later required, a common protocol or base class can be introduced
+retroactively without changing the existing types. This is a controlled,
+non-speculative addition that preserves type safety.
+
 When the time comes:
 
 1. Create a parallel package: `kase_pilot.broker_alpaca` or similar.
@@ -619,7 +713,28 @@ This path is open because broker-specific code is already isolated inside
 
 ---
 
-## 8. Open Architecture Questions
+## 8. Authentication Contribution Genericity Decision
+
+**Decision:** Each broker defines its own contribution type with explicitly
+typed fields matching its authentication artefacts. No shared generic container.
+
+| Aspect | Broker-specific (Chosen) | Generic Container (Rejected) |
+|---|---|---|
+| Type safety | Field names checked at definition time | String keys checked at runtime |
+| Correctness enforcement | Compiler prevents typos | Runtime `KeyError` possible |
+| Adding a broker | New type with typed fields; no breaking changes | New string keys; no breaking changes |
+| Multi-broker generic handling | Common interface added only if needed | Already generic by design |
+| Cost per broker | One additional type (fixed cost) | String key conventions (ongoing maintenance) |
+| Documentation | Field names self-document | String keys must be documented separately |
+
+**Implementation rule:** The contribution type is broker-specific and internal
+— not exported from `__init__.py`. Implementation details (dataclass,
+NamedTuple, or other) are not specified at the architecture level. Field names
+are determined by the verified authentication artefacts, not by this document.
+
+---
+
+## 9. Open Architecture Questions
 
 | # | Question | Impact |
 |---|---|---|
@@ -629,3 +744,20 @@ This path is open because broker-specific code is already isolated inside
 | 4 | Is WebSocket authenticated separately from REST? | Affects how `BrokerAuth` is injected into `websocket.py` |
 | 5 | Do service modules share a rate limit quota, or is it per-endpoint? | Affects whether rate limiting belongs in `client.py` or per-service |
 | 6 | Does obtaining a security session require an HTTP call? | Affects the injected transport interface in `security.py` |
+
+---
+
+## 10. Decision Record
+
+| Date | Decision | Status |
+|---|---|---|
+| 2025-07-24 | Frozen dataclasses for domain models | Accepted |
+| 2025-07-24 | `BrokerClient` as central transport; all services depend on it | Accepted |
+| 2025-07-24 | `BrokerAuth` produces typed artefacts, not headers or modified params | Accepted |
+| 2025-07-24 | `BrokerClient` sole owner of request assembly and placement mapping | Accepted |
+| 2025-07-24 | Authentication contributions are broker-specific typed objects, not generic containers | Accepted |
+| 2025-07-24 | `BrokerAuth` never modifies transport structures | Accepted |
+| 2025-07-24 | `BrokerClient` never computes authentication artefacts | Accepted |
+| 2025-07-24 | `SecuritySession` owns elevated session lifecycle; injected, not imported | Accepted |
+| 2025-07-24 | No generic contribution base type for MVP | Accepted |
+| 2025-07-24 | WebSocket layer out of MVP scope | Accepted |
