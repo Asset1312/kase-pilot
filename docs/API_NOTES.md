@@ -273,6 +273,40 @@ TBD — pagination mechanism and parameters are not yet confirmed.
 | Trade history | TBD | TBD | — |
 | Reports | TBD | TBD | — |
 
+### First Read-only REST Use Case Readiness
+
+No candidate operation is currently `READY`. Authentication remains blocked as
+described in §8 and `AUTHENTICATION_READINESS.md`; the operation-specific
+evidence below does not remove that shared blocker.
+
+| Scenario | Candidate broker service | Command evidence | Parameter evidence | Successful response evidence | Authentication | Status | Missing evidence |
+|---|---|---|---|---|---|---|---|
+| Portfolio summary | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Open positions | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Cash balances | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Current quote | `MarketService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Instrument information | Not assigned | None | None | None | Blocked | `BLOCKED` | Evidence that the operation exists, then its complete contract |
+| Historical quotes | `MarketService` | `getQuotesHistory` only | `ticker`, `interval`, `from`, `to` are Partially Confirmed | None | Blocked | `PARTIAL` | Parameter contract, response sample and schema |
+
+Command and parameter strings used in transport unit tests are test inputs, not
+evidence of the live REST API. Broker service stubs likewise define intended
+package responsibilities, not API contracts. Manually invented fixtures do not
+increase readiness. The common envelope handled by `BrokerClient` (§16) does not
+confirm an operation-specific response schema from the live API.
+
+An operation may be classified as `READY` only when all of the following are
+available:
+
+- confirmed command name;
+- confirmed required parameters, types and formats;
+- confirmed authentication and security-session requirements;
+- a saved real successful response sample;
+- confirmed response schema;
+- confirmed operation-specific errors, or evidence that the common error
+  contract applies;
+- a safe, controlled verification method that cannot perform trading
+  operations.
+
 ---
 
 ## 11. WebSocket Overview
