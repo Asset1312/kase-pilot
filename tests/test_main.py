@@ -230,6 +230,33 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == ["AAPL.US"]
 
 
+def test_main_formats_configuration_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    public_key = "test-public-credential"
+    private_key = "test-private-credential"
+    message = "Missing required environment variable: TRADERNET_PUBLIC_KEY"
+
+    def fail_run(ticker: str) -> None:
+        calls.append(ticker)
+        raise ConfigurationError(message)
+
+    monkeypatch.setattr(main_module, "run", fail_run)
+
+    exit_code = main_module.main([" Aapl.Us "])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert calls == [" Aapl.Us "]
+    assert captured.out == ""
+    assert captured.err == message + "\n"
+    assert "Traceback" not in captured.err
+    assert public_key not in captured.err
+    assert private_key not in captured.err
+
+
 @pytest.mark.parametrize("arguments", [[], ["AAPL.US", "extra"]])
 def test_main_rejects_invalid_argument_count(
     arguments: list[str],
@@ -252,7 +279,10 @@ def test_main_rejects_invalid_argument_count(
     assert captured.err == "Usage: kase-pilot TICKER\n"
 
 
-def test_main_propagates_run_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_propagates_run_error_without_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original = RuntimeError("run failed")
 
     def fail_run(ticker: str) -> None:
@@ -264,3 +294,4 @@ def test_main_propagates_run_error(monkeypatch: pytest.MonkeyPatch) -> None:
         main_module.main(["AAPL.US"])
 
     assert exc_info.value is original
+    assert capsys.readouterr() == ("", "")

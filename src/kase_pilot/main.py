@@ -7,6 +7,7 @@ from pathlib import Path
 
 from kase_pilot.app import create_get_security_info
 from kase_pilot.core.config import load_settings
+from kase_pilot.core.exceptions import ConfigurationError
 
 
 def run(
@@ -34,7 +35,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Usage: kase-pilot TICKER", file=sys.stderr)
         return 2
 
-    return run(arguments[0])
+    try:
+        return run(arguments[0])
+    except ConfigurationError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
