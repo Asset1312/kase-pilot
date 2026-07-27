@@ -9,7 +9,9 @@ authors = [
     { name = "Aset" }
 ]
 
-dependencies = []
+dependencies = [
+    "tradernet-sdk==2.2.0",
+]
 
 [project.scripts]
 kase-pilot = "kase_pilot.main:main"
