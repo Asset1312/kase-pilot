@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import kase_pilot.core.config as config_module
-from kase_pilot.core.config import Settings, _find_project_root, settings
+from kase_pilot.core.config import Settings, _find_project_root, load_settings, settings
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -182,3 +182,63 @@ class TestSettingsImmutability:
 
     def test_is_dataclass(self) -> None:
         assert dataclasses.is_dataclass(Settings)
+
+
+# ---------------------------------------------------------------------------
+# load_settings
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSettings:
+    def test_returns_settings_instance(self, tmp_path: Path) -> None:
+        s = load_settings(project_root=tmp_path)
+        assert isinstance(s, Settings)
+
+    def test_explicit_root_is_used(self, tmp_path: Path) -> None:
+        s = load_settings(project_root=tmp_path)
+        assert s.project_root == tmp_path
+
+    def test_find_project_root_not_called_when_root_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        called: list[bool] = []
+        monkeypatch.setattr(
+            config_module,
+            "_find_project_root",
+            lambda: called.append(True) or tmp_path,
+        )
+        load_settings(project_root=tmp_path)
+        assert called == []
+
+    def test_find_project_root_called_when_no_root_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        called: list[bool] = []
+
+        def fake_find() -> Path:
+            called.append(True)
+            return tmp_path
+
+        monkeypatch.setattr(config_module, "_find_project_root", fake_find)
+        load_settings()
+        assert called == [True]
+
+    def test_derived_paths_are_correct(self, tmp_path: Path) -> None:
+        s = load_settings(project_root=tmp_path)
+        assert s.src_dir == tmp_path / "src"
+        assert s.data_dir == tmp_path / "data"
+        assert s.database_dir == tmp_path / "data" / "database"
+        assert s.log_dir == tmp_path / "data" / "logs"
+        assert s.backup_dir == tmp_path / "data" / "backup"
+        assert s.cache_dir == tmp_path / "data" / "cache"
+        assert s.docs_dir == tmp_path / "docs"
+        assert s.tests_dir == tmp_path / "tests"
+
+    def test_result_is_immutable(self, tmp_path: Path) -> None:
+        s = load_settings(project_root=tmp_path)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            s.project_root = tmp_path  # type: ignore[misc]
+
+    def test_initvar_not_stored_as_instance_attribute(self, tmp_path: Path) -> None:
+        s = load_settings(project_root=tmp_path)
+        assert "_root" not in vars(s)

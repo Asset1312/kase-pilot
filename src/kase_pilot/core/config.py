@@ -1,6 +1,6 @@
 """Project path configuration for KASE Pilot."""
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 
 
@@ -30,10 +30,11 @@ class Settings:
     cache_dir: Path = field(init=False)
     docs_dir: Path = field(init=False)
     tests_dir: Path = field(init=False)
+    _root: InitVar[Path | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _root: Path | None) -> None:
         """Calculate project paths after dataclass initialization."""
-        project_root = _find_project_root()
+        project_root = _root if _root is not None else _find_project_root()
         data_dir = project_root / "data"
 
         object.__setattr__(self, "project_root", project_root)
@@ -47,4 +48,16 @@ class Settings:
         object.__setattr__(self, "tests_dir", project_root / "tests")
 
 
-settings = Settings()
+def load_settings(project_root: Path | None = None) -> Settings:
+    """Create and return a configured Settings instance.
+
+    Parameters
+    ----------
+    project_root:
+        Explicit project root.  When omitted, ``_find_project_root()``
+        locates the directory containing ``pyproject.toml``.
+    """
+    return Settings(_root=project_root)
+
+
+settings = load_settings()
