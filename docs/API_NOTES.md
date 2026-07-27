@@ -35,6 +35,19 @@ broker before the corresponding feature is implemented.
   specific claim is also confirmed by the official portal)*
 - Freedom Broker support correspondence — TBD
 
+Evidence in this document is classified by source:
+
+- **Normative official evidence** — statements published by the official
+  Tradernet API portal.
+- **Official SDK evidence** — behaviour implemented by the officially linked
+  `tradernet-sdk`; useful supporting evidence, but not automatically a
+  normative wire-level contract.
+- **Observed live evidence** — behaviour captured during a dated, controlled
+  request. It confirms that specific exchange only and is not generalized to
+  other operations or future schema stability.
+- **Project assumptions and decisions** — KASE Pilot design choices; these do
+  not establish broker API behaviour.
+
 ---
 
 ## 3. Terminology
@@ -288,7 +301,7 @@ TBD — pagination mechanism and parameters are not yet confirmed.
 | Session / user info | TBD | TBD | — |
 | Portfolio information | TBD | TBD | Capability exists; separate summary, positions, and cash commands are not confirmed |
 | Current quotes | TBD | TBD | Operation existence Confirmed; wire contract Unknown |
-| Instrument information | TBD | TBD | Operation existence Confirmed; wire contract Unknown |
+| Instrument information | POST (Confirmed observed) | `https://freedom24.com/api/getSecurityInfo` (Confirmed observed) | Official capability exists; one successful SDK 2.2.0 request observed, full normative contract Unknown |
 | Historical candlesticks | TBD | TBD | Operation existence Confirmed; exact command `getQuotesHistory` remains Partially Confirmed |
 | Current orders | TBD | TBD | Capability exists; wire contract Unknown |
 | Historical orders | TBD | TBD | Capability exists; wire contract Unknown |
@@ -307,7 +320,7 @@ evidence below does not remove that shared blocker.
 | Open positions | `PortfolioService` | General portfolio-information operation exists; separate command unconfirmed | None | None | Blocked | `BLOCKED` | Separate command or confirmed mapping to the general operation, parameters, response sample and schema |
 | Cash balances | `PortfolioService` | General portfolio-information operation exists; separate command unconfirmed | None | None | Blocked | `BLOCKED` | Separate command or confirmed mapping to the general operation, parameters, response sample and schema |
 | Current quote | `MarketService` | Operation existence Confirmed; exact command unconfirmed | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
-| Instrument information | Not assigned | Operation existence Confirmed; exact command unconfirmed | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Instrument information | Not assigned | `getSecurityInfo` endpoint Confirmed observed through SDK 2.2.0; normative command contract unconfirmed | `ticker` string and `sup: true` observed once; requiredness, accepted types/formats and `sup` requirement unconfirmed | HTTP 200 operation-specific top-level JSON observed; full sample and confirmed schema unavailable | API-key headers Confirmed observed for this request; algorithm, security-session requirement and general contract unconfirmed | `PARTIAL` | Normative command and parameter contract; authentication/security-session requirements; saved complete sample; confirmed schema; errors; schema stability |
 | Historical quotes | `MarketService` | Historical candlestick operation exists; `getQuotesHistory` is Partially Confirmed | `ticker`, `interval`, `from`, `to` are Partially Confirmed; types, formats, timezone and limits Unknown | None | Blocked | `PARTIAL` | Parameter contract, response sample and operation-specific schema and errors |
 
 Command and parameter strings used in transport unit tests are test inputs, not
@@ -430,10 +443,24 @@ the project-level concepts below.
 ### Instrument Information
 
 - **Availability:** Confirmed as an operation category
-- **Endpoint/command:** TBD
-- **Method:** TBD
-- **Parameters:** TBD
-- **Response schema:** TBD
+- **Endpoint/command:** `https://freedom24.com/api/getSecurityInfo`
+  (Confirmed observed through `tradernet-sdk` 2.2.0; normative contract
+  unconfirmed)
+- **Method:** POST (Confirmed observed for one controlled request)
+- **Observed request body:** `{"ticker":"AAPL.US","sup":true}`
+- **Observed authentication headers:** `X-NtApi-PublicKey`,
+  `X-NtApi-Timestamp`, and `X-NtApi-Sig` were present
+- **Observed result:** HTTP 200 with an operation-specific top-level JSON
+  object; no universal `code`/`data`/`errMsg` envelope was present
+- **Observed response fields:** `id`, `nt_ticker`, `short_name`,
+  `default_ticker`, `code_nm`, `currency`, `min_step`, `lot`, `mkt_name`,
+  `firstDate`, and nested `mrkt`
+- **Observed field types:** `min_step` and `lot` were strings; `mrkt` was an
+  object
+- **Unknown:** signature algorithm and canonicalization, timestamp tolerance,
+  complete response schema, whether `sup` is required, error contract, schema
+  stability, and authentication/security-session requirements outside this
+  exact request
 
 ### Historical Quotes
 
@@ -509,6 +536,12 @@ Every operation requires its own confirmed successful response schema and
 error contract. The transport-level `BrokerClient` envelope validation is a
 project implementation decision and is not evidence of a universal live API
 schema.
+
+The controlled `getSecurityInfo` request recorded in Research Log F-17 returned
+an operation-specific top-level JSON object without the universal
+`code`/`data`/`errMsg` envelope. This is observed live evidence for that
+successful request only, not proof that every operation or error response has
+the same shape.
 
 ---
 
@@ -1007,3 +1040,58 @@ Status: **Confirmed** — fully supported by source code evidence.
 - Q3: What is the live REST signature algorithm? README says MD5-based, but no
   REST implementation exists to verify. Requires a working REST request test
   or direct confirmation from Tradernet.
+
+---
+
+### 2026-07-27 — Controlled `getSecurityInfo` Live Request
+
+**Date:** 2026-07-27
+
+**Evidence class:** Observed live evidence through the officially linked
+`tradernet-sdk` 2.2.0. This entry records one successful exchange; it is not a
+normative contract and must not be generalized to other REST operations.
+
+#### F-17 — `getSecurityInfo` successful exchange | Confirmed observed
+
+The controlled read-only request used:
+
+- **Endpoint:** `https://freedom24.com/api/getSecurityInfo`
+- **HTTP method:** POST
+- **Request body:** `{"ticker":"AAPL.US","sup":true}`
+- **Observed headers:** `Content-Type: application/json`,
+  `X-NtApi-PublicKey`, `X-NtApi-Timestamp`, and `X-NtApi-Sig`
+- **HTTP status:** 200
+
+Credential values and the signature were not recorded.
+
+The successful response was an operation-specific top-level JSON object. The
+observed fields were `id`, `nt_ticker`, `short_name`, `default_ticker`,
+`code_nm`, `currency`, `min_step`, `lot`, `mkt_name`, `firstDate`, and nested
+`mrkt`. In this response, `min_step` and `lot` were strings and `mrkt` was an
+object. A universal `code`/`data`/`errMsg` envelope was absent.
+
+**Evidence boundaries:**
+
+- The official portal normatively confirms that the instrument-information
+  capability exists.
+- The official SDK supplies the request construction and authentication
+  behaviour used in this observation.
+- The live observation confirms only this endpoint, method, request instance,
+  header presence, HTTP status, and response shape at the verification date.
+- The observation does not confirm the signing algorithm, canonicalization,
+  timestamp tolerance, complete or stable response schema, whether `sup` is
+  mandatory, the error contract, or authentication/security-session
+  requirements for any other operation.
+
+**Readiness assessment:** `PARTIAL`, not `READY`.
+
+The operation now has a reproducible successful observed request, but the
+existing `READY` criteria are not fully met. Still missing:
+
+- a normative confirmation of the command and complete parameter contract,
+  including required parameters, types and formats;
+- confirmed authentication and security-session requirements;
+- a saved complete successful response sample suitable for evidence review;
+- a confirmed complete response schema and schema-stability expectations;
+- confirmed operation-specific errors or proof of an applicable common error
+  contract.
