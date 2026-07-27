@@ -1,17 +1,17 @@
 # BROKER_ARCHITECTURE.md — `kase_pilot.broker` Package Design
 
-> **Status:** Revised — authentication boundary finalised
-> **Last updated:** 2025-07-24
-> **Scope:** Architecture only. No implementation details.
+> **Status:** Revised — implementation status aligned; REST contract pending
+> **Last updated:** 2026-07-27
+> **Scope:** Architecture and current implementation status.
 
 ---
 
 ## 1. Purpose
 
-This document defines the architecture of the `kase_pilot.broker` package before
-any code is written. It establishes module responsibilities, dependency rules,
-and the public API surface so that every implementation decision has a clear
-place to belong.
+This document defines the architecture of the `kase_pilot.broker` package and
+records which parts currently exist. It establishes module responsibilities,
+dependency rules, and the public API surface so that every implementation
+decision has a clear place to belong.
 
 ---
 
@@ -28,11 +28,12 @@ kase_pilot/
     ├── market.py
     ├── orders.py
     ├── reports.py
-    ├── websocket.py
+    ├── websocket.py  (planned; not present)
     └── models.py
 ```
 
-Ten modules. Each owns exactly one concern. None owns more than one.
+Nine modules currently exist. `websocket.py` is planned for post-MVP. Each
+module owns exactly one concern.
 
 ---
 
@@ -44,11 +45,12 @@ Ten modules. Each owns exactly one concern. None owns more than one.
 
 **Responsibility**
 
-`client.py` is the single point through which every HTTP interaction with the
-broker API passes. It owns the transport: base URL, session lifecycle, header
-assembly, timeout policy, retry policy, and the conversion of raw HTTP errors
-into KASE Pilot exceptions. Every service module calls `client.py`; no other
-module touches an HTTP library directly.
+`client.py` is the single point through which every implemented HTTP
+interaction with the broker API passes. It currently owns base URL handling,
+request assembly, an injectable transport callable, response decoding, and
+conversion of transport and API errors into KASE Pilot exceptions. Timeout,
+retry, and persistent-session policies are not yet implemented. Service modules
+receive `BrokerClient` through constructor injection but remain stubs.
 
 **Why it is the central component**
 
@@ -59,8 +61,8 @@ means that concern changes in exactly one place.
 
 **What belongs in `client.py`**
 
-- HTTP session management (creation, reuse, teardown)
-- Base URL and timeout configuration, sourced from `core/config.py`
+- HTTP transport and resource cleanup
+- Base URL handling
 - Calling the injected auth provider to obtain an authentication contribution
   before each request
 - **The sole authority over request assembly** — `BrokerClient` determines
@@ -69,7 +71,7 @@ means that concern changes in exactly one place.
   component.
 - Unified HTTP error handling — mapping broker HTTP errors to KASE Pilot
   exceptions from `core/exceptions.py`
-- Request timeout and retry policy
+- Request timeout and retry policy once their requirements are confirmed
 - A single generic request method that service modules call
 
 **What does NOT belong in `client.py`**
@@ -82,7 +84,8 @@ means that concern changes in exactly one place.
 - Knowledge of which cryptographic algorithm was used — it only knows the
   output shape
 - Security session lifecycle — that is `security.py`
-- Data models — that is `models.py`
+- Domain model definitions — those belong in `models.py` once response schemas
+  are confirmed
 - WebSocket connections — that is `websocket.py`
 - Any import of `auth.py` or `security.py`
 
@@ -124,8 +127,9 @@ either module.
 
 Every service module (`portfolio.py`, `market.py`, `orders.py`, `reports.py`)
 receives a fully constructed `BrokerClient` instance — through constructor
-injection or a factory — and calls its generic request method with an endpoint
-path and parameters. The service module never constructs requests itself.
+injection or a future factory. Their API methods are currently stubs and do not
+yet call the client. Once implemented, service modules call the generic request
+method and never construct HTTP requests themselves.
 
 **Public surface**
 
@@ -133,17 +137,16 @@ path and parameters. The service module never constructs requests itself.
 
 **Dependencies**
 
-- `core/config.py` — base URL and timeout settings
+- `models.py` — the `JsonValue` response type
 - `core/exceptions.py` — exception mapping
-- `core/logger.py` — request/response logging
 
 **Must NOT import**
 
-- `auth.py`, `security.py`, `models.py`, or any service module
+- `auth.py`, `security.py`, or any service module
 
-Keeping `models.py` out of `client.py` preserves transport independence from
-domain structure. Raw responses (dicts, bytes) are returned to the caller;
-the service module maps them to domain types.
+`client.py` imports only the broker-independent `JsonValue` alias from
+`models.py`; it does not depend on any broker domain model. Mapping raw values
+to future domain types remains a service-layer responsibility.
 
 ---
 
@@ -151,10 +154,10 @@ the service module maps them to domain types.
 
 **Responsibility**
 
-`auth.py` owns the broker credential lifecycle: reading the API key from
-configuration, producing authentication artefacts (signatures, nonces, tokens)
-based on the cryptographic requirements of the broker, and returning them as a
-broker-specific immutable typed value.
+`auth.py` is currently intentionally empty. Its planned responsibility is the
+broker credential lifecycle, but implementation remains blocked until the REST
+authentication contract is confirmed. The descriptions below define the
+architectural boundary, not existing behaviour.
 
 **`auth.py` does not import `client.py`**
 
@@ -210,15 +213,13 @@ for MVP — broker-specificity is explicit and type-checked.
 
 **Public surface**
 
-- `BrokerAuth` class — produces a broker-specific authentication contribution;
-  implements the provider interface that `BrokerClient` accepts.
+- None currently. `BrokerAuth` and its contribution type are planned, not
+  implemented.
 
 **Dependencies**
 
-- `core/config.py` — API key source
-- `core/exceptions.py` — raises `AuthenticationError` on failure
-- `core/logger.py` — logs authentication events, never credential values
-- Standard library for cryptographic operations
+- None currently. Future dependencies cannot be fixed before the REST
+  authentication contract is confirmed.
 
 **Must NOT import**
 
@@ -227,9 +228,9 @@ for MVP — broker-specificity is explicit and type-checked.
 **Visibility**
 
 Internal to the `broker` package. Not exported from `__init__.py`. The
-application boundary (factory or composition root) constructs `BrokerAuth` and
-injects it into `BrokerClient`; external callers never need to instantiate it
-directly.
+future application boundary (factory or composition root) will construct
+`BrokerAuth` and inject it into `BrokerClient`; external callers will not need
+to instantiate it directly.
 
 ---
 
@@ -237,10 +238,10 @@ directly.
 
 **Responsibility**
 
-`security.py` owns the lifecycle of an elevated security session: opening a
-session, confirming it via the required method, tracking its validity, and
-closing it. The confirmation method (SMS, web token, electronic digital
-signature) is TBD pending API research.
+`security.py` is an infrastructure skeleton for a future elevated security
+session lifecycle. Its `open`, `confirm`, `is_valid`, and `close` methods
+currently raise `NotImplementedError`. The protocol and confirmation method
+remain TBD pending API research.
 
 `security.py` does not decide which business endpoints require an elevated
 session. That knowledge belongs to the service module that calls the endpoint.
@@ -267,14 +268,14 @@ are confined to this one module.
 
 **Public surface**
 
-- `SecuritySession` class — lifecycle management and confirmation methods.
+- `SecuritySession` class — internal infrastructure skeleton with unimplemented
+  lifecycle methods.
 
 **Dependencies**
 
 - A minimal transport callable injected at construction (same pattern as
   `auth.py`) — `security.py` does not import `client.py`
-- `core/exceptions.py` — raises `SecuritySessionError` on failure
-- `core/logger.py`
+- Standard library only in the current skeleton
 
 **Must NOT import**
 
@@ -286,28 +287,27 @@ Internal. Not exported from `__init__.py`.
 
 ---
 
-### 3.4 `models.py` — Freedom Broker Integration Models
+### 3.4 `models.py` — JSON Types and Future Integration Models
 
 **Responsibility**
 
-`models.py` defines the data structures that represent Freedom Broker domain
-concepts in the MVP: portfolio positions, cash balances, quotes, orders, trades,
-and reports. It is the shared vocabulary of the entire `broker` package for
-this integration.
+`models.py` currently defines only `JsonScalar`, `JsonValue`, and `RawPayload`
+type aliases for decoded JSON. No Freedom Broker domain models exist yet.
+Domain models may be added only after their fields are verified against an
+authoritative REST contract.
 
 **Scope note**
 
-These models reflect Freedom Broker's API structure. They are not declared as
-broker-neutral domain models. If a second broker is introduced in the future,
-broker-neutral abstractions may be extracted into a shared package such as
-`kase_pilot.domain` — but only when that need is demonstrated, not
-speculatively.
+Future integration models will reflect Freedom Broker's verified API structure.
+They will not be declared broker-neutral prematurely. If a second broker is
+introduced, shared abstractions may be extracted only when that need is
+demonstrated.
 
 **What belongs here**
 
-- Immutable representations of API response data
-- Domain types shared across service modules
-- Enumerations for fixed value sets (order status, asset type, etc.)
+- Broker-independent aliases for JSON-decoded values
+- Future immutable response representations whose fields are confirmed
+- Future enumerations only for confirmed fixed value sets
 
 **What must never be placed here**
 
@@ -319,7 +319,8 @@ speculatively.
 
 **Are dataclasses preferable for MVP?**
 
-Yes. `@dataclass(frozen=True)` is the right choice:
+For future domain models, `@dataclass(frozen=True)` remains the preferred
+starting point once fields are confirmed:
 
 - Immutability prevents accidental mutation of API response data.
 - No external dependencies.
@@ -329,13 +330,13 @@ Yes. `@dataclass(frozen=True)` is the right choice:
 
 **Dependencies**
 
-- Standard library only (`dataclasses`, `typing`, `enum`, `datetime`).
+- Standard library only.
 - No imports from any other `broker` module.
 
 **Visibility**
 
-Selected types exported from `__init__.py`. The exported set is enumerated
-explicitly — not "all models" — to keep the public contract controlled.
+No model types are currently exported from `__init__.py`. Any future exported
+set must be enumerated explicitly to keep the public contract controlled.
 
 ---
 
@@ -343,10 +344,9 @@ explicitly — not "all models" — to keep the public contract controlled.
 
 **Responsibility**
 
-Retrieves and structures portfolio data: open positions, cash balances, and
-portfolio summary. Translates raw client responses into `models.py` types.
-Knows which of its endpoints require a security session; obtains one from
-`security.py` when needed.
+Intended to retrieve and structure portfolio data after commands and response
+schemas are confirmed. The class currently stores an injected `BrokerClient`;
+all service methods raise `NotImplementedError`.
 
 **Why separate from other services**
 
@@ -361,11 +361,8 @@ test and evolve independently.
 **Dependencies**
 
 - `client.py` — all HTTP calls go through `BrokerClient`
-- Security-session provider — injected where required, not imported at module
-  level (see general injection rule in Section 5)
-- `models.py` — return types
-- `core/exceptions.py`
-- `core/logger.py`
+- Future model and security-session dependencies remain blocked on the REST
+  contract
 
 ---
 
@@ -373,8 +370,8 @@ test and evolve independently.
 
 **Responsibility**
 
-Retrieves current and historical quotes and any other market data the API
-exposes. Does not read account state or place orders.
+Intended to retrieve current and historical quotes. The class currently stores
+an injected `BrokerClient`; both service methods raise `NotImplementedError`.
 
 **Why separate**
 
@@ -389,9 +386,7 @@ makes that future transition contained.
 **Dependencies**
 
 - `client.py`
-- `models.py`
-- `core/exceptions.py`
-- `core/logger.py`
+- Future model dependencies remain blocked on confirmed response schemas
 
 ---
 
@@ -399,9 +394,9 @@ makes that future transition contained.
 
 **Responsibility**
 
-Retrieves current orders, historical orders, and trade history. In the MVP this
-is entirely read-only. Write operations (create, modify, cancel) are explicitly
-out of scope.
+Intended to retrieve current orders, historical orders, and trade history. The
+class currently stores an injected `BrokerClient`; all service methods raise
+`NotImplementedError`. Write operations remain explicitly out of scope.
 
 **Why separate**
 
@@ -417,9 +412,7 @@ logic.
 **Dependencies**
 
 - `client.py`
-- `models.py`
-- `core/exceptions.py`
-- `core/logger.py`
+- Future model dependencies remain blocked on confirmed response schemas
 
 ---
 
@@ -427,8 +420,9 @@ logic.
 
 **Responsibility**
 
-Retrieves broker-generated reports if the API exposes them. Format and
-availability are TBD.
+Intended to retrieve broker-generated reports if the API exposes them. The
+class currently stores an injected `BrokerClient`; `get_reports` raises
+`NotImplementedError`. Format and availability remain TBD.
 
 **Why separate**
 
@@ -443,9 +437,7 @@ the other service modules.
 **Dependencies**
 
 - `client.py`
-- `models.py`
-- `core/exceptions.py`
-- `core/logger.py`
+- Future model dependencies remain blocked on confirmed response schemas
 
 ---
 
@@ -453,8 +445,9 @@ the other service modules.
 
 **Responsibility**
 
-Manages the WebSocket connection to the broker for real-time data streams. Not
-implemented in the MVP — the REST layer is fully stabilised first.
+Planned to manage the WebSocket connection to the broker for real-time data
+streams. The module and `BrokerWebSocket` class do not currently exist and
+remain out of MVP scope.
 
 **Why separated from REST**
 
@@ -465,9 +458,9 @@ WebSocket infrastructure being initialised.
 
 **How it coexists with `client.py`**
 
-`websocket.py` and `client.py` are parallel components. Neither imports the
-other. They share configuration sourced from `core/config.py`. Both receive
-auth headers from `auth.py` — `BrokerAuth` is injected into each independently.
+If implemented, `websocket.py` and `client.py` will be parallel components and
+will not import each other. Configuration and authentication dependencies
+remain blocked on the unconfirmed WebSocket and REST contracts.
 
 **Future features this module will own**
 
@@ -483,12 +476,8 @@ auth headers from `auth.py` — `BrokerAuth` is injected into each independently
 
 **Dependencies**
 
-- An auth provider callable or object injected at construction — `websocket.py`
-  does not import `auth.py`. The same injection pattern as `client.py` applies.
-- `models.py`
-- `core/config.py`
-- `core/exceptions.py`
-- `core/logger.py`
+- Not fixed; the module does not exist and its protocol contract is
+  unconfirmed.
 
 **Must NOT import**
 
@@ -514,10 +503,7 @@ OrdersService       from .orders
 ReportsService      from .reports
 ```
 
-Selected models (enumerated explicitly):
-```
-Position, Balance, Quote, Order, Trade, Report   from .models
-```
+No model types are currently exported.
 
 **What is NOT exported**
 
@@ -539,41 +525,33 @@ the application entry point.
 ## 4. Dependency Diagram
 
 ```
-core/config.py   core/logger.py   core/exceptions.py
-      │                │                  │
-      └────────────────┴──────────────────┘
-                       │
-              ─────────┼──────────
-             │                   │
-          auth.py           security.py
-             │                   │
-             │  (injected)        │  (injected)
-             └────────┬───────────┘
-                      │
-                 client.py
-                      ▲
-         ┌────────────┼────────────┬──────────────┐
-         │            │            │               │
-   portfolio.py  market.py   orders.py       reports.py
-         │            │            │               │
-         └────────────┴────────────┴───────────────┘
-                      │
-                  models.py
-                (no upward imports)
+__init__.py ──► client.py, portfolio.py, market.py, orders.py, reports.py
 
-websocket.py ──► models.py
-             ──► core/*
-             (auth provider injected at construction — no import of auth.py)
+portfolio.py ──► client.py
+market.py    ──► client.py
+orders.py    ──► client.py
+reports.py   ──► client.py
+
+client.py ──► models.py (`JsonValue`)
+client.py ──► core/exceptions.py
+
+security.py ──► standard library only
+auth.py     ──► no imports (intentionally empty)
+
+websocket.py: planned; not present
 ```
 
 **Reading the diagram**
 
 - Arrows point from dependent to dependency.
-- `auth.py` and `security.py` are injected into `client.py` — neither is
-  imported by `client.py` at module level.
 - `models.py` has no dependencies within the `broker` package.
-- `websocket.py` is parallel to `client.py`; neither imports the other.
-- The graph is a true directed acyclic graph. No cycles are possible.
+- Service classes store an injected `BrokerClient`, but their methods remain
+  unimplemented.
+- `BrokerClient` accepts an injected authentication provider callable without
+  importing `auth.py`.
+- `SecuritySession` accepts an injected transport but is not connected to the
+  client or services.
+- The current import graph is acyclic.
 
 ---
 
@@ -582,15 +560,15 @@ websocket.py ──► models.py
 | Module | May import | Must NOT import |
 |---|---|---|
 | `models.py` | `stdlib` only | Anything from `broker` |
-| `client.py` | `stdlib`, HTTP library, `core/*` | `auth`, `security`, `models`, `portfolio`, `market`, `orders`, `reports`, `websocket` |
-| `auth.py` | `core/*` | `client`, `security`, `portfolio`, `market`, `orders`, `reports`, `websocket` |
-| `security.py` | `core/*` | `client`, `auth`, `portfolio`, `market`, `orders`, `reports`, `websocket` |
-| `portfolio.py` | `client`, `models`, `core/*` | `auth`, `security`*, `market`, `orders`, `reports`, `websocket` |
-| `market.py` | `client`, `models`, `core/*` | `auth`, `security`, `portfolio`, `orders`, `reports`, `websocket` |
-| `orders.py` | `client`, `models`, `core/*` | `auth`, `security`, `portfolio`, `market`, `reports`, `websocket` |
-| `reports.py` | `client`, `models`, `core/*` | `auth`, `security`, `portfolio`, `market`, `orders`, `websocket` |
-| `websocket.py` | `models`, `core/*` | `client`, `auth`, `portfolio`, `market`, `orders`, `reports` |
-| `__init__.py` | Any `broker` module | — |
+| `client.py` | `stdlib`, HTTP library, `models.JsonValue`, `core.exceptions` | `auth`, `security`, service modules |
+| `auth.py` | Nothing currently | All package modules until the REST contract is confirmed |
+| `security.py` | `stdlib` only | `client`, `auth`, service modules |
+| `portfolio.py` | `client` | `auth`, `security`, other services |
+| `market.py` | `client` | `auth`, `security`, other services |
+| `orders.py` | `client` | `auth`, `security`, other services |
+| `reports.py` | `client` | `auth`, `security`, other services |
+| `websocket.py` | Planned; not present | — |
+| `__init__.py` | `client` and the four service modules | Internal types |
 
 Any service module that requires an elevated session may receive a
 security-session provider through constructor or method injection. Service
@@ -611,10 +589,10 @@ nothing from the package. There is no path from any module back to itself.
 
 ### Single Responsibility Principle
 
-Each module owns one concern and one concern only. `client.py` owns HTTP
-transport. `auth.py` owns API-key credentials. `security.py` owns elevated
-session lifecycle. `models.py` owns data structures. No module has two reasons
-to change.
+Each module is assigned one concern. `client.py` owns HTTP transport.
+`auth.py` is reserved for API-key credentials, `security.py` for an elevated
+session lifecycle, and `models.py` for JSON types and future confirmed domain
+models. The latter two lifecycle areas are not implemented.
 
 ### Separation of Concerns
 
@@ -627,11 +605,9 @@ Service modules depend on the stable public interface of `BrokerClient`, not on
 a concrete HTTP library. When the HTTP implementation changes, service modules
 do not change.
 
-`BrokerClient` does not depend on `BrokerAuth` directly — it depends on an
-auth provider interface that `BrokerAuth` satisfies. This is the correct
-application of dependency inversion: the higher-level module (`BrokerClient`)
-defines the shape it needs; the lower-level module (`BrokerAuth`) conforms to
-it.
+`BrokerClient` does not depend on `BrokerAuth` directly — it accepts an auth
+provider callable. A future `BrokerAuth` may satisfy that interface after the
+REST contract is confirmed.
 
 Note: for MVP, no explicit `Protocol` class is introduced. The interface is
 defined by convention — the callable or object shape that `BrokerClient`
@@ -643,8 +619,8 @@ a second broker makes it necessary.
 A key architectural boundary separates the production of authentication
 artefacts from their assembly into transport structures:
 
-- `BrokerAuth` produces a contribution object containing named authentication
-  artefacts.
+- A future `BrokerAuth` produces a contribution object containing named
+  authentication artefacts.
 - `BrokerClient` assembles requests by mapping these artefacts to
   protocol-specific locations.
 - Neither component does the other's job. This boundary is enforced by the
@@ -661,9 +637,9 @@ No two service modules import each other. `client.py` does not import
 `auth.py`. `auth.py` does not import `client.py`. `models.py` imports nothing
 from the package. The dependency graph is shallow and acyclic.
 
-`BrokerAuth` and `BrokerClient` are decoupled at the module level. Their
-relationship is expressed through the stable contribution type and injection at
-construction time. This allows:
+The planned `BrokerAuth` and existing `BrokerClient` are decoupled at the
+module level. No contribution type exists yet; their future relationship will
+use injection at construction time. This allows:
 
 - Independent testing of authentication logic without HTTP
 - Independent testing of transport logic without cryptographic computation
@@ -680,19 +656,17 @@ together and would change together for the same reasons.
 
 ## 7. Future Extensibility — Adding a Second Broker
 
-For the MVP, `models.py` contains Freedom Broker integration models. They are
-not declared broker-neutral.
+For the MVP, `models.py` currently contains only JSON type aliases. Future
+Freedom Broker integration models will not be declared broker-neutral.
 
 If a second broker is introduced, broker-neutral domain models may be extracted
 into a shared package such as `kase_pilot.domain` or `kase_pilot.broker_base`.
 This extraction should not be performed before it is needed. Premature
 abstraction adds complexity without demonstrated benefit.
 
-When a second broker is added, its `auth.py` will define its own contribution
-type with fields matching that broker's authentication artefacts. No changes to
-the existing Tradernet contribution type are required. The new broker's
-`BrokerClient` will contain the mapping from its contribution type to its own
-protocol-specific request representation.
+When a second broker is added, its authentication types can be designed from
+that broker's confirmed contract. There is no existing Tradernet contribution
+type to generalise today.
 
 If a generic handler that processes contributions without broker knowledge is
 later required, a common protocol or base class can be introduced
@@ -731,6 +705,8 @@ typed fields matching its authentication artefacts. No shared generic container.
 — not exported from `__init__.py`. Implementation details (dataclass,
 NamedTuple, or other) are not specified at the architecture level. Field names
 are determined by the verified authentication artefacts, not by this document.
+No contribution type currently exists; this decision applies only after the
+REST authentication contract is confirmed.
 
 ---
 
@@ -751,13 +727,13 @@ are determined by the verified authentication artefacts, not by this document.
 
 | Date | Decision | Status |
 |---|---|---|
-| 2025-07-24 | Frozen dataclasses for domain models | Accepted |
+| 2025-07-24 | Frozen dataclasses for future confirmed domain models | Accepted |
 | 2025-07-24 | `BrokerClient` as central transport; all services depend on it | Accepted |
 | 2025-07-24 | `BrokerAuth` produces typed artefacts, not headers or modified params | Accepted |
 | 2025-07-24 | `BrokerClient` sole owner of request assembly and placement mapping | Accepted |
 | 2025-07-24 | Authentication contributions are broker-specific typed objects, not generic containers | Accepted |
 | 2025-07-24 | `BrokerAuth` never modifies transport structures | Accepted |
 | 2025-07-24 | `BrokerClient` never computes authentication artefacts | Accepted |
-| 2025-07-24 | `SecuritySession` owns elevated session lifecycle; injected, not imported | Accepted |
+| 2025-07-24 | `SecuritySession` reserved for elevated session lifecycle; currently a skeleton | Accepted |
 | 2025-07-24 | No generic contribution base type for MVP | Accepted |
 | 2025-07-24 | WebSocket layer out of MVP scope | Accepted |
