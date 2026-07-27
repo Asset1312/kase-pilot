@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -287,6 +288,109 @@ def test_transport_api_request_error_propagates_unchanged() -> None:
         client.request("cmd", {})
 
     assert exc_info.value is original
+
+
+def test_default_transport_maps_http_error_with_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = urllib.error.HTTPError(
+        url="https://example.com/api/",
+        code=500,
+        msg="server error",
+        hdrs=None,
+        fp=None,
+    )
+
+    def failing_urlopen(request: urllib.request.Request) -> bytes:
+        raise original
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    client = BrokerClient(
+        base_url="https://example.com/api/",
+        auth_provider=_no_auth,
+    )
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        client.request("cmd", {})
+
+    assert exc_info.value.__cause__ is original
+
+
+def test_default_transport_maps_url_error_with_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = urllib.error.URLError("network unavailable")
+
+    def failing_urlopen(request: urllib.request.Request) -> bytes:
+        raise original
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    client = BrokerClient(
+        base_url="https://example.com/api/",
+        auth_provider=_no_auth,
+    )
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        client.request("cmd", {})
+
+    assert exc_info.value.__cause__ is original
+
+
+def test_default_transport_closes_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        closed = False
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.closed = True
+
+        def read(self) -> bytes:
+            return _ok({"value": 1})
+
+    response = FakeResponse()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request: response)
+    client = BrokerClient(
+        base_url="https://example.com/api/",
+        auth_provider=_no_auth,
+    )
+
+    assert client.request("cmd", {}) == {"value": 1}
+    assert response.closed
+
+
+def test_default_transport_closes_response_when_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = OSError("read failed")
+
+    class FailingResponse:
+        closed = False
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.closed = True
+
+        def read(self) -> bytes:
+            raise original
+
+    response = FailingResponse()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request: response)
+    client = BrokerClient(
+        base_url="https://example.com/api/",
+        auth_provider=_no_auth,
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        client.request("cmd", {})
+
+    assert exc_info.value is original
+    assert response.closed
 
 
 class TestCallerParamsIsolation:
