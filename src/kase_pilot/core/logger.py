@@ -3,16 +3,13 @@
 import logging
 from pathlib import Path
 
-from kase_pilot.core.config import settings
-
-_LOG_FILE: Path = settings.log_dir / "kase_pilot.log"
 _FORMATTER: logging.Formatter = logging.Formatter(
     fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str, log_dir: Path) -> logging.Logger:
     """Return a named logger with console and file handlers.
 
     If the logger already has handlers attached, returns it as-is to
@@ -20,6 +17,7 @@ def get_logger(name: str) -> logging.Logger:
 
     Args:
         name: Logical name for the logger (e.g. ``"broker"``).
+        log_dir: Directory in which the application log file is stored.
 
     Returns:
         Configured :class:`logging.Logger` instance.
@@ -31,12 +29,12 @@ def get_logger(name: str) -> logging.Logger:
 
     logger.setLevel(logging.INFO)
 
-    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(_FORMATTER)
 
-    file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+    file_handler = logging.FileHandler(log_dir / "kase_pilot.log", encoding="utf-8")
     file_handler.setFormatter(_FORMATTER)
 
     logger.addHandler(console_handler)
