@@ -25,11 +25,13 @@ inferred.
   `__init__.py` (`BROKER_ARCHITECTURE.md` §3.10).
 - Authentication failure must raise `AuthenticationError`
   (`API_NOTES.md` §15).
-- The authentication method, header names, and header value format are all
-  marked TBD (`API_NOTES.md` §6).
+- An external README describes REST authentication in the request body without
+  an HTTP authentication header, but this is not yet a confirmed live REST
+  contract (`API_NOTES.md` §8).
 
-That is the complete set of confirmed facts. Every other aspect of
-authentication is unknown.
+The architectural and security rules above are confirmed project decisions.
+Broker-specific behaviour derived from the external README remains only
+partially confirmed.
 
 ---
 
@@ -40,21 +42,19 @@ yet confirmed by any source.
 
 | # | Unknown |
 |---|---------|
-| 1 | The exact HTTP header name that carries the credential |
-| 2 | The header value format (raw key, `Bearer <token>`, custom prefix, etc.) |
-| 3 | Whether authentication uses an API key, a session token, or another scheme |
-| 4 | Whether the API key is long-lived or expires |
-| 5 | The API key TTL if expiration exists |
-| 6 | Whether credential renewal is required and how it works |
-| 7 | Whether additional companion headers are required alongside the auth header |
-| 8 | Whether authentication is per-request or per-session |
-| 9 | Whether a login endpoint must be called to exchange credentials for a token |
-| 10 | Whether two-factor authentication is required for API access |
-| 11 | Which operations require a security session on top of standard auth |
-| 12 | Whether WebSocket connections use the same auth scheme as REST |
-| 13 | What error response the broker returns on authentication failure (status code, body schema) |
-| 14 | Whether IP restriction affects authentication behaviour |
-| 15 | The official API documentation URL |
+| 1 | Whether the external README's body-based, no-header description matches the live REST API |
+| 2 | Whether authentication uses an API key, a session token, or another scheme |
+| 3 | Whether the API key is long-lived or expires |
+| 4 | The API key TTL if expiration exists |
+| 5 | Whether credential renewal is required and how it works |
+| 6 | Whether authentication data is computed and supplied for every request or established once for a session |
+| 7 | Whether a login endpoint must be called to exchange credentials for a token |
+| 8 | Whether two-factor authentication is required for API access |
+| 9 | Which operations require a security session on top of standard auth |
+| 10 | Whether WebSocket connections use the same auth scheme as REST |
+| 11 | What error response the broker returns on authentication failure (status code, body schema) |
+| 12 | Whether IP restriction affects authentication behaviour |
+| 13 | The official API documentation URL |
 
 ---
 
@@ -87,22 +87,14 @@ first real API call. A placeholder is itself an assumption, and therefore
 violates the core project principle: never turn assumptions about the Freedom
 Broker API into code.
 
-The only parts that can be written without assumptions are:
-
-- The structural skeleton: a minimal authentication provider implementation
-  that accepts a credential value and exposes a callable interface.
-- Validation that the credential is non-empty.
-- The secrets policy enforcement: `__repr__` suppression, no logging of
-  values.
-- Raising `AuthenticationError` on invalid configuration.
-
 Everything that touches the actual HTTP contract — the header name, the value
 format, the authentication scheme — cannot be written without inventing
 behaviour that may be wrong.
 
-The correct interim state is the current one: a skeleton with the structural
-contract defined and the HTTP-specific part left unimplemented and clearly
-marked in the architecture documents as blocked on API research.
+The correct interim state is the current one:
+`src/kase_pilot/broker/auth.py` intentionally remains empty until the live REST
+contract is confirmed. No placeholder signer or speculative provider should be
+added.
 
 ---
 
@@ -112,16 +104,14 @@ The following must be resolved, in order, before implementation can proceed.
 
 - [ ] Obtain the official Freedom Broker / Tradernet API documentation URL.
       This is the prerequisite for every item below.
-- [ ] Locate the authentication section of the documentation. Confirm the
-      exact name and format of the authorisation header.
-- [ ] Confirm the authentication scheme: static API key, short-lived token,
-      session cookie, or other.
+- [ ] Confirm whether the external README's body-based authentication
+      description matches the live REST API.
+- [ ] Confirm the authentication scheme and exact REST contract from an
+      authoritative source.
 - [ ] Confirm whether the API key expires. If yes, record the TTL and the
       renewal mechanism.
-- [ ] Confirm whether any companion headers are required alongside the auth
-      header (e.g. client ID, account ID, content type).
-- [ ] Confirm whether authentication is per-request (header on every call) or
-      per-session (one login call, then a session identifier).
+- [ ] Confirm whether authentication data is computed and supplied for every
+      request or established once for a session.
 - [ ] If a login endpoint exists, record its path, request schema, and
       response schema.
 - [ ] Confirm whether two-factor authentication is required for API access.

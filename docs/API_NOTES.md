@@ -410,7 +410,7 @@ TBD
 
 Source: https://github.com/tradernet/tn.api README
 
-All REST responses are JSON with the following confirmed envelope:
+The external README describes REST responses with the following envelope:
 
 | Field | Description | Required |
 |---|---|---|
@@ -738,8 +738,8 @@ alternative to key-based auth is not clarified.
 
 Source: https://github.com/tradernet/tn.api README (Socket.IO section)
 
-Security sessions are an additional authorisation layer. Confirmed session
-types:
+The external README describes security sessions as an additional authorisation
+layer and lists the following session types:
 - `safety_type_id: 2` — Hardware token (Aladdin)
 - `safety_type_id: 3` — SMS confirmation
 - `safety_type_id: 4` — Login/password (no additional confirmation)
@@ -766,7 +766,7 @@ confirmed. KASE Pilot will not use this package as a dependency.
 
 #### Impact on `broker/auth.py`
 
-The research changes the implementation model in the following confirmed ways:
+The research affects the implementation model as follows:
 
 1. **No HTTP header for REST.** Authentication is in the request body.
 2. **REST authentication requires signing the request body**, not injecting a
@@ -778,6 +778,9 @@ The research changes the implementation model in the following confirmed ways:
    unconfirmed.** Full implementation of `auth.py` for REST must wait.
 6. **REST and WebSocket signing must not share a generic abstraction.**
    When WebSocket support is implemented it will be a separate component.
+
+`src/kase_pilot/broker/auth.py` intentionally remains empty until the live REST
+authentication contract is confirmed. A placeholder signer must not be added.
 
 ---
 
