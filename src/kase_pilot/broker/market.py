@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 from kase_pilot.broker.models import JsonValue
 
@@ -26,6 +28,13 @@ class MarketService:
     ) -> dict[str, JsonValue]:
         """Return raw information for a broker instrument."""
         return self._adapter.get_security_info(ticker, sup=sup)
+
+    def get_quotes(
+        self,
+        symbols: Sequence[str],
+    ) -> dict[str, JsonValue]:
+        """Return current quotes for broker instruments."""
+        return self._adapter.get_quotes(symbols)
 
     def get_current_quotes(self) -> object:
         """Return current quotes.

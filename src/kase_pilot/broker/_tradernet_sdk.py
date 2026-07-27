@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from tradernet import Tradernet
@@ -12,7 +12,7 @@ from kase_pilot.core.exceptions import ApiRequestError, ValidationError
 
 
 class TradernetSdkAdapter:
-    """Expose the confirmed ``getSecurityInfo`` operation through the SDK."""
+    """Expose confirmed market-data operations through the SDK."""
 
     def __init__(self, client: Tradernet) -> None:
         self._client = client
@@ -34,3 +34,13 @@ class TradernetSdkAdapter:
             )
 
         return cast(dict[str, JsonValue], dict(response))
+
+    def get_quotes(
+        self,
+        symbols: Sequence[str],
+    ) -> dict[str, JsonValue]:
+        """Return current quotes without transforming the SDK response."""
+        try:
+            return cast(dict[str, JsonValue], self._client.get_quotes(symbols))
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
