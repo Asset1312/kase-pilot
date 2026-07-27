@@ -243,6 +243,15 @@ def test_invalid_json_raises_validation_error() -> None:
         client.request("cmd", {})
 
 
+def test_invalid_utf8_raises_validation_error_with_decode_error_cause() -> None:
+    client, _ = _make_client(b"\xff", auth_provider=_no_auth)
+
+    with pytest.raises(ValidationError) as exc_info:
+        client.request("cmd", {})
+
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

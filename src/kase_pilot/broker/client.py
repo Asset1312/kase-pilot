@@ -209,6 +209,8 @@ class BrokerClient:
         """
         try:
             envelope: Any = json.loads(raw)
+        except UnicodeDecodeError as exc:
+            raise ValidationError(f"Broker response is not valid UTF-8: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise ValidationError(f"Broker response is not valid JSON: {exc}") from exc
 
