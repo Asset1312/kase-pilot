@@ -386,10 +386,10 @@ def test_default_transport_closes_response_when_read_fails(
         auth_provider=_no_auth,
     )
 
-    with pytest.raises(OSError) as exc_info:
+    with pytest.raises(ApiRequestError) as exc_info:
         client.request("cmd", {})
 
-    assert exc_info.value is original
+    assert exc_info.value.__cause__ is original
     assert response.closed
 
 

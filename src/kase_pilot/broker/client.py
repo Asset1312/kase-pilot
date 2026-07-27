@@ -101,6 +101,10 @@ def _default_transport(request: urllib.request.Request) -> bytes:
         raise ApiRequestError(
             f"Transport error communicating with broker API: {exc.reason}"
         ) from exc
+    except OSError as exc:
+        raise ApiRequestError(
+            f"Transport error reading response from broker API: {exc}"
+        ) from exc
 
 
 @dataclass
