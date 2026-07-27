@@ -20,12 +20,19 @@ broker before the corresponding feature is implemented.
 
 ## 2. References
 
-- Tradernet API documentation portal — https://tradernet.com/tradernet-api
-  *(Partially Confirmed as official — see Research Log F-01)*
+- Official Tradernet API documentation portal —
+  https://tradernet.ru/tradernet-api/
+  *(Confirmed as official — normative source for documented capabilities)*
+- Official API-key authentication page —
+  https://tradernet.ru/tradernet-api/auth-api
+- Tradernet Python SDK — https://pypi.org/project/tradernet-sdk/
+  *(Confirmed as linked by the official Tradernet API portal; SDK behaviour is
+  supporting evidence, not a normative wire-level contract)*
 - Freedom24 mirror — https://freedom24.com/tradernet-api
   *(same content as above)*
 - GitHub repository — https://github.com/tradernet/tn.api
-  *(Partially Confirmed as official — see Research Log F-01)*
+  *(observed implementation evidence only; not a normative source unless a
+  specific claim is also confirmed by the official portal)*
 - Freedom Broker support correspondence — TBD
 
 ---
@@ -60,17 +67,25 @@ operations, separate from standard API key authentication.
 
 ## 5. Official API Capabilities
 
-> Source: https://tradernet.com/tradernet-api and https://github.com/tradernet/tn.api
-> (Partially Confirmed as official — see Research Log F-01)
+> Normative source: https://tradernet.ru/tradernet-api/. The portal confirms
+> that the capability categories below exist. It does not by itself confirm
+> their wire-level commands, parameters, schemas, authentication requirements,
+> or error contracts.
 
 | Capability | Available | Notes |
 |---|---|---|
-| REST API | Partially Confirmed | Base URL confirmed from repository README; official ownership of source not yet proven |
-| WebSocket streaming | Partially Confirmed | Socket.IO-based; servers confirmed from repository README |
+| REST API | Confirmed | Existence confirmed by the official portal; canonical API base host remains unconfirmed |
+| WebSocket streaming | Confirmed | Existence and documented subscription categories confirmed; protocol details and exact event names remain Partially Confirmed |
+| API-key authentication | Confirmed | Authentication mode exists; request fields and signature algorithm remain unconfirmed |
+| Login/password and SMS authentication | Confirmed | Authentication modes exist; their wire-level contracts are not recorded here |
+| Security sessions | Confirmed | The portal documents listing and opening sessions; numeric types and expiry fields remain unconfirmed |
+| Quotes and instruments | Confirmed | Current quote, instrument information, and historical candlestick operations exist |
+| Portfolio, orders, and trades | Confirmed | Capability categories exist; operation-specific contracts remain unconfirmed |
+| Reports and money movements | Confirmed | Capability categories exist; formats and operation-specific contracts remain unconfirmed |
 | FIX protocol | TBD | Out of scope regardless |
 | Sandbox / test environment | Partially Confirmed | Demo WebSocket server at wsbeta.tradernet.ru; REST sandbox TBD |
 | API versioning scheme | TBD | — |
-| Official Python SDK | Partially Confirmed | `tradernet-sdk` package exists on PyPI; official ownership not yet confirmed |
+| Official Python SDK | Confirmed | `tradernet-sdk` exists on PyPI and is linked by the official portal; it is supporting rather than normative wire-level evidence |
 
 ---
 
@@ -112,13 +127,16 @@ The following are explicitly excluded from MVP and must not be implemented:
 
 ### Method
 
-The REST API uses a signature scheme embedded in the request body. There is no
-HTTP authentication header for REST requests. See Research Log F-04 for the
-README description; see F-16 for the finding that REST and WebSocket use
-different signing protocols.
+The official portal confirms that API-key, login/password, and SMS
+authentication modes exist. It does not provide enough normative evidence in
+the reviewed material to fix a universal REST request-body or HTTP-header
+authentication contract. See Research Log F-04 for the external README
+description; see F-16 for the finding that REST and WebSocket signing must not
+be assumed to share a protocol.
 
-A credential key pair is required: a public key and a secret key, generated
-via the user profile interface. See Research Log F-05 and F-06.
+The officially linked Python SDK accepts a public/private key pair. The exact
+REST credential identifiers, key provisioning process, and wire-level mapping
+remain Partially Confirmed. See Research Log F-05 and F-06.
 
 ### REST Signature Algorithm (Partially Confirmed — README only; no code implementation exists)
 
@@ -176,8 +194,9 @@ a verified REST request example confirms it.
 
 ### HTTP Authentication Headers
 
-No authentication header is used in the REST protocol. Authentication is
-carried entirely in the request body (`uid` and `sig` fields).
+Unknown. The external README describes `uid` and `sig` request-body fields, but
+the official evidence reviewed does not establish that all REST authentication
+is body-only or that authentication headers are never used.
 
 ### Open Questions
 
@@ -195,25 +214,26 @@ carried entirely in the request body (`uid` and `sig` fields).
 
 ## 9. Security Sessions
 
-Security sessions are an additional authorisation layer confirmed to exist in
-the API. They are separate from the standard key-pair authentication.
-See Research Log F-10.
+Security sessions are confirmed to exist by the official portal, which
+documents listing open sessions and opening them through SMS, web-token, and
+electronic-signature flows. Their exact relationship to API-key
+authentication and individual REST operations remains unconfirmed.
 
-Confirmed session types (from repository README):
+Numeric session types described by the external repository README remain
+Partially Confirmed rather than normative:
 
 | `safety_type_id` | Type | Notes |
 |---|---|---|
-| 2 | Hardware token (Aladdin) | May not be enabled for all accounts |
-| 3 | SMS confirmation | Confirmed enabled |
-| 4 | Login/password without additional confirmation | Confirmed enabled |
+| 2 | Hardware token (Aladdin) | External README evidence only |
+| 3 | SMS confirmation | External README evidence only; SMS flow existence is officially confirmed |
+| 4 | Login/password without additional confirmation | External README evidence only |
 
-Security sessions have a finite lifetime: fields `expire_datetime` and `expire`
-(remaining milliseconds) are confirmed in API responses.
+The `expire_datetime` and `expire` response fields are described by external
+evidence but are not confirmed as a normative official schema.
 
-Authentication via the API key pair (programmatic Node.js flow) is documented
-as bypassing the need to open a security session through the normal
-SMS/token flow. The exact scope of this bypass for read-only REST endpoints
-is **Partially Confirmed**.
+External implementation evidence describes API-key authentication as bypassing
+the normal SMS/token flow. Whether this applies to current REST endpoints,
+especially read-only operations, remains **Unknown**.
 
 ### Open Questions
 
@@ -228,31 +248,34 @@ is **Partially Confirmed**.
 
 ### Base URL (Partially Confirmed)
 
-Source: https://github.com/tradernet/tn.api README
+The official portal confirms REST API existence but does not establish a
+single canonical API host in the evidence reviewed. The external repository
+README describes:
 
 https://tradernet.ru/api/
-
 
 HTTP method: POST. GET is stated as permitted for testing only.
 Data format: JSON.
 
-> ⚠️ This URL is from the repository README. Official ownership of the
-> repository is not yet proven. Treat as Partially Confirmed until verified
-> from the documentation portal directly.
+> ⚠️ Treat the base host and method rules as Partially Confirmed until the
+> official operation documentation establishes the canonical transport
+> contract.
 
 ### Authentication in Requests
 
-Authentication is embedded in the JSON request body via the `sig` field.
-No HTTP authentication header is used.
+The external README describes authentication through request-body fields, but
+the official evidence reviewed does not establish this as the universal REST
+authentication contract. Header usage, per-request versus session
+authentication, and the exact `uid`/`sig` mapping remain Unknown.
 
 ### Common Request Body Fields
 
 | Field | Description | Required |
 |---|---|---|
-| `uid` | User identifier (described as integer type in README; relationship to public key credential is Unknown — see §8) | Yes, for non-anonymous requests |
-| `cmd` | Command name | Yes |
-| `params` | Command parameters (object) | Yes |
-| `sig` | Signature (algorithm Partially Confirmed from README only — see §8) | Yes |
+| `uid` | User identifier described by the external README; relationship to public key credential is Unknown — see §8 | Partially Confirmed for non-anonymous requests |
+| `cmd` | Command name | Confirmed as an API concept; operation-specific value required |
+| `params` | Command parameters | Requiredness and shape are operation-specific and not universally confirmed |
+| `sig` | Signature described by the external README; algorithm unconfirmed — see §8 | Partially Confirmed |
 
 ### Pagination
 
@@ -263,15 +286,14 @@ TBD — pagination mechanism and parameters are not yet confirmed.
 | Resource | Method | Path | Notes |
 |---|---|---|---|
 | Session / user info | TBD | TBD | — |
-| Portfolio summary | TBD | TBD | — |
-| Open positions | TBD | TBD | — |
-| Cash balances | TBD | TBD | — |
-| Current quotes | TBD | TBD | — |
-| Historical quotes | TBD | TBD | Confirmed command name: `getQuotesHistory` |
-| Current orders | TBD | TBD | — |
-| Historical orders | TBD | TBD | — |
-| Trade history | TBD | TBD | — |
-| Reports | TBD | TBD | — |
+| Portfolio information | TBD | TBD | Capability exists; separate summary, positions, and cash commands are not confirmed |
+| Current quotes | TBD | TBD | Operation existence Confirmed; wire contract Unknown |
+| Instrument information | TBD | TBD | Operation existence Confirmed; wire contract Unknown |
+| Historical candlesticks | TBD | TBD | Operation existence Confirmed; exact command `getQuotesHistory` remains Partially Confirmed |
+| Current orders | TBD | TBD | Capability exists; wire contract Unknown |
+| Historical orders | TBD | TBD | Capability exists; wire contract Unknown |
+| Trade history | TBD | TBD | Capability exists; wire contract Unknown |
+| Reports and money movements | TBD | TBD | Capabilities exist; wire contracts Unknown |
 
 ### First Read-only REST Use Case Readiness
 
@@ -281,12 +303,12 @@ evidence below does not remove that shared blocker.
 
 | Scenario | Candidate broker service | Command evidence | Parameter evidence | Successful response evidence | Authentication | Status | Missing evidence |
 |---|---|---|---|---|---|---|---|
-| Portfolio summary | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
-| Open positions | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
-| Cash balances | `PortfolioService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
-| Current quote | `MarketService` | None | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
-| Instrument information | Not assigned | None | None | None | Blocked | `BLOCKED` | Evidence that the operation exists, then its complete contract |
-| Historical quotes | `MarketService` | `getQuotesHistory` only | `ticker`, `interval`, `from`, `to` are Partially Confirmed | None | Blocked | `PARTIAL` | Parameter contract, response sample and schema |
+| Portfolio summary | `PortfolioService` | General portfolio-information operation exists; separate command unconfirmed | None | None | Blocked | `BLOCKED` | Separate command or confirmed mapping to the general operation, parameters, response sample and schema |
+| Open positions | `PortfolioService` | General portfolio-information operation exists; separate command unconfirmed | None | None | Blocked | `BLOCKED` | Separate command or confirmed mapping to the general operation, parameters, response sample and schema |
+| Cash balances | `PortfolioService` | General portfolio-information operation exists; separate command unconfirmed | None | None | Blocked | `BLOCKED` | Separate command or confirmed mapping to the general operation, parameters, response sample and schema |
+| Current quote | `MarketService` | Operation existence Confirmed; exact command unconfirmed | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Instrument information | Not assigned | Operation existence Confirmed; exact command unconfirmed | None | None | Blocked | `BLOCKED` | Command, parameters, response sample and schema |
+| Historical quotes | `MarketService` | Historical candlestick operation exists; `getQuotesHistory` is Partially Confirmed | `ticker`, `interval`, `from`, `to` are Partially Confirmed; types, formats, timezone and limits Unknown | None | Blocked | `PARTIAL` | Parameter contract, response sample and operation-specific schema and errors |
 
 Command and parameter strings used in transport unit tests are test inputs, not
 evidence of the live REST API. Broker service stubs likewise define intended
@@ -346,16 +368,19 @@ implemented it will require its own component that encapsulates HMAC-SHA256.
 
 TBD — heartbeat interval and expected behaviour are not yet confirmed.
 
-### Available Streams (Partially Confirmed)
+### Available Streams
 
-| Stream | Event name | Notes |
+The official portal confirms the subscription categories below. Exact event
+names remain Partially Confirmed from external implementation evidence.
+
+| Stream | Observed event name | Evidence status |
 |---|---|---|
-| Stock quotes | `notifyQuotes` / `q` | Confirmed |
-| Market depth | `notifyOrderBook` / `b` | Confirmed |
-| Market status | `notifyMarkets` / `markets` | Confirmed |
-| Security sessions | `notifySessions` / `sessions` | Confirmed |
-| Portfolio updates | `notifyPortfolio` / `portfolio` | Confirmed |
-| Orders updates | `notifyOrders` / `orders` | Confirmed |
+| Stock quotes | `notifyQuotes` / `q` | Category Confirmed; event names Partially Confirmed |
+| Market depth | `notifyOrderBook` / `b` | Category Confirmed; event names Partially Confirmed |
+| Market status | `notifyMarkets` / `markets` | Category Confirmed; event names Partially Confirmed |
+| Security sessions | `notifySessions` / `sessions` | Category Confirmed; event names Partially Confirmed |
+| Portfolio updates | `notifyPortfolio` / `portfolio` | Category Confirmed; event names Partially Confirmed |
+| Orders updates | `notifyOrders` / `orders` | Category Confirmed; event names Partially Confirmed |
 
 ### Reconnection Policy
 
@@ -364,6 +389,10 @@ TBD
 ---
 
 ## 12. Portfolio Data
+
+The official portal confirms a general portfolio-information operation and
+portfolio change subscription. It does not confirm separate REST commands for
+the project-level concepts below.
 
 ### Open Positions
 
@@ -392,21 +421,36 @@ TBD
 
 ### Current Quotes
 
-- **Endpoint:** TBD
+- **Availability:** Confirmed as an operation category
+- **Endpoint/command:** TBD
+- **Method:** TBD
+- **Parameters:** TBD
+- **Response schema:** TBD
+
+### Instrument Information
+
+- **Availability:** Confirmed as an operation category
+- **Endpoint/command:** TBD
 - **Method:** TBD
 - **Parameters:** TBD
 - **Response schema:** TBD
 
 ### Historical Quotes
 
-- **Endpoint:** Confirmed command `getQuotesHistory` via POST to base URL
-- **Method:** POST
+- **Availability:** Historical candlestick operation officially Confirmed
+- **Endpoint/command:** `getQuotesHistory` Partially Confirmed
+- **Method:** Partially Confirmed
 - **Parameters:** `ticker`, `interval`, `from`, `to` (Partially Confirmed)
-- **Response schema:** TBD
+- **Parameter types/formats, timezone and limits:** Unknown
+- **Response schema:** Unknown and operation-specific
+- **Operation-specific errors:** Unknown
 
 ---
 
 ## 14. Orders and Trades
+
+The official portal confirms current and historical orders and trade-history
+capability categories. Their wire-level contracts remain Unknown.
 
 ### Current Orders
 
@@ -433,29 +477,38 @@ TBD
 
 ## 15. Reports
 
-- **Available:** TBD
-- **Endpoint:** TBD
-- **Formats:** TBD (PDF, CSV, JSON?)
-- **Parameters:** TBD
+- **Available:** Confirmed — broker and depository reports and money-movement
+  operations are documented as capability categories
+- **Endpoint/command:** Unknown
+- **Formats:** Unknown
+- **Parameters:** Unknown
+- **Response and error schemas:** Unknown and operation-specific
 
 ---
 
-## 16. Response Formats (Partially Confirmed)
+## 16. Response Formats
 
 Source: https://github.com/tradernet/tn.api README
 
-The external README describes REST responses with the following envelope:
+The external README describes the following observed fields. The official
+portal evidence reviewed does not establish them as a universal response
+envelope, and individual operations may return operation-specific schemas.
 
-| Field | Description | Required |
+| Field | Observed description | Universal requirement |
 |---|---|---|
-| `code` | Integer application status code | Yes |
-| `data` | Response payload (type varies by command) | No |
-| `errMsg` | Error message string | No |
+| `code` | Integer application status code | Not officially confirmed |
+| `data` | Response payload (type varies by command) | Not officially confirmed |
+| `errMsg` | Error message string | Not officially confirmed |
 
 Field naming convention (snake_case vs camelCase) varies by endpoint.
 Full conventions are not yet confirmed.
 
 Date/time format: not yet confirmed.
+
+Every operation requires its own confirmed successful response schema and
+error contract. The transport-level `BrokerClient` envelope validation is a
+project implementation decision and is not evidence of a universal live API
+schema.
 
 ---
 
@@ -631,7 +684,7 @@ Use this template for every research session. Append entries; do not overwrite.
 
 ---
 
-#### F-01 — Documentation portal and GitHub repository located | Partially Confirmed
+#### F-01 — Official documentation portal located | Confirmed
 
 Two documentation portals were found:
 - https://tradernet.com/tradernet-api
@@ -640,14 +693,9 @@ Two documentation portals were found:
 A GitHub repository was found at https://github.com/tradernet/tn.api, owned by
 the `tradernet` GitHub organisation.
 
-**Limitation:** The documentation portal pages render navigation only; content
-is loaded client-side via JavaScript and is not accessible to automated
-fetching. The fact that the GitHub organisation is named `tradernet` does not
-by itself prove the repository is officially maintained. No explicit link from
-the documentation portal to the GitHub repository was confirmed. Official
-ownership requires either a verified domain link or an explicit statement from
-Freedom Broker. Until then, this repository is treated as **Partially
-Confirmed** as official.
+The portal is normative evidence that the documented API capability categories
+exist. The GitHub repository remains external implementation evidence unless a
+specific claim is independently confirmed by the official portal.
 
 ---
 
@@ -672,12 +720,13 @@ source is not yet proven.
 
 ---
 
-#### F-04 — REST authentication: signature in request body, no HTTP header | Partially Confirmed
+#### F-04 — Observed REST request-body signature description | Partially Confirmed
 
 Source: https://github.com/tradernet/tn.api README (section "Формирование подписи")
 
-The REST API does not use an HTTP authentication header. Authentication uses a
-`sig` field in the JSON request body.
+The external README describes a `sig` field in the JSON request body. Official
+evidence reviewed later did not establish that authentication is universally
+body-only or that HTTP authentication headers are never used.
 
 The `sig` field is described as the MD5 hash of the concatenation of all
 `parameter_name=parameter_value` pairs, sorted alphabetically by parameter
@@ -738,12 +787,14 @@ WebSocket servers stated in the README:
 
 ---
 
-#### F-08 — REST error response envelope | Partially Confirmed
+#### F-08 — Observed REST response fields | Partially Confirmed
 
 Source: https://github.com/tradernet/tn.api README
 
-All REST responses are JSON with fields `code` (int), `data` (mixed, optional),
-and `errMsg` (string, optional).
+The external README describes JSON responses using `code`, optional `data`, and
+optional `errMsg`. The official evidence reviewed later does not establish
+these fields as a universal response envelope; response schemas must be
+confirmed per operation.
 
 Relevant application error codes:
 
@@ -768,7 +819,7 @@ alternative to key-based auth is not clarified.
 
 ---
 
-#### F-10 — Security sessions exist and have a finite lifetime | Partially Confirmed
+#### F-10 — Security sessions exist | Confirmed; fields Partially Confirmed
 
 Source: https://github.com/tradernet/tn.api README (Socket.IO section)
 
@@ -778,8 +829,10 @@ layer and lists the following session types:
 - `safety_type_id: 3` — SMS confirmation
 - `safety_type_id: 4` — Login/password (no additional confirmation)
 
-Session responses include `expire_datetime` and `expire` (remaining ms),
-confirming finite lifetime.
+The official portal confirms that security sessions exist and documents SMS,
+web-token, and electronic-signature opening flows. Numeric `safety_type_id`
+values and the `expire_datetime` and `expire` fields remain external README
+evidence rather than a confirmed normative schema.
 
 The README states that the API key pair flow (programmatic auth) bypasses the
 normal security session opening process. Which read-only REST endpoints require
@@ -787,14 +840,14 @@ an active session is not enumerated. **Partially Confirmed.**
 
 ---
 
-#### F-11 — A Python SDK package exists on PyPI; official ownership not confirmed | Partially Confirmed
+#### F-11 — Officially linked Python SDK exists on PyPI | Confirmed
 
-Source: https://pypi.org/project/tradernet-sdk/0.4.2/
+Source: https://pypi.org/project/tradernet-sdk/
 
-A package named `tradernet-sdk` exists on PyPI and accepts `public_key`,
-`secret_key`, `login`, and `passwd` as credentials, consistent with the
-key-pair model. Official ownership by Freedom Broker / Tradernet is not
-confirmed. KASE Pilot will not use this package as a dependency.
+A package named `tradernet-sdk` exists on PyPI and is linked by the official
+Tradernet API portal. The SDK supports public/private key credentials and is
+supporting evidence for client behaviour, but it is not by itself a normative
+wire-level contract. KASE Pilot will not use this package as a dependency.
 
 ---
 
@@ -802,9 +855,10 @@ confirmed. KASE Pilot will not use this package as a dependency.
 
 The research affects the implementation model as follows:
 
-1. **No HTTP header for REST.** Authentication is in the request body.
-2. **REST authentication requires signing the request body**, not injecting a
-   header.
+1. **REST header use remains Unknown.** Do not assume authentication is
+   universally body-only.
+2. **REST request-body signing is Partially Confirmed from external evidence**
+   and must not be implemented without a normative contract.
 3. **The credential is a key pair**, not a single key.
 4. **WebSocket authentication is a distinct protocol** (Socket.IO `auth` event
    with a nonce and HMAC-SHA256 signature — confirmed from `tn-crypto.js`).
