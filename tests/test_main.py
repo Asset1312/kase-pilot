@@ -27,8 +27,9 @@ def test_main_prints_current_startup_message(
 
     monkeypatch.setattr(urllib.request, "urlopen", fail_on_network)
 
-    main()
+    exit_code = main()
 
+    assert exit_code == 0
     assert capsys.readouterr().out.splitlines() == [
         "KASE Pilot v0.1.0",
         "System initialized successfully.",
