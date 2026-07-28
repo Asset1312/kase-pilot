@@ -75,7 +75,13 @@ def run(
     else:
         raise ValueError(f"Unknown command: {command}")
 
-    print(json.dumps(result))
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

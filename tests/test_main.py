@@ -85,6 +85,7 @@ def test_run_orchestrates_use_case_and_prints_only_json(
     )
     response = {
         "nt_ticker": "AAPL.US",
+        "short_name": "Apple — акция",
         "min_step": "0.01",
         "lot": "1",
         "unknown": {"nested": [True, None]},
@@ -116,11 +117,16 @@ def test_run_orchestrates_use_case_and_prints_only_json(
     )
 
     captured = capsys.readouterr()
+    expected_output = json.dumps(response, indent=2, ensure_ascii=False) + "\n"
     assert exit_code == 0
     assert load_calls == [(tmp_path, environment)]
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(" Aapl.Us ", True)]
-    assert captured.out == json.dumps(response) + "\n"
+    assert captured.out == expected_output
+    assert "\n  " in captured.out
+    assert "Apple — акция" in captured.out
+    assert "\\u" not in captured.out
+    assert json.loads(captured.out) == response
     assert captured.err == ""
     assert "System initialized successfully." not in captured.out
     assert "PrivateKey" not in captured.out
@@ -134,7 +140,9 @@ def test_run_routes_quotes_and_passes_single_ticker_sequence(
         tradernet_public_key="PublicKey",
         tradernet_private_key="PrivateKey",
     )
-    response = {"quotes": {"AAPL.US": {"last": "211.16"}}}
+    response = {
+        "quotes": {"AAPL.US": {"last": "211.16", "market": "США"}},
+    }
     use_case = FakeGetCurrentQuotes(response)
     composition_calls: list[tuple[str, str]] = []
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
@@ -150,7 +158,10 @@ def test_run_routes_quotes_and_passes_single_ticker_sequence(
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [["AAPL.US"]]
-    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
 
 
 def test_run_routes_search_without_transforming_query(
@@ -162,7 +173,11 @@ def test_run_routes_search_without_transforming_query(
         tradernet_private_key="PrivateKey",
     )
     query = "  aPpLe Inc  "
-    response = {"items": [{"ticker": "AAPL.US", "price": "211.16"}]}
+    response = {
+        "items": [
+            {"ticker": "AAPL.US", "price": "211.16", "name": "Акция Apple"},
+        ],
+    }
     use_case = FakeFindInstrument(response)
     composition_calls: list[tuple[str, str]] = []
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
@@ -179,7 +194,10 @@ def test_run_routes_search_without_transforming_query(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [query]
     assert use_case.calls[0] is query
-    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
 
 
 def test_run_routes_candles_using_broker_defaults(
@@ -193,6 +211,7 @@ def test_run_routes_candles_using_broker_defaults(
     symbol = " Aapl.Us "
     response = {
         "candles": [{"time": 1700000000, "open": "189.25"}],
+        "label": "История",
         "unknown": {"nested": True},
     }
     use_case = FakeGetHistoricalCandles(response)
@@ -211,7 +230,10 @@ def test_run_routes_candles_using_broker_defaults(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(symbol, {})]
     assert use_case.calls[0][0] is symbol
-    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
 
 
 def test_run_routes_explicit_candles_timeframe(
