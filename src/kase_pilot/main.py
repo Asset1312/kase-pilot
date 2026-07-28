@@ -19,7 +19,7 @@ _USAGE = (
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
     "  kase-pilot search QUERY\n"
-    "  kase-pilot candles SYMBOL"
+    "  kase-pilot candles SYMBOL [--timeframe SECONDS]"
 )
 
 
@@ -28,6 +28,7 @@ def run(
     ticker: str,
     *,
     sup: bool = True,
+    timeframe: int | None = None,
     project_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> int:
@@ -59,7 +60,10 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
-        result = use_case.execute(ticker)
+        if timeframe is None:
+            result = use_case.execute(ticker)
+        else:
+            result = use_case.execute(ticker, timeframe=timeframe)
     else:
         raise ValueError(f"Unknown command: {command}")
 
@@ -70,17 +74,32 @@ def run(
 def main(argv: Sequence[str] | None = None) -> int:
     """Provide the application process boundary."""
     arguments = sys.argv[1:] if argv is None else argv
-    if len(arguments) != 2 or arguments[0] not in {
+    timeframe = None
+    if len(arguments) == 2 and arguments[0] in {
         "info",
         "quotes",
         "search",
         "candles",
     }:
+        pass
+    elif (
+        len(arguments) == 4
+        and arguments[0] == "candles"
+        and arguments[2] == "--timeframe"
+    ):
+        try:
+            timeframe = int(arguments[3])
+        except ValueError:
+            print(_USAGE, file=sys.stderr)
+            return 2
+    else:
         print(_USAGE, file=sys.stderr)
         return 2
 
     try:
-        return run(arguments[0], arguments[1])
+        if timeframe is None:
+            return run(arguments[0], arguments[1])
+        return run(arguments[0], arguments[1], timeframe=timeframe)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
         return 1

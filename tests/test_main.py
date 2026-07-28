@@ -62,10 +62,10 @@ class FakeFindInstrument:
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
-        self.calls: list[object] = []
+        self.calls: list[tuple[object, dict[str, object]]] = []
 
-    def execute(self, symbol: object) -> dict[str, Any]:
-        self.calls.append(symbol)
+    def execute(self, symbol: object, **kwargs: object) -> dict[str, Any]:
+        self.calls.append((symbol, kwargs))
         return self.response
 
 
@@ -208,9 +208,31 @@ def test_run_routes_candles_using_broker_defaults(
 
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
-    assert use_case.calls == [symbol]
-    assert use_case.calls[0] is symbol
+    assert use_case.calls == [(symbol, {})]
+    assert use_case.calls[0][0] is symbol
     assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+
+
+def test_run_routes_explicit_candles_timeframe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    timeframe = int("3600")
+    use_case = FakeGetHistoricalCandles()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_historical_candles",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("candles", "AAPL.US", timeframe=timeframe, environ={})
+
+    assert use_case.calls == [("AAPL.US", {"timeframe": timeframe})]
+    assert use_case.calls[0][1]["timeframe"] is timeframe
 
 
 def test_run_rejects_unknown_command() -> None:
@@ -358,6 +380,28 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("quotes", "AAPL.US")]
 
 
+@pytest.mark.parametrize("value", [3600, 0, -60])
+def test_main_passes_candles_timeframe(
+    value: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_run(command: str, symbol: str, *, timeframe: int) -> int:
+        calls.append((command, symbol, timeframe))
+        return 0
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert (
+        main_module.main(
+            ["candles", "AAPL.US", "--timeframe", str(value)],
+        )
+        == 0
+    )
+    assert calls == [("candles", "AAPL.US", value)]
+
+
 def test_main_formats_configuration_error(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -396,6 +440,11 @@ def test_main_formats_configuration_error(
         ["info", "AAPL.US", "extra"],
         ["search", "Apple", "extra"],
         ["candles", "AAPL.US", "extra"],
+        ["candles", "AAPL.US", "--timeframe"],
+        ["candles", "AAPL.US", "--timeframe", "hour"],
+        ["candles", "AAPL.US", "--unknown", "3600"],
+        ["candles", "AAPL.US", "--timeframe", "3600", "extra"],
+        ["info", "AAPL.US", "--timeframe", "3600"],
         ["foo", "AAPL.US"],
         ["AAPL.US"],
     ],
@@ -423,7 +472,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
-        "  kase-pilot candles SYMBOL\n"
+        "  kase-pilot candles SYMBOL [--timeframe SECONDS]\n"
     )
 
 
