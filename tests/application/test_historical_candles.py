@@ -12,10 +12,14 @@ from kase_pilot.application import GetHistoricalCandles
 class FakeMarketService:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
-        self.calls: list[object] = []
+        self.calls: list[tuple[object, dict[str, object]]] = []
 
-    def get_candles(self, symbol: object) -> dict[str, Any]:
-        self.calls.append(symbol)
+    def get_candles(
+        self,
+        symbol: object,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        self.calls.append((symbol, kwargs))
         return self.response
 
 
@@ -44,12 +48,41 @@ def test_execute_uses_broker_defaults_without_transforming_symbol_or_response() 
 
     result = use_case.execute(symbol)
 
-    assert market_service.calls == [symbol]
-    assert market_service.calls[0] is symbol
+    assert market_service.calls == [(symbol, {})]
+    assert market_service.calls[0][0] is symbol
     assert result is response
     assert result["candles"] is candles
     assert result["candles"][0]["open"] == "185.10"  # type: ignore[index]
     assert result["candles"][0]["timestamp"] == "2024-01-01T09:30:00Z"  # type: ignore[index]
+
+
+def test_execute_passes_explicit_timeframe_without_start_or_end() -> None:
+    symbol = "AAPL.US"
+    timeframe = int("3600")
+    response = {"candles": []}
+    market_service = FakeMarketService(response)
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    result = use_case.execute(symbol, timeframe=timeframe)
+
+    assert market_service.calls == [(symbol, {"timeframe": timeframe})]
+    assert market_service.calls[0][0] is symbol
+    assert market_service.calls[0][1]["timeframe"] is timeframe
+    assert "start" not in market_service.calls[0][1]
+    assert "end" not in market_service.calls[0][1]
+    assert result is response
+
+
+@pytest.mark.parametrize("timeframe", [0, -1])
+def test_execute_does_not_validate_timeframe(timeframe: int) -> None:
+    market_service = FakeMarketService({"candles": []})
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    use_case.execute("AAPL.US", timeframe=timeframe)
+
+    assert market_service.calls == [
+        ("AAPL.US", {"timeframe": timeframe}),
+    ]
 
 
 def test_market_service_exception_propagates_unchanged_without_output(

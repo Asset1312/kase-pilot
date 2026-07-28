@@ -15,6 +15,12 @@ class GetHistoricalCandles:
     def execute(
         self,
         symbol: str,
+        timeframe: int | None = None,
     ) -> dict[str, JsonValue]:
         """Execute the historical-candles use case."""
+        if timeframe is not None:
+            return self._market_service.get_candles(
+                symbol,
+                timeframe=timeframe,
+            )
         return self._market_service.get_candles(symbol)
