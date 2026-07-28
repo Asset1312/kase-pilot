@@ -15,7 +15,7 @@ _UNSET = object()
 class FakeAccountService:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
-        self.calls: list[tuple[object, object, object, object]] = []
+        self.calls: list[tuple[object, object, object, object, object]] = []
 
     def get_trades_history(
         self,
@@ -24,8 +24,9 @@ class FakeAccountService:
         *,
         symbol: object = _UNSET,
         limit: object = _UNSET,
+        currency: object = _UNSET,
     ) -> dict[str, Any]:
-        self.calls.append((start, end, symbol, limit))
+        self.calls.append((start, end, symbol, limit, currency))
         return self.response
 
 
@@ -50,7 +51,7 @@ def test_execute_delegates_dates_and_preserves_response_identity() -> None:
 
     result = use_case.execute(start, end)
 
-    assert account_service.calls == [(start, end, None, None)]
+    assert account_service.calls == [(start, end, None, None, None)]
     assert account_service.calls[0][0] is start
     assert account_service.calls[0][1] is end
     assert result is response
@@ -68,7 +69,7 @@ def test_execute_delegates_symbol_without_normalizing_it() -> None:
 
     result = use_case.execute(start, end, symbol=symbol)
 
-    assert account_service.calls == [(start, end, symbol, None)]
+    assert account_service.calls == [(start, end, symbol, None, None)]
     assert account_service.calls[0][0] is start
     assert account_service.calls[0][1] is end
     assert account_service.calls[0][2] is symbol
@@ -85,7 +86,7 @@ def test_execute_delegates_limit_without_validation(limit: int) -> None:
 
     result = use_case.execute(start, end, limit=limit)
 
-    assert account_service.calls == [(start, end, None, limit)]
+    assert account_service.calls == [(start, end, None, limit, None)]
     assert account_service.calls[0][0] is start
     assert account_service.calls[0][1] is end
     assert account_service.calls[0][3] is limit
@@ -102,11 +103,52 @@ def test_execute_delegates_symbol_and_limit_together() -> None:
 
     use_case.execute(start, end, symbol=symbol, limit=limit)
 
-    assert account_service.calls == [(start, end, symbol, limit)]
+    assert account_service.calls == [(start, end, symbol, limit, None)]
     assert account_service.calls[0][0] is start
     assert account_service.calls[0][1] is end
     assert account_service.calls[0][2] is symbol
     assert account_service.calls[0][3] is limit
+
+
+@pytest.mark.parametrize(
+    ("symbol", "limit", "currency"),
+    [
+        (None, None, "  uSd  "),
+        (None, None, ""),
+        ("AAPL.US", None, "USD"),
+        (None, 250, "USD"),
+        ("AAPL.US", 250, "USD"),
+    ],
+)
+def test_execute_delegates_currency_without_normalizing_it(
+    symbol: str | None,
+    limit: int | None,
+    currency: str,
+) -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    nested = [{"currency": currency}]
+    response = {"trades": nested, "unknown_field": {"nested": True}}
+    account_service = FakeAccountService(response)
+    use_case = GetTradesHistory(account_service)  # type: ignore[arg-type]
+
+    result = use_case.execute(
+        start,
+        end,
+        symbol=symbol,
+        limit=limit,
+        currency=currency,
+    )
+
+    assert account_service.calls == [
+        (start, end, symbol, limit, currency),
+    ]
+    assert account_service.calls[0][0] is start
+    assert account_service.calls[0][1] is end
+    assert account_service.calls[0][4] is currency
+    assert result is response
+    assert result["trades"] is nested
+    assert result["unknown_field"] is response["unknown_field"]
 
 
 def test_account_service_exception_propagates_unchanged_without_output(
@@ -122,6 +164,7 @@ def test_account_service_exception_propagates_unchanged_without_output(
             *,
             symbol: object = None,
             limit: object = None,
+            currency: object = None,
         ) -> dict[str, Any]:
             raise original
 

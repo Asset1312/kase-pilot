@@ -20,6 +20,7 @@ class GetTradesHistory:
         end: date,
         symbol: str | None = None,
         limit: int | None = None,
+        currency: str | None = None,
     ) -> dict[str, JsonValue]:
         """Execute the trades-history use case."""
         return self._account_service.get_trades_history(
@@ -27,4 +28,5 @@ class GetTradesHistory:
             end,
             symbol=symbol,
             limit=limit,
+            currency=currency,
         )
