@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 from kase_pilot.broker.models import JsonValue
@@ -42,6 +43,16 @@ class MarketService:
     ) -> dict[str, JsonValue]:
         """Return broker instruments matching a search query."""
         return self._adapter.find_symbol(query)
+
+    def get_candles(
+        self,
+        symbol: str,
+        start: datetime = datetime(2010, 1, 1),  # noqa: DTZ001
+        end: datetime = datetime.now(),  # noqa: B008, DTZ005
+        timeframe: int = 86400,
+    ) -> dict[str, JsonValue]:
+        """Return historical candles for a broker instrument."""
+        return self._adapter.get_candles(symbol, start, end, timeframe)
 
     def get_current_quotes(self) -> object:
         """Return current quotes.

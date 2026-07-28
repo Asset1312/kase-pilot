@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any, cast
 
 from tradernet import Tradernet
@@ -52,5 +53,21 @@ class TradernetSdkAdapter:
         """Return matching instruments without transforming the SDK response."""
         try:
             return cast(dict[str, JsonValue], self._client.find_symbol(query))
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+    def get_candles(
+        self,
+        symbol: str,
+        start: datetime = datetime(2010, 1, 1),  # noqa: DTZ001
+        end: datetime = datetime.now(),  # noqa: B008, DTZ005
+        timeframe: int = 86400,
+    ) -> dict[str, JsonValue]:
+        """Return historical candles without transforming the SDK response."""
+        try:
+            return cast(
+                dict[str, JsonValue],
+                self._client.get_candles(symbol, start, end, timeframe),
+            )
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc

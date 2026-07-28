@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -42,6 +43,22 @@ class FakeFindSymbolDependency:
 
     def find_symbol(self, query: object) -> dict[str, Any]:
         self.calls.append(query)
+        return self.response
+
+
+class FakeCandlesDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    def get_candles(
+        self,
+        symbol: object,
+        start: object,
+        end: object,
+        timeframe: object,
+    ) -> dict[str, Any]:
+        self.calls.append((symbol, start, end, timeframe))
         return self.response
 
 
@@ -171,6 +188,69 @@ def test_find_symbol_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.find_symbol("Apple")
+
+    assert exc_info.value is original
+
+
+def test_get_candles_delegates_without_transforming_arguments_or_response() -> None:
+    symbol = "AAPL.US"
+    start = datetime(2024, 1, 1, 9, 30, tzinfo=UTC)
+    end = datetime(2024, 1, 2, 16, 0, tzinfo=UTC)
+    timeframe = 3600
+    candles = [
+        {
+            "timestamp": "2024-01-01T09:30:00Z",
+            "open": "185.10",
+            "high": "186.20",
+            "low": "184.90",
+            "close": "186.00",
+            "unknown_field": {"nested": [True, None]},
+        },
+        {
+            "timestamp": "2024-01-01T10:30:00Z",
+            "open": "186.00",
+            "high": "187.00",
+            "low": "185.80",
+            "close": "186.75",
+        },
+    ]
+    response = {"candles": candles}
+    dependency = FakeCandlesDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_candles(symbol, start, end, timeframe)
+
+    assert dependency.calls == [(symbol, start, end, timeframe)]
+    assert dependency.calls[0][1] is start
+    assert dependency.calls[0][2] is end
+    assert result is response
+    assert result["candles"] is candles
+    assert result["candles"][0]["open"] == "185.10"  # type: ignore[index]
+    assert result["candles"][0]["timestamp"] == "2024-01-01T09:30:00Z"  # type: ignore[index]
+
+
+def test_get_candles_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_candles(
+            self,
+            symbol: object,
+            start: object,
+            end: object,
+            timeframe: object,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_candles(
+            "AAPL.US",
+            datetime(2024, 1, 1, tzinfo=UTC),
+            datetime(2024, 1, 2, tzinfo=UTC),
+            3600,
+        )
 
     assert exc_info.value is original
 
