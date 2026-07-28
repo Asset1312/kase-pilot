@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 
 from kase_pilot import app
-from kase_pilot.application import FindInstrument, GetCurrentQuotes, GetSecurityInfo
+from kase_pilot.application import (
+    FindInstrument,
+    GetCurrentQuotes,
+    GetHistoricalCandles,
+    GetSecurityInfo,
+)
 from kase_pilot.broker import MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 
@@ -120,6 +125,62 @@ def test_current_quotes_composition_error_propagates_unchanged(
 
     with pytest.raises(RuntimeError) as exc_info:
         app.create_get_current_quotes("public-value", "private-value")
+
+    assert exc_info.value is original
+
+
+def test_create_get_historical_candles_builds_expected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    sdk_client = FakeSdkClient()
+
+    def create_sdk_client(public: str, private: str) -> FakeSdkClient:
+        calls.append((public, private))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_get_historical_candles(
+        "public-value",
+        "private-value",
+    )
+
+    assert isinstance(use_case, GetHistoricalCandles)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_historical_candles_composition_does_not_execute_sdk_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkGuardSdkClient:
+        def get_candles(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    monkeypatch.setattr(
+        app, "Tradernet", lambda public, private: NetworkGuardSdkClient()
+    )
+
+    app.create_get_historical_candles("public-value", "private-value")
+
+
+def test_historical_candles_composition_error_propagates_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("SDK client construction failed")
+
+    def fail_sdk_client(public: str, private: str) -> None:
+        raise original
+
+    monkeypatch.setattr(app, "Tradernet", fail_sdk_client)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        app.create_get_historical_candles("public-value", "private-value")
 
     assert exc_info.value is original
 
