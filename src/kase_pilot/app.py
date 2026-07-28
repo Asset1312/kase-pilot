@@ -6,6 +6,7 @@ from tradernet import Tradernet
 
 from kase_pilot.application import (
     FindInstrument,
+    GetAccountSummary,
     GetCurrentQuotes,
     GetHistoricalCandles,
     GetSecurityInfo,
@@ -13,6 +14,17 @@ from kase_pilot.application import (
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+
+
+def create_get_account_summary(
+    public_key: str,
+    private_key: str,
+) -> GetAccountSummary:
+    """Build the object graph for the account-summary use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    account_service = AccountService(adapter)
+    return GetAccountSummary(account_service)
 
 
 def create_find_instrument(
