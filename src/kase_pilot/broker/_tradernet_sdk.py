@@ -13,7 +13,7 @@ from kase_pilot.core.exceptions import ApiRequestError, ValidationError
 
 
 class TradernetSdkAdapter:
-    """Expose confirmed market-data operations through the SDK."""
+    """Expose confirmed broker operations through the SDK."""
 
     def __init__(self, client: Tradernet) -> None:
         self._client = client
@@ -71,3 +71,17 @@ class TradernetSdkAdapter:
             )
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
+
+    def user_info(self) -> dict[str, JsonValue]:
+        """Return user information without transforming the SDK response."""
+        try:
+            response: Any = self._client.user_info()
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping user information response"
+            )
+
+        return cast(dict[str, JsonValue], response)

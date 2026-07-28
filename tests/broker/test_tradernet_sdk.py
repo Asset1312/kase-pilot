@@ -20,6 +20,7 @@ class FakeSdkClient:
         self.quote_calls: list[object] = []
         self.find_symbol_calls: list[object] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
+        self.user_info_calls = 0
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -41,6 +42,10 @@ class FakeSdkClient:
         timeframe: object,
     ) -> Any:
         self.candle_calls.append((symbol, start, end, timeframe))
+        return self.response
+
+    def user_info(self) -> Any:
+        self.user_info_calls += 1
         return self.response
 
 
@@ -237,8 +242,52 @@ def test_get_candles_sdk_exception_becomes_api_request_error_with_cause() -> Non
     assert "SDK failure" not in str(exc_info.value)
 
 
-def test_broker_public_exports_are_unchanged() -> None:
+def test_user_info_delegates_without_transforming_response() -> None:
+    nested = {"positions": [{"quantity": "12.50", "value": None}]}
+    response = {
+        "account": nested,
+        "unknown_field": [True, {"currency": "KZT"}],
+    }
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.user_info()
+
+    assert sdk.user_info_calls == 1
+    assert result is response
+    assert result["account"] is nested
+    assert result["account"]["positions"][0]["quantity"] == "12.50"  # type: ignore[index]
+    assert result["account"]["positions"][0]["value"] is None  # type: ignore[index]
+    assert result["unknown_field"] is response["unknown_field"]
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_user_info_non_mapping_response_raises_validation_error(response: Any) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping"):
+        adapter.user_info()
+
+
+def test_user_info_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def user_info(self) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.user_info()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_broker_public_exports_include_account_service() -> None:
     assert broker.__all__ == [
+        "AccountService",
         "BrokerClient",
         "MarketService",
         "OrdersService",

@@ -4,12 +4,14 @@ import pytest
 
 from kase_pilot import broker
 from kase_pilot.broker import (
+    AccountService,
     BrokerClient,
     MarketService,
     OrdersService,
     PortfolioService,
     ReportsService,
 )
+from kase_pilot.broker.account import AccountService as ModuleAccountService
 from kase_pilot.broker.client import BrokerClient as ModuleBrokerClient
 from kase_pilot.broker.market import MarketService as ModuleMarketService
 from kase_pilot.broker.orders import OrdersService as ModuleOrdersService
@@ -25,6 +27,7 @@ def test_public_classes_import_successfully() -> None:
     assert all(
         symbol is not None
         for symbol in (
+            AccountService,
             BrokerClient,
             MarketService,
             OrdersService,
@@ -36,18 +39,20 @@ def test_public_classes_import_successfully() -> None:
 
 def test_all_contains_exactly_current_public_exports() -> None:
     assert set(broker.__all__) == {
+        "AccountService",
         "BrokerClient",
         "MarketService",
         "OrdersService",
         "PortfolioService",
         "ReportsService",
     }
-    assert len(broker.__all__) == 5
+    assert len(broker.__all__) == 6
 
 
 @pytest.mark.parametrize(
     ("exported", "module_class"),
     [
+        (AccountService, ModuleAccountService),
         (BrokerClient, ModuleBrokerClient),
         (MarketService, ModuleMarketService),
         (OrdersService, ModuleOrdersService),
