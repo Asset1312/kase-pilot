@@ -39,6 +39,16 @@ class FakeGetSecurityInfo:
         return self.response
 
 
+class FakeGetCurrentQuotes:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, symbols: object) -> dict[str, Any]:
+        self.calls.append(symbols)
+        return self.response
+
+
 def test_run_orchestrates_use_case_and_prints_only_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -78,6 +88,7 @@ def test_run_orchestrates_use_case_and_prints_only_json(
     monkeypatch.setattr(main_module, "create_get_security_info", fake_create)
 
     exit_code = main_module.run(
+        "info",
         " Aapl.Us ",
         project_root=tmp_path,
         environ=environment,
@@ -94,6 +105,33 @@ def test_run_orchestrates_use_case_and_prints_only_json(
     assert "PrivateKey" not in captured.out
 
 
+def test_run_routes_quotes_and_passes_single_ticker_sequence(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"quotes": {"AAPL.US": {"last": "211.16"}}}
+    use_case = FakeGetCurrentQuotes(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetCurrentQuotes:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_current_quotes", fake_create)
+
+    exit_code = main_module.run("quotes", "AAPL.US", environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [["AAPL.US"]]
+    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+
+
 def test_run_passes_false_sup(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = SimpleNamespace(
         tradernet_public_key="public",
@@ -107,7 +145,7 @@ def test_run_passes_false_sup(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda public, private: use_case,
     )
 
-    main_module.run("AAPL.US", sup=False, environ={})
+    main_module.run("info", "AAPL.US", sup=False, environ={})
 
     assert use_case.calls == [("AAPL.US", False)]
 
@@ -126,7 +164,7 @@ def test_run_propagates_configuration_error(
     monkeypatch.setattr(main_module, "load_settings", fail_load)
 
     with pytest.raises(ConfigurationError) as exc_info:
-        main_module.run("AAPL.US")
+        main_module.run("info", "AAPL.US")
 
     assert exc_info.value is original
     assert capsys.readouterr() == ("", "")
@@ -150,7 +188,7 @@ def test_run_propagates_composition_error_without_leaking_credentials(
     monkeypatch.setattr(main_module, "create_get_security_info", fail_create)
 
     with pytest.raises(RuntimeError) as exc_info:
-        main_module.run("AAPL.US")
+        main_module.run("info", "AAPL.US")
 
     captured = capsys.readouterr()
     assert exc_info.value is original
@@ -176,7 +214,7 @@ def test_run_propagates_use_case_error(
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        main_module.run("AAPL.US")
+        main_module.run("info", "AAPL.US")
 
     assert exc_info.value is original
     assert capsys.readouterr() == ("", "")
@@ -199,57 +237,61 @@ def test_run_propagates_json_serialization_error(
     )
 
     with pytest.raises(TypeError):
-        main_module.run("AAPL.US")
+        main_module.run("info", "AAPL.US")
 
     assert capsys.readouterr() == ("", "")
 
 
-def test_main_passes_one_ticker_to_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
+@pytest.mark.parametrize("command", ["info", "quotes"])
+def test_main_routes_command_and_ticker_to_run(
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
 
-    def fake_run(ticker: str) -> int:
-        calls.append(ticker)
+    def fake_run(selected_command: str, ticker: str) -> int:
+        calls.append((selected_command, ticker))
         return 17
 
     monkeypatch.setattr(main_module, "run", fake_run)
 
-    assert main_module.main([" Aapl.Us "]) == 17
-    assert calls == [" Aapl.Us "]
+    assert main_module.main([command, " Aapl.Us "]) == 17
+    assert calls == [(command, " Aapl.Us ")]
 
 
 def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(sys, "argv", ["kase-pilot", "AAPL.US"])
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "argv", ["kase-pilot", "quotes", "AAPL.US"])
     monkeypatch.setattr(
         main_module,
         "run",
-        lambda ticker: calls.append(ticker) or 0,
+        lambda command, ticker: calls.append((command, ticker)) or 0,
     )
 
     assert main_module.main() == 0
-    assert calls == ["AAPL.US"]
+    assert calls == [("quotes", "AAPL.US")]
 
 
 def test_main_formats_configuration_error(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     public_key = "test-public-credential"
     private_key = "test-private-credential"
     message = "Missing required environment variable: TRADERNET_PUBLIC_KEY"
 
-    def fail_run(ticker: str) -> None:
-        calls.append(ticker)
+    def fail_run(command: str, ticker: str) -> None:
+        calls.append((command, ticker))
         raise ConfigurationError(message)
 
     monkeypatch.setattr(main_module, "run", fail_run)
 
-    exit_code = main_module.main([" Aapl.Us "])
+    exit_code = main_module.main(["info", " Aapl.Us "])
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert calls == [" Aapl.Us "]
+    assert calls == [("info", " Aapl.Us ")]
     assert captured.out == ""
     assert captured.err == message + "\n"
     assert "Traceback" not in captured.err
@@ -257,17 +299,27 @@ def test_main_formats_configuration_error(
     assert private_key not in captured.err
 
 
-@pytest.mark.parametrize("arguments", [[], ["AAPL.US", "extra"]])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [],
+        ["info"],
+        ["quotes"],
+        ["info", "AAPL.US", "extra"],
+        ["foo", "AAPL.US"],
+        ["AAPL.US"],
+    ],
+)
 def test_main_rejects_invalid_argument_count(
     arguments: list[str],
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
         main_module,
         "run",
-        lambda ticker: calls.append(ticker) or 0,
+        lambda command, ticker: calls.append((command, ticker)) or 0,
     )
 
     exit_code = main_module.main(arguments)
@@ -276,7 +328,9 @@ def test_main_rejects_invalid_argument_count(
     assert exit_code == 2
     assert calls == []
     assert captured.out == ""
-    assert captured.err == "Usage: kase-pilot TICKER\n"
+    assert captured.err == (
+        "Usage:\n" "  kase-pilot info TICKER\n" "  kase-pilot quotes TICKER\n"
+    )
 
 
 def test_main_propagates_run_error_without_output(
@@ -285,13 +339,13 @@ def test_main_propagates_run_error_without_output(
 ) -> None:
     original = RuntimeError("run failed")
 
-    def fail_run(ticker: str) -> None:
+    def fail_run(command: str, ticker: str) -> None:
         raise original
 
     monkeypatch.setattr(main_module, "run", fail_run)
 
     with pytest.raises(RuntimeError) as exc_info:
-        main_module.main(["AAPL.US"])
+        main_module.main(["info", "AAPL.US"])
 
     assert exc_info.value is original
     assert capsys.readouterr() == ("", "")
