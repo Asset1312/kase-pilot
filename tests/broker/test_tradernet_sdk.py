@@ -474,6 +474,44 @@ def test_get_trades_history_passes_symbol_and_limit_together() -> None:
     assert sdk.get_trades_history_calls[0][2]["limit"] is limit
 
 
+@pytest.mark.parametrize(
+    ("symbol", "limit", "currency", "expected_kwargs"),
+    [
+        (None, None, "  uSd  ", {"currency": "  uSd  "}),
+        (None, None, "", {"currency": ""}),
+        ("AAPL.US", None, "USD", {"symbol": "AAPL.US", "currency": "USD"}),
+        (None, 250, "USD", {"limit": 250, "currency": "USD"}),
+        (
+            "AAPL.US",
+            250,
+            "USD",
+            {"symbol": "AAPL.US", "limit": 250, "currency": "USD"},
+        ),
+    ],
+)
+def test_get_trades_history_passes_currency_without_normalizing_it(
+    symbol: str | None,
+    limit: int | None,
+    currency: str,
+    expected_kwargs: dict[str, object],
+) -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_trades_history(
+        start,
+        end,
+        symbol=symbol,
+        limit=limit,
+        currency=currency,
+    )
+
+    assert sdk.get_trades_history_calls == [(start, end, expected_kwargs)]
+    assert sdk.get_trades_history_calls[0][2]["currency"] is currency
+
+
 @pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
 def test_get_trades_history_non_mapping_response_raises_validation_error(
     response: Any,

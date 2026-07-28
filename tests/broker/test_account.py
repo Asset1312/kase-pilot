@@ -18,7 +18,9 @@ class FakeAccountDependency:
         self.calls = 0
         self.account_summary_calls = 0
         self.get_placed_calls: list[bool] = []
-        self.get_trades_history_calls: list[tuple[object, object, object, object]] = []
+        self.get_trades_history_calls: list[
+            tuple[object, object, object, object, object]
+        ] = []
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
@@ -39,8 +41,9 @@ class FakeAccountDependency:
         *,
         symbol: object = None,
         limit: object = None,
+        currency: object = None,
     ) -> dict[str, Any]:
-        self.get_trades_history_calls.append((start, end, symbol, limit))
+        self.get_trades_history_calls.append((start, end, symbol, limit, currency))
         return self.response
 
 
@@ -156,6 +159,7 @@ def test_get_trades_history_delegates_dates_without_transforming_response() -> N
         end,
         symbol=None,
         limit=None,
+        currency=None,
     )
     assert result is response
     assert result["trades"] is trades
@@ -171,7 +175,7 @@ def test_get_trades_history_delegates_symbol_without_normalizing_it() -> None:
 
     service.get_trades_history(start, end, symbol=symbol)
 
-    assert dependency.get_trades_history_calls == [(start, end, symbol, None)]
+    assert dependency.get_trades_history_calls == [(start, end, symbol, None, None)]
     assert dependency.get_trades_history_calls[0][0] is start
     assert dependency.get_trades_history_calls[0][1] is end
     assert dependency.get_trades_history_calls[0][2] is symbol
@@ -186,7 +190,7 @@ def test_get_trades_history_delegates_limit_without_validation() -> None:
 
     service.get_trades_history(start, end, limit=limit)
 
-    assert dependency.get_trades_history_calls == [(start, end, None, limit)]
+    assert dependency.get_trades_history_calls == [(start, end, None, limit, None)]
 
 
 def test_get_trades_history_delegates_symbol_and_limit_together() -> None:
@@ -200,9 +204,43 @@ def test_get_trades_history_delegates_symbol_and_limit_together() -> None:
     service.get_trades_history(start, end, symbol=symbol, limit=limit)
 
     assert dependency.get_trades_history_calls == [
-        (start, end, symbol, limit),
+        (start, end, symbol, limit, None),
     ]
     assert dependency.get_trades_history_calls[0][2] is symbol
+
+
+@pytest.mark.parametrize(
+    ("symbol", "limit", "currency"),
+    [
+        (None, None, "  uSd  "),
+        ("AAPL.US", None, "USD"),
+        (None, 250, "USD"),
+        ("AAPL.US", 250, "USD"),
+    ],
+)
+def test_get_trades_history_delegates_currency_without_normalizing_it(
+    symbol: str | None,
+    limit: int | None,
+    currency: str,
+) -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    dependency = FakeAccountDependency({})
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_trades_history(
+        start,
+        end,
+        symbol=symbol,
+        limit=limit,
+        currency=currency,
+    )
+
+    assert dependency.get_trades_history_calls == [
+        (start, end, symbol, limit, currency),
+    ]
+    assert dependency.get_trades_history_calls[0][4] is currency
+    assert result is dependency.response
 
 
 def test_get_trades_history_dependency_exception_propagates_unchanged() -> None:
@@ -216,6 +254,7 @@ def test_get_trades_history_dependency_exception_propagates_unchanged() -> None:
             *,
             symbol: object = None,
             limit: object = None,
+            currency: object = None,
         ) -> dict[str, Any]:
             raise original
 

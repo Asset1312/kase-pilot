@@ -123,6 +123,7 @@ class TradernetSdkAdapter:
         end: date,
         symbol: str | None = None,
         limit: int | None = None,
+        currency: str | None = None,
     ) -> dict[str, JsonValue]:
         """Return trades history without transforming the SDK response."""
         kwargs: dict[str, object] = {}
@@ -130,6 +131,8 @@ class TradernetSdkAdapter:
             kwargs["symbol"] = symbol
         if limit is not None:
             kwargs["limit"] = limit
+        if currency is not None:
+            kwargs["currency"] = currency
 
         try:
             response: Any = self._client.get_trades_history(

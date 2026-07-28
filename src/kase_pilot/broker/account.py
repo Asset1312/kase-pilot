@@ -35,6 +35,7 @@ class AccountService:
         end: date,
         symbol: str | None = None,
         limit: int | None = None,
+        currency: str | None = None,
     ) -> dict[str, JsonValue]:
         """Return raw trades history for the authenticated account."""
         return self._client.get_trades_history(
@@ -42,4 +43,5 @@ class AccountService:
             end,
             symbol=symbol,
             limit=limit,
+            currency=currency,
         )
