@@ -8,6 +8,7 @@ from pathlib import Path
 from kase_pilot.app import (
     create_find_instrument,
     create_get_current_quotes,
+    create_get_historical_candles,
     create_get_security_info,
 )
 from kase_pilot.core.config import load_settings
@@ -17,7 +18,8 @@ _USAGE = (
     "Usage:\n"
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
-    "  kase-pilot search QUERY"
+    "  kase-pilot search QUERY\n"
+    "  kase-pilot candles SYMBOL"
 )
 
 
@@ -30,7 +32,7 @@ def run(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     """Execute a broker query and print its JSON result."""
-    if command not in {"info", "quotes", "search"}:
+    if command not in {"info", "quotes", "search", "candles"}:
         raise ValueError(f"Unknown command: {command}")
 
     settings = load_settings(project_root, environ=environ)
@@ -52,6 +54,12 @@ def run(
             settings.tradernet_private_key,
         )
         result = use_case.execute(ticker)
+    elif command == "candles":
+        use_case = create_get_historical_candles(
+            settings.tradernet_public_key,
+            settings.tradernet_private_key,
+        )
+        result = use_case.execute(ticker)
     else:
         raise ValueError(f"Unknown command: {command}")
 
@@ -62,7 +70,12 @@ def run(
 def main(argv: Sequence[str] | None = None) -> int:
     """Provide the application process boundary."""
     arguments = sys.argv[1:] if argv is None else argv
-    if len(arguments) != 2 or arguments[0] not in {"info", "quotes", "search"}:
+    if len(arguments) != 2 or arguments[0] not in {
+        "info",
+        "quotes",
+        "search",
+        "candles",
+    }:
         print(_USAGE, file=sys.stderr)
         return 2
 

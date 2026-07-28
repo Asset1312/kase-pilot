@@ -59,6 +59,16 @@ class FakeFindInstrument:
         return self.response
 
 
+class FakeGetHistoricalCandles:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, symbol: object) -> dict[str, Any]:
+        self.calls.append(symbol)
+        return self.response
+
+
 def test_run_orchestrates_use_case_and_prints_only_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -168,6 +178,38 @@ def test_run_routes_search_without_transforming_query(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [query]
     assert use_case.calls[0] is query
+    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+
+
+def test_run_routes_candles_using_broker_defaults(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    symbol = " Aapl.Us "
+    response = {
+        "candles": [{"time": 1700000000, "open": "189.25"}],
+        "unknown": {"nested": True},
+    }
+    use_case = FakeGetHistoricalCandles(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetHistoricalCandles:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_historical_candles", fake_create)
+
+    exit_code = main_module.run("candles", symbol, environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [symbol]
+    assert use_case.calls[0] is symbol
     assert capsys.readouterr() == (json.dumps(response) + "\n", "")
 
 
@@ -286,7 +328,7 @@ def test_run_propagates_json_serialization_error(
     assert capsys.readouterr() == ("", "")
 
 
-@pytest.mark.parametrize("command", ["info", "quotes", "search"])
+@pytest.mark.parametrize("command", ["info", "quotes", "search", "candles"])
 def test_main_routes_command_and_ticker_to_run(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -350,8 +392,10 @@ def test_main_formats_configuration_error(
         ["info"],
         ["quotes"],
         ["search"],
+        ["candles"],
         ["info", "AAPL.US", "extra"],
         ["search", "Apple", "extra"],
+        ["candles", "AAPL.US", "extra"],
         ["foo", "AAPL.US"],
         ["AAPL.US"],
     ],
@@ -379,6 +423,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
+        "  kase-pilot candles SYMBOL\n"
     )
 
 
