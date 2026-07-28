@@ -9,8 +9,9 @@ from kase_pilot.application import (
     GetCurrentQuotes,
     GetHistoricalCandles,
     GetSecurityInfo,
+    GetUserInfo,
 )
-from kase_pilot.broker import MarketService
+from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 
 
@@ -56,3 +57,14 @@ def create_get_security_info(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetSecurityInfo(market_service)
+
+
+def create_get_user_info(
+    public_key: str,
+    private_key: str,
+) -> GetUserInfo:
+    """Build the object graph for the user-information use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    account_service = AccountService(adapter)
+    return GetUserInfo(account_service)

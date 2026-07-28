@@ -14,8 +14,9 @@ from kase_pilot.application import (
     GetCurrentQuotes,
     GetHistoricalCandles,
     GetSecurityInfo,
+    GetUserInfo,
 )
-from kase_pilot.broker import MarketService
+from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 
 
@@ -220,6 +221,59 @@ def test_composition_does_not_call_sdk_operation(
     )
 
     app.create_get_security_info("public-value", "private-value")
+
+
+def test_create_get_user_info_builds_expected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    sdk_client = FakeSdkClient()
+
+    def create_sdk_client(public: str, private: str) -> FakeSdkClient:
+        calls.append((public, private))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_get_user_info("public-value", "private-value")
+
+    assert isinstance(use_case, GetUserInfo)
+    account_service = use_case._account_service
+    assert isinstance(account_service, AccountService)
+    adapter = account_service._client
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_user_info_composition_does_not_execute_sdk_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkGuardSdkClient:
+        def user_info(self) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    monkeypatch.setattr(
+        app, "Tradernet", lambda public, private: NetworkGuardSdkClient()
+    )
+
+    app.create_get_user_info("public-value", "private-value")
+
+
+def test_user_info_composition_error_propagates_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("SDK client construction failed")
+
+    def fail_sdk_client(public: str, private: str) -> None:
+        raise original
+
+    monkeypatch.setattr(app, "Tradernet", fail_sdk_client)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        app.create_get_user_info("public-value", "private-value")
+
+    assert exc_info.value is original
 
 
 def test_each_call_builds_a_separate_object_graph(
