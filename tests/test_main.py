@@ -49,6 +49,16 @@ class FakeGetCurrentQuotes:
         return self.response
 
 
+class FakeFindInstrument:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, query: object) -> dict[str, Any]:
+        self.calls.append(query)
+        return self.response
+
+
 def test_run_orchestrates_use_case_and_prints_only_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -130,6 +140,40 @@ def test_run_routes_quotes_and_passes_single_ticker_sequence(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [["AAPL.US"]]
     assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+
+
+def test_run_routes_search_without_transforming_query(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    query = "  aPpLe Inc  "
+    response = {"items": [{"ticker": "AAPL.US", "price": "211.16"}]}
+    use_case = FakeFindInstrument(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeFindInstrument:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_find_instrument", fake_create)
+
+    exit_code = main_module.run("search", query, environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [query]
+    assert use_case.calls[0] is query
+    assert capsys.readouterr() == (json.dumps(response) + "\n", "")
+
+
+def test_run_rejects_unknown_command() -> None:
+    with pytest.raises(ValueError, match="Unknown command"):
+        main_module.run("unknown", "AAPL.US")
 
 
 def test_run_passes_false_sup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,7 +286,7 @@ def test_run_propagates_json_serialization_error(
     assert capsys.readouterr() == ("", "")
 
 
-@pytest.mark.parametrize("command", ["info", "quotes"])
+@pytest.mark.parametrize("command", ["info", "quotes", "search"])
 def test_main_routes_command_and_ticker_to_run(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -287,11 +331,11 @@ def test_main_formats_configuration_error(
 
     monkeypatch.setattr(main_module, "run", fail_run)
 
-    exit_code = main_module.main(["info", " Aapl.Us "])
+    exit_code = main_module.main(["search", " aPpLe Inc "])
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert calls == [("info", " Aapl.Us ")]
+    assert calls == [("search", " aPpLe Inc ")]
     assert captured.out == ""
     assert captured.err == message + "\n"
     assert "Traceback" not in captured.err
@@ -305,7 +349,9 @@ def test_main_formats_configuration_error(
         [],
         ["info"],
         ["quotes"],
+        ["search"],
         ["info", "AAPL.US", "extra"],
+        ["search", "Apple", "extra"],
         ["foo", "AAPL.US"],
         ["AAPL.US"],
     ],
@@ -329,7 +375,10 @@ def test_main_rejects_invalid_argument_count(
     assert calls == []
     assert captured.out == ""
     assert captured.err == (
-        "Usage:\n" "  kase-pilot info TICKER\n" "  kase-pilot quotes TICKER\n"
+        "Usage:\n"
+        "  kase-pilot info TICKER\n"
+        "  kase-pilot quotes TICKER\n"
+        "  kase-pilot search QUERY\n"
     )
 
 
