@@ -17,7 +17,7 @@ class FakeAccountDependency:
         self.calls = 0
         self.account_summary_calls = 0
         self.get_placed_calls: list[bool] = []
-        self.get_trades_history_calls: list[tuple[object, object]] = []
+        self.get_trades_history_calls: list[tuple[object, object, object]] = []
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
@@ -35,8 +35,10 @@ class FakeAccountDependency:
         self,
         start: object,
         end: object,
+        *,
+        symbol: object = None,
     ) -> dict[str, Any]:
-        self.get_trades_history_calls.append((start, end))
+        self.get_trades_history_calls.append((start, end, symbol))
         return self.response
 
 
@@ -146,7 +148,7 @@ def test_get_trades_history_delegates_dates_without_transforming_response() -> N
 
     result = service.get_trades_history(start, end)
 
-    assert dependency.get_trades_history_calls == [(start, end)]
+    assert dependency.get_trades_history_calls == [(start, end, None)]
     assert dependency.get_trades_history_calls[0][0] is start
     assert dependency.get_trades_history_calls[0][1] is end
     assert result is response
@@ -154,11 +156,32 @@ def test_get_trades_history_delegates_dates_without_transforming_response() -> N
     assert result["unknown_field"] is response["unknown_field"]
 
 
+def test_get_trades_history_delegates_symbol_without_normalizing_it() -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    symbol = "  aApL.Us  "
+    dependency = FakeAccountDependency({})
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    service.get_trades_history(start, end, symbol=symbol)
+
+    assert dependency.get_trades_history_calls == [(start, end, symbol)]
+    assert dependency.get_trades_history_calls[0][0] is start
+    assert dependency.get_trades_history_calls[0][1] is end
+    assert dependency.get_trades_history_calls[0][2] is symbol
+
+
 def test_get_trades_history_dependency_exception_propagates_unchanged() -> None:
     original = RuntimeError("dependency failed")
 
     class FailingDependency:
-        def get_trades_history(self, start: object, end: object) -> dict[str, Any]:
+        def get_trades_history(
+            self,
+            start: object,
+            end: object,
+            *,
+            symbol: object = None,
+        ) -> dict[str, Any]:
             raise original
 
     service = AccountService(FailingDependency())  # type: ignore[arg-type]

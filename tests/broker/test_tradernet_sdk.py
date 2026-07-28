@@ -23,7 +23,9 @@ class FakeSdkClient:
         self.user_info_calls = 0
         self.account_summary_calls = 0
         self.get_placed_calls: list[bool] = []
-        self.get_trades_history_calls: list[tuple[object, object]] = []
+        self.get_trades_history_calls: list[
+            tuple[object, object, dict[str, object]]
+        ] = []
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -59,8 +61,13 @@ class FakeSdkClient:
         self.get_placed_calls.append(active)
         return self.response
 
-    def get_trades_history(self, start: object, end: object) -> Any:
-        self.get_trades_history_calls.append((start, end))
+    def get_trades_history(
+        self,
+        start: object,
+        end: object,
+        **kwargs: object,
+    ) -> Any:
+        self.get_trades_history_calls.append((start, end, kwargs))
         return self.response
 
 
@@ -410,12 +417,29 @@ def test_get_trades_history_delegates_dates_and_preserves_response_identity() ->
 
     result = adapter.get_trades_history(start, end)
 
-    assert sdk.get_trades_history_calls == [(start, end)]
+    assert sdk.get_trades_history_calls == [(start, end, {})]
     assert sdk.get_trades_history_calls[0][0] is start
     assert sdk.get_trades_history_calls[0][1] is end
     assert result is response
     assert result["trades"] is trades
     assert result["unknown_field"] is response["unknown_field"]
+
+
+def test_get_trades_history_passes_symbol_without_normalizing_it() -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    symbol = "  aApL.Us  "
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_trades_history(start, end, symbol=symbol)
+
+    assert sdk.get_trades_history_calls == [
+        (start, end, {"symbol": symbol}),
+    ]
+    assert sdk.get_trades_history_calls[0][0] is start
+    assert sdk.get_trades_history_calls[0][1] is end
+    assert sdk.get_trades_history_calls[0][2]["symbol"] is symbol
 
 
 @pytest.mark.parametrize("response", [None, [], "not a mapping", 42])

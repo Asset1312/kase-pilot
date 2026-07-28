@@ -33,6 +33,7 @@ class AccountService:
         self,
         start: date,
         end: date,
+        symbol: str | None = None,
     ) -> dict[str, JsonValue]:
         """Return raw trades history for the authenticated account."""
-        return self._client.get_trades_history(start, end)
+        return self._client.get_trades_history(start, end, symbol=symbol)
