@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from tradernet import Tradernet
 
-from kase_pilot.application import GetCurrentQuotes, GetSecurityInfo
+from kase_pilot.application import FindInstrument, GetCurrentQuotes, GetSecurityInfo
 from kase_pilot.broker import MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+
+
+def create_find_instrument(
+    public_key: str,
+    private_key: str,
+) -> FindInstrument:
+    """Build the object graph for the instrument-search use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return FindInstrument(market_service)
 
 
 def create_get_current_quotes(
