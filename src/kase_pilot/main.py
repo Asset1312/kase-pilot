@@ -3,6 +3,7 @@
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 
 from kase_pilot.app import (
@@ -19,7 +20,8 @@ _USAGE = (
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
     "  kase-pilot search QUERY\n"
-    "  kase-pilot candles SYMBOL [--timeframe SECONDS]"
+    "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
+    "[--timeframe SECONDS]"
 )
 
 
@@ -28,6 +30,8 @@ def run(
     ticker: str,
     *,
     sup: bool = True,
+    start: datetime | None = None,
+    end: datetime | None = None,
     timeframe: int | None = None,
     project_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
@@ -60,10 +64,14 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
-        if timeframe is None:
-            result = use_case.execute(ticker)
-        else:
-            result = use_case.execute(ticker, timeframe=timeframe)
+        arguments: dict[str, object] = {}
+        if start is not None:
+            arguments["start"] = start
+        if end is not None:
+            arguments["end"] = end
+        if timeframe is not None:
+            arguments["timeframe"] = timeframe
+        result = use_case.execute(ticker, **arguments)
     else:
         raise ValueError(f"Unknown command: {command}")
 
@@ -74,6 +82,8 @@ def run(
 def main(argv: Sequence[str] | None = None) -> int:
     """Provide the application process boundary."""
     arguments = sys.argv[1:] if argv is None else argv
+    start = None
+    end = None
     timeframe = None
     if len(arguments) == 2 and arguments[0] in {
         "info",
@@ -82,24 +92,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         "candles",
     }:
         pass
-    elif (
-        len(arguments) == 4
-        and arguments[0] == "candles"
-        and arguments[2] == "--timeframe"
-    ):
-        try:
-            timeframe = int(arguments[3])
-        except ValueError:
-            print(_USAGE, file=sys.stderr)
-            return 2
+    elif len(arguments) >= 4 and len(arguments) % 2 == 0 and arguments[0] == "candles":
+        seen_flags: set[str] = set()
+        for index in range(2, len(arguments), 2):
+            flag = arguments[index]
+            value = arguments[index + 1]
+            if flag in seen_flags or flag not in {"--from", "--to", "--timeframe"}:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            try:
+                if flag == "--timeframe":
+                    timeframe = int(value)
+                else:
+                    parsed_date = datetime.fromisoformat(value)
+                    if parsed_date.date().isoformat() != value:
+                        raise ValueError
+                    if flag == "--from":
+                        start = parsed_date
+                    else:
+                        end = parsed_date
+            except ValueError:
+                print(_USAGE, file=sys.stderr)
+                return 2
     else:
         print(_USAGE, file=sys.stderr)
         return 2
 
+    run_arguments: dict[str, object] = {}
+    if start is not None:
+        run_arguments["start"] = start
+    if end is not None:
+        run_arguments["end"] = end
+    if timeframe is not None:
+        run_arguments["timeframe"] = timeframe
+
     try:
-        if timeframe is None:
-            return run(arguments[0], arguments[1])
-        return run(arguments[0], arguments[1], timeframe=timeframe)
+        return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
         return 1

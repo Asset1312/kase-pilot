@@ -3,6 +3,7 @@
 import json
 import sys
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -235,6 +236,40 @@ def test_run_routes_explicit_candles_timeframe(
     assert use_case.calls[0][1]["timeframe"] is timeframe
 
 
+def test_run_routes_explicit_candles_date_range_and_timeframe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = datetime.fromisoformat("2025-01-01")
+    end = datetime.fromisoformat("2025-02-01")
+    use_case = FakeGetHistoricalCandles()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_historical_candles",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "candles",
+        "AAPL.US",
+        start=start,
+        end=end,
+        timeframe=3600,
+        environ={},
+    )
+
+    assert use_case.calls == [
+        (
+            "AAPL.US",
+            {"start": start, "end": end, "timeframe": 3600},
+        ),
+    ]
+
+
 def test_run_rejects_unknown_command() -> None:
     with pytest.raises(ValueError, match="Unknown command"):
         main_module.run("unknown", "AAPL.US")
@@ -402,6 +437,58 @@ def test_main_passes_candles_timeframe(
     assert calls == [("candles", "AAPL.US", value)]
 
 
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (
+            ["--from", "2025-01-01"],
+            {"start": datetime.fromisoformat("2025-01-01")},
+        ),
+        (
+            ["--to", "2025-02-01"],
+            {"end": datetime.fromisoformat("2025-02-01")},
+        ),
+        (
+            ["--to", "2025-02-01", "--from", "2025-01-01"],
+            {
+                "start": datetime.fromisoformat("2025-01-01"),
+                "end": datetime.fromisoformat("2025-02-01"),
+            },
+        ),
+        (
+            [
+                "--timeframe",
+                "3600",
+                "--from",
+                "2025-01-01",
+                "--to",
+                "2025-02-01",
+            ],
+            {
+                "start": datetime.fromisoformat("2025-01-01"),
+                "end": datetime.fromisoformat("2025-02-01"),
+                "timeframe": 3600,
+            },
+        ),
+    ],
+)
+def test_main_passes_candles_date_options_in_any_order(
+    options: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, symbol: str, **kwargs: object) -> int:
+        calls.append((command, symbol, kwargs))
+        return 0
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["candles", "AAPL.US", *options]) == 0
+    assert calls == [("candles", "AAPL.US", expected)]
+
+
 def test_main_formats_configuration_error(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -442,8 +529,20 @@ def test_main_formats_configuration_error(
         ["candles", "AAPL.US", "extra"],
         ["candles", "AAPL.US", "--timeframe"],
         ["candles", "AAPL.US", "--timeframe", "hour"],
+        ["candles", "AAPL.US", "--from"],
+        ["candles", "AAPL.US", "--to"],
+        ["candles", "AAPL.US", "--from", "2025/01/01"],
+        ["candles", "AAPL.US", "--to", "2025-02-30"],
         ["candles", "AAPL.US", "--unknown", "3600"],
         ["candles", "AAPL.US", "--timeframe", "3600", "extra"],
+        [
+            "candles",
+            "AAPL.US",
+            "--from",
+            "2025-01-01",
+            "--from",
+            "2025-02-01",
+        ],
         ["info", "AAPL.US", "--timeframe", "3600"],
         ["foo", "AAPL.US"],
         ["AAPL.US"],
@@ -472,7 +571,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
-        "  kase-pilot candles SYMBOL [--timeframe SECONDS]\n"
+        "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
+        "[--timeframe SECONDS]\n"
     )
 
 
