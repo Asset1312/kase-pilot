@@ -3,7 +3,7 @@
 import json
 import sys
 import tomllib
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -116,6 +116,23 @@ class FakeGetPlacedOrders:
 
     def execute(self) -> dict[str, Any]:
         self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+class FakeGetTradesHistory:
+    def __init__(
+        self,
+        response: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.response = {} if response is None else response
+        self.error = error
+        self.calls: list[tuple[object, object]] = []
+
+    def execute(self, start: object, end: object) -> dict[str, Any]:
+        self.calls.append((start, end))
         if self.error is not None:
             raise self.error
         return self.response
@@ -525,6 +542,75 @@ def test_run_propagates_orders_use_case_error_without_output(
     assert capsys.readouterr() == ("", "")
 
 
+def test_run_routes_trades_history_and_prints_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    trades = [{"id": 17, "price": "211.16", "title": "Сделка"}]
+    response = {
+        "trades": trades,
+        "unknown_field": {"nested": [True, None]},
+    }
+    use_case = FakeGetTradesHistory(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetTradesHistory:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_trades_history", fake_create)
+
+    exit_code = main_module.run("trades", start=start, end=end, environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [(start, end)]
+    assert use_case.calls[0][0] is start
+    assert use_case.calls[0][1] is end
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert "Сделка" in captured.out
+    assert "\\u" not in captured.out
+    assert json.loads(captured.out) == response
+    assert captured.err == ""
+
+
+def test_run_propagates_trades_history_error_without_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("trades request failed")
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetTradesHistory(error=original)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_trades_history",
+        lambda public, private: use_case,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_module.run(
+            "trades",
+            start=date(2025, 1, 1),
+            end=date(2025, 2, 1),
+            environ={},
+        )
+
+    assert exc_info.value is original
+    assert capsys.readouterr() == ("", "")
+
+
 def test_run_rejects_unknown_command() -> None:
     with pytest.raises(ValueError, match="Unknown command"):
         main_module.run("unknown", "AAPL.US")
@@ -715,6 +801,40 @@ def test_main_routes_orders_without_operation_arguments(
     assert calls == ["orders"]
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["trades", "--from", "2025-01-01", "--to", "2025-02-01"],
+        ["trades", "--to", "2025-02-01", "--from", "2025-01-01"],
+    ],
+)
+def test_main_routes_trades_date_range_in_any_flag_order(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, date, date]] = []
+
+    def fake_run(
+        command: str,
+        *,
+        start: date,
+        end: date,
+    ) -> int:
+        calls.append((command, start, end))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [
+        (
+            "trades",
+            date(2025, 1, 1),
+            date(2025, 2, 1),
+        )
+    ]
+
+
 @pytest.mark.parametrize("value", [3600, 0, -60])
 def test_main_passes_candles_timeframe(
     value: int,
@@ -833,6 +953,40 @@ def test_main_formats_configuration_error(
         ["orders", "extra"],
         ["orders", "--anything"],
         ["orders", "orders"],
+        ["trades"],
+        ["trades", "--from", "2025-01-01"],
+        ["trades", "--to", "2025-02-01"],
+        ["trades", "--from"],
+        ["trades", "--to"],
+        ["trades", "--from", "invalid", "--to", "2025-02-01"],
+        ["trades", "--from", "2025-01-01", "--to", "invalid"],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--from",
+            "2025-01-02",
+            "--to",
+            "2025-02-01",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--to",
+            "2025-03-01",
+        ],
+        ["trades", "--unknown", "value"],
+        [
+            "trades",
+            "extra",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+        ],
         ["info", "AAPL.US", "extra"],
         ["search", "Apple", "extra"],
         ["candles", "AAPL.US", "extra"],
@@ -883,6 +1037,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot orders\n"
+        "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )

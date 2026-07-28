@@ -3,7 +3,7 @@
 import json
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from kase_pilot.app import (
@@ -13,6 +13,7 @@ from kase_pilot.app import (
     create_get_historical_candles,
     create_get_placed_orders,
     create_get_security_info,
+    create_get_trades_history,
     create_get_user_info,
 )
 from kase_pilot.core.config import load_settings
@@ -26,6 +27,7 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot orders\n"
+    "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
 )
@@ -36,8 +38,8 @@ def run(
     ticker: str | None = None,
     *,
     sup: bool = True,
-    start: datetime | None = None,
-    end: datetime | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     timeframe: int | None = None,
     project_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
@@ -50,12 +52,15 @@ def run(
         "user",
         "summary",
         "orders",
+        "trades",
         "candles",
     }:
         raise ValueError(f"Unknown command: {command}")
+    if command == "trades" and (ticker is not None or start is None or end is None):
+        raise ValueError("The trades command requires a date range")
     if command in {"user", "summary", "orders"} and ticker is not None:
         raise ValueError(f"The {command} command does not accept an argument")
-    if command not in {"user", "summary", "orders"} and ticker is None:
+    if command not in {"user", "summary", "orders", "trades"} and ticker is None:
         raise ValueError(f"The {command} command requires an argument")
 
     settings = load_settings(project_root, environ=environ)
@@ -77,6 +82,12 @@ def run(
             settings.tradernet_private_key,
         )
         result = use_case.execute()
+    elif command == "trades":
+        use_case = create_get_trades_history(
+            settings.tradernet_public_key,
+            settings.tradernet_private_key,
+        )
+        result = use_case.execute(start, end)
     elif command == "info":
         use_case = create_get_security_info(
             settings.tradernet_public_key,
@@ -138,6 +149,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif len(arguments) == 5 and arguments[0] == "trades":
+        seen_flags: set[str] = set()
+        for index in range(1, len(arguments), 2):
+            flag = arguments[index]
+            value = arguments[index + 1]
+            if flag in seen_flags or flag not in {"--from", "--to"}:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            try:
+                parsed_date = date.fromisoformat(value)
+            except ValueError:
+                print(_USAGE, file=sys.stderr)
+                return 2
+
+            if flag == "--from":
+                start = parsed_date
+            else:
+                end = parsed_date
+
+        if seen_flags != {"--from", "--to"}:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif len(arguments) >= 4 and len(arguments) % 2 == 0 and arguments[0] == "candles":
         seen_flags: set[str] = set()
         for index in range(2, len(arguments), 2):
@@ -177,6 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if arguments[0] in {"user", "summary", "orders"}:
             return run(arguments[0])
+        if arguments[0] == "trades":
+            return run("trades", start=start, end=end)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
