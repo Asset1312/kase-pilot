@@ -104,5 +104,9 @@ def test_application_module_has_no_sdk_imports() -> None:
 def test_get_security_info_is_public_application_export() -> None:
     from kase_pilot import application
 
-    assert application.__all__ == ["GetCurrentQuotes", "GetSecurityInfo"]
+    assert application.__all__ == [
+        "FindInstrument",
+        "GetCurrentQuotes",
+        "GetSecurityInfo",
+    ]
     assert application.GetSecurityInfo is GetSecurityInfo
