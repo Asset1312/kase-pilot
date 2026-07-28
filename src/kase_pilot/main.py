@@ -26,7 +26,7 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
-    "  kase-pilot orders\n"
+    "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
@@ -38,6 +38,7 @@ def run(
     ticker: str | None = None,
     *,
     sup: bool = True,
+    active: bool = True,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
     timeframe: int | None = None,
@@ -69,7 +70,7 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
-        result = use_case.execute()
+        result = use_case.execute(active=active)
     elif command == "summary":
         use_case = create_get_account_summary(
             settings.tradernet_public_key,
@@ -138,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     start = None
     end = None
     timeframe = None
-    if arguments in (["user"], ["summary"], ["orders"]) or (
+    if arguments in (["user"], ["summary"], ["orders"], ["orders", "--all"]) or (
         len(arguments) == 2
         and arguments[0]
         in {
@@ -210,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_arguments["timeframe"] = timeframe
 
     try:
+        if arguments == ["orders", "--all"]:
+            return run("orders", active=False)
         if arguments[0] in {"user", "summary", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":

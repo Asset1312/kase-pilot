@@ -112,10 +112,10 @@ class FakeGetPlacedOrders:
     ) -> None:
         self.response = {} if response is None else response
         self.error = error
-        self.calls = 0
+        self.calls: list[bool] = []
 
-    def execute(self) -> dict[str, Any]:
-        self.calls += 1
+    def execute(self, active: bool = True) -> dict[str, Any]:
+        self.calls.append(active)
         if self.error is not None:
             raise self.error
         return self.response
@@ -420,6 +420,43 @@ def test_run_propagates_user_use_case_error_without_output(
     assert capsys.readouterr() == ("", "")
 
 
+def test_run_routes_all_orders_with_false_active_and_preserves_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "title": "Все заявки",
+        "orders": [{"id": 17, "status": "Исполнена"}],
+        "unknown_field": {"nested": [True, None]},
+    }
+    use_case = FakeGetPlacedOrders(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetPlacedOrders:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_placed_orders", fake_create)
+
+    exit_code = main_module.run("orders", active=False, environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [False]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert "Все заявки" in captured.out
+    assert "Исполнена" in captured.out
+    assert "\\u" not in captured.out
+    assert json.loads(captured.out) == response
+    assert captured.err == ""
+
+
 def test_run_routes_summary_without_arguments_and_prints_pretty_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -509,7 +546,7 @@ def test_run_routes_orders_without_arguments_and_prints_pretty_json(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
-    assert use_case.calls == 1
+    assert use_case.calls == [True]
     assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
     assert "Активные заявки" in captured.out
     assert "\\u" not in captured.out
@@ -538,7 +575,7 @@ def test_run_propagates_orders_use_case_error_without_output(
         main_module.run("orders", environ={})
 
     assert exc_info.value is original
-    assert use_case.calls == 1
+    assert use_case.calls == [True]
     assert capsys.readouterr() == ("", "")
 
 
@@ -801,6 +838,21 @@ def test_main_routes_orders_without_operation_arguments(
     assert calls == ["orders"]
 
 
+def test_main_routes_orders_all_with_false_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_run(command: str, *, active: bool) -> int:
+        calls.append((command, active))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["orders", "--all"]) == 17
+    assert calls == [("orders", False)]
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -953,6 +1005,8 @@ def test_main_formats_configuration_error(
         ["orders", "extra"],
         ["orders", "--anything"],
         ["orders", "orders"],
+        ["orders", "--all", "extra"],
+        ["orders", "--all", "--all"],
         ["trades"],
         ["trades", "--from", "2025-01-01"],
         ["trades", "--to", "2025-02-01"],
@@ -1036,7 +1090,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
-        "  kase-pilot orders\n"
+        "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
