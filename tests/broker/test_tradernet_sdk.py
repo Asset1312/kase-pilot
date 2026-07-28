@@ -22,6 +22,7 @@ class FakeSdkClient:
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
+        self.get_placed_calls: list[bool] = []
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -51,6 +52,10 @@ class FakeSdkClient:
 
     def account_summary(self) -> Any:
         self.account_summary_calls += 1
+        return self.response
+
+    def get_placed(self, *, active: bool = True) -> Any:
+        self.get_placed_calls.append(active)
         return self.response
 
 
@@ -329,6 +334,59 @@ def test_account_summary_sdk_exception_becomes_api_request_error_with_cause() ->
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.account_summary()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_placed_uses_default_active_and_preserves_response_identity() -> None:
+    orders = [{"id": 17, "price": "211.16"}]
+    response = {
+        "orders": orders,
+        "unknown_field": {"nested": [True, None]},
+    }
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_placed()
+
+    assert sdk.get_placed_calls == [True]
+    assert result is response
+    assert result["orders"] is orders
+    assert result["unknown_field"] is response["unknown_field"]
+    assert result["orders"][0]["price"] == "211.16"  # type: ignore[index]
+
+
+def test_get_placed_passes_false_active() -> None:
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_placed(active=False)
+
+    assert sdk.get_placed_calls == [False]
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_placed_non_mapping_response_raises_validation_error(
+    response: Any,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping"):
+        adapter.get_placed()
+
+
+def test_get_placed_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_placed(self, *, active: bool = True) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_placed()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

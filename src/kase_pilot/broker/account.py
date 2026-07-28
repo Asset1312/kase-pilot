@@ -19,3 +19,10 @@ class AccountService:
     def account_summary(self) -> dict[str, JsonValue]:
         """Return a raw summary for the authenticated account."""
         return self._client.account_summary()
+
+    def get_placed(
+        self,
+        active: bool = True,
+    ) -> dict[str, JsonValue]:
+        """Return raw placed orders for the authenticated account."""
+        return self._client.get_placed(active=active)

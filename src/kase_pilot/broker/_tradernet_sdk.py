@@ -99,3 +99,20 @@ class TradernetSdkAdapter:
             )
 
         return cast(dict[str, JsonValue], response)
+
+    def get_placed(
+        self,
+        active: bool = True,
+    ) -> dict[str, JsonValue]:
+        """Return placed orders without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_placed(active=active)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping placed orders response"
+            )
+
+        return cast(dict[str, JsonValue], response)

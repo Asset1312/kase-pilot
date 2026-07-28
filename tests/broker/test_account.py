@@ -15,6 +15,7 @@ class FakeAccountDependency:
         self.response = response
         self.calls = 0
         self.account_summary_calls = 0
+        self.get_placed_calls: list[bool] = []
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
@@ -22,6 +23,10 @@ class FakeAccountDependency:
 
     def account_summary(self) -> dict[str, Any]:
         self.account_summary_calls += 1
+        return self.response
+
+    def get_placed(self, *, active: bool = True) -> dict[str, Any]:
+        self.get_placed_calls.append(active)
         return self.response
 
 
@@ -79,6 +84,44 @@ def test_account_summary_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.account_summary()
+
+    assert exc_info.value is original
+
+
+def test_get_placed_delegates_default_active_without_transforming_response() -> None:
+    orders = [{"id": 17, "price": "211.16"}]
+    response = {"orders": orders, "unknown_field": {"nested": [True, None]}}
+    dependency = FakeAccountDependency(response)
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_placed()
+
+    assert dependency.get_placed_calls == [True]
+    assert result is response
+    assert result["orders"] is orders
+    assert result["unknown_field"] is response["unknown_field"]
+
+
+def test_get_placed_delegates_false_active() -> None:
+    dependency = FakeAccountDependency({})
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    service.get_placed(active=False)
+
+    assert dependency.get_placed_calls == [False]
+
+
+def test_get_placed_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_placed(self, *, active: bool = True) -> dict[str, Any]:
+            raise original
+
+    service = AccountService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_placed()
 
     assert exc_info.value is original
 
