@@ -87,6 +87,23 @@ class FakeGetUserInfo:
         return self.response
 
 
+class FakeGetAccountSummary:
+    def __init__(
+        self,
+        response: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.response = {} if response is None else response
+        self.error = error
+        self.calls = 0
+
+    def execute(self) -> dict[str, Any]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
 def test_run_orchestrates_use_case_and_prints_only_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -369,6 +386,67 @@ def test_run_propagates_user_use_case_error_without_output(
     assert capsys.readouterr() == ("", "")
 
 
+def test_run_routes_summary_without_arguments_and_prints_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "title": "Сводка счёта",
+        "positions": [{"ticker": "AAPL.US", "quantity": "12.50"}],
+        "unknown_field": {"nested": [True, None]},
+    }
+    use_case = FakeGetAccountSummary(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetAccountSummary:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_account_summary", fake_create)
+
+    exit_code = main_module.run("summary", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == 1
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert "Сводка счёта" in captured.out
+    assert "\\u" not in captured.out
+    assert json.loads(captured.out) == response
+    assert captured.err == ""
+
+
+def test_run_propagates_summary_use_case_error_without_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("summary request failed")
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetAccountSummary(error=original)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_module.run("summary", environ={})
+
+    assert exc_info.value is original
+    assert use_case.calls == 1
+    assert capsys.readouterr() == ("", "")
+
+
 def test_run_rejects_unknown_command() -> None:
     with pytest.raises(ValueError, match="Unknown command"):
         main_module.run("unknown", "AAPL.US")
@@ -529,6 +607,21 @@ def test_main_routes_user_without_operation_arguments(
     assert calls == ["user"]
 
 
+def test_main_routes_summary_without_operation_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run(command: str) -> int:
+        calls.append(command)
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["summary"]) == 17
+    assert calls == ["summary"]
+
+
 @pytest.mark.parametrize("value", [3600, 0, -60])
 def test_main_passes_candles_timeframe(
     value: int,
@@ -641,6 +734,9 @@ def test_main_formats_configuration_error(
         ["user", "extra"],
         ["user", "--anything"],
         ["user", "user"],
+        ["summary", "extra"],
+        ["summary", "--anything"],
+        ["summary", "summary"],
         ["info", "AAPL.US", "extra"],
         ["search", "Apple", "extra"],
         ["candles", "AAPL.US", "extra"],
@@ -689,6 +785,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
         "  kase-pilot user\n"
+        "  kase-pilot summary\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )
