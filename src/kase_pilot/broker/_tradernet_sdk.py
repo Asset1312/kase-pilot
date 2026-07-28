@@ -122,17 +122,21 @@ class TradernetSdkAdapter:
         start: date,
         end: date,
         symbol: str | None = None,
+        limit: int | None = None,
     ) -> dict[str, JsonValue]:
         """Return trades history without transforming the SDK response."""
+        kwargs: dict[str, object] = {}
+        if symbol is not None:
+            kwargs["symbol"] = symbol
+        if limit is not None:
+            kwargs["limit"] = limit
+
         try:
-            if symbol is None:
-                response: Any = self._client.get_trades_history(start, end)
-            else:
-                response = self._client.get_trades_history(
-                    start,
-                    end,
-                    symbol=symbol,
-                )
+            response: Any = self._client.get_trades_history(
+                start,
+                end,
+                **kwargs,
+            )
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 

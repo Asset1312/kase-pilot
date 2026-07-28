@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,7 +18,7 @@ class FakeAccountDependency:
         self.calls = 0
         self.account_summary_calls = 0
         self.get_placed_calls: list[bool] = []
-        self.get_trades_history_calls: list[tuple[object, object, object]] = []
+        self.get_trades_history_calls: list[tuple[object, object, object, object]] = []
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
@@ -37,8 +38,9 @@ class FakeAccountDependency:
         end: object,
         *,
         symbol: object = None,
+        limit: object = None,
     ) -> dict[str, Any]:
-        self.get_trades_history_calls.append((start, end, symbol))
+        self.get_trades_history_calls.append((start, end, symbol, limit))
         return self.response
 
 
@@ -143,14 +145,18 @@ def test_get_trades_history_delegates_dates_without_transforming_response() -> N
     end = date(2025, 2, 1)
     trades = [{"id": 17, "price": "211.16"}]
     response = {"trades": trades, "unknown_field": {"nested": [True, None]}}
-    dependency = FakeAccountDependency(response)
+    dependency = Mock()
+    dependency.get_trades_history.return_value = response
     service = AccountService(dependency)  # type: ignore[arg-type]
 
     result = service.get_trades_history(start, end)
 
-    assert dependency.get_trades_history_calls == [(start, end, None)]
-    assert dependency.get_trades_history_calls[0][0] is start
-    assert dependency.get_trades_history_calls[0][1] is end
+    dependency.get_trades_history.assert_called_once_with(
+        start,
+        end,
+        symbol=None,
+        limit=None,
+    )
     assert result is response
     assert result["trades"] is trades
     assert result["unknown_field"] is response["unknown_field"]
@@ -165,9 +171,37 @@ def test_get_trades_history_delegates_symbol_without_normalizing_it() -> None:
 
     service.get_trades_history(start, end, symbol=symbol)
 
-    assert dependency.get_trades_history_calls == [(start, end, symbol)]
+    assert dependency.get_trades_history_calls == [(start, end, symbol, None)]
     assert dependency.get_trades_history_calls[0][0] is start
     assert dependency.get_trades_history_calls[0][1] is end
+    assert dependency.get_trades_history_calls[0][2] is symbol
+
+
+def test_get_trades_history_delegates_limit_without_validation() -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    limit = -1
+    dependency = FakeAccountDependency({})
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    service.get_trades_history(start, end, limit=limit)
+
+    assert dependency.get_trades_history_calls == [(start, end, None, limit)]
+
+
+def test_get_trades_history_delegates_symbol_and_limit_together() -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    symbol = "  aApL.Us  "
+    limit = 250
+    dependency = FakeAccountDependency({})
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    service.get_trades_history(start, end, symbol=symbol, limit=limit)
+
+    assert dependency.get_trades_history_calls == [
+        (start, end, symbol, limit),
+    ]
     assert dependency.get_trades_history_calls[0][2] is symbol
 
 
@@ -181,6 +215,7 @@ def test_get_trades_history_dependency_exception_propagates_unchanged() -> None:
             end: object,
             *,
             symbol: object = None,
+            limit: object = None,
         ) -> dict[str, Any]:
             raise original
 
