@@ -70,6 +70,23 @@ class FakeGetHistoricalCandles:
         return self.response
 
 
+class FakeGetUserInfo:
+    def __init__(
+        self,
+        response: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.response = {} if response is None else response
+        self.error = error
+        self.calls = 0
+
+    def execute(self) -> dict[str, Any]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
 def test_run_orchestrates_use_case_and_prints_only_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -292,6 +309,66 @@ def test_run_routes_explicit_candles_date_range_and_timeframe(
     ]
 
 
+def test_run_routes_user_without_arguments_and_prints_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "name": "Иван",
+        "unknown_field": {"nested": [True, None]},
+    }
+    use_case = FakeGetUserInfo(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetUserInfo:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_user_info", fake_create)
+
+    exit_code = main_module.run("user", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == 1
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert "Иван" in captured.out
+    assert "\\u" not in captured.out
+    assert json.loads(captured.out) == response
+    assert captured.err == ""
+
+
+def test_run_propagates_user_use_case_error_without_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("user request failed")
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetUserInfo(error=original)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_user_info",
+        lambda public, private: use_case,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_module.run("user", environ={})
+
+    assert exc_info.value is original
+    assert use_case.calls == 1
+    assert capsys.readouterr() == ("", "")
+
+
 def test_run_rejects_unknown_command() -> None:
     with pytest.raises(ValueError, match="Unknown command"):
         main_module.run("unknown", "AAPL.US")
@@ -437,6 +514,21 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("quotes", "AAPL.US")]
 
 
+def test_main_routes_user_without_operation_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run(command: str) -> int:
+        calls.append(command)
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["user"]) == 17
+    assert calls == ["user"]
+
+
 @pytest.mark.parametrize("value", [3600, 0, -60])
 def test_main_passes_candles_timeframe(
     value: int,
@@ -546,6 +638,9 @@ def test_main_formats_configuration_error(
         ["quotes"],
         ["search"],
         ["candles"],
+        ["user", "extra"],
+        ["user", "--anything"],
+        ["user", "user"],
         ["info", "AAPL.US", "extra"],
         ["search", "Apple", "extra"],
         ["candles", "AAPL.US", "extra"],
@@ -593,6 +688,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
+        "  kase-pilot user\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )
