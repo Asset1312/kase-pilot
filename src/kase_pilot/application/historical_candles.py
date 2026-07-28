@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from kase_pilot.broker import MarketService
 from kase_pilot.broker.models import JsonValue
 
@@ -15,12 +17,16 @@ class GetHistoricalCandles:
     def execute(
         self,
         symbol: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
         timeframe: int | None = None,
     ) -> dict[str, JsonValue]:
         """Execute the historical-candles use case."""
+        arguments: dict[str, object] = {}
+        if start is not None:
+            arguments["start"] = start
+        if end is not None:
+            arguments["end"] = end
         if timeframe is not None:
-            return self._market_service.get_candles(
-                symbol,
-                timeframe=timeframe,
-            )
-        return self._market_service.get_candles(symbol)
+            arguments["timeframe"] = timeframe
+        return self._market_service.get_candles(symbol, **arguments)

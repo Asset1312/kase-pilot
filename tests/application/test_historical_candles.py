@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -70,6 +71,65 @@ def test_execute_passes_explicit_timeframe_without_start_or_end() -> None:
     assert market_service.calls[0][1]["timeframe"] is timeframe
     assert "start" not in market_service.calls[0][1]
     assert "end" not in market_service.calls[0][1]
+    assert result is response
+
+
+def test_execute_passes_only_explicit_start() -> None:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    market_service = FakeMarketService({"candles": []})
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    use_case.execute("AAPL.US", start=start)
+
+    assert market_service.calls == [("AAPL.US", {"start": start})]
+    assert market_service.calls[0][1]["start"] is start
+
+
+def test_execute_passes_only_explicit_end() -> None:
+    end = datetime(2024, 1, 31, tzinfo=UTC)
+    market_service = FakeMarketService({"candles": []})
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    use_case.execute("AAPL.US", end=end)
+
+    assert market_service.calls == [("AAPL.US", {"end": end})]
+    assert market_service.calls[0][1]["end"] is end
+
+
+def test_execute_passes_explicit_date_range() -> None:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 1, 31, tzinfo=UTC)
+    market_service = FakeMarketService({"candles": []})
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    use_case.execute("AAPL.US", start=start, end=end)
+
+    assert market_service.calls == [
+        ("AAPL.US", {"start": start, "end": end}),
+    ]
+
+
+def test_execute_passes_explicit_date_range_and_timeframe() -> None:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 1, 31, tzinfo=UTC)
+    timeframe = int("3600")
+    response = {"candles": []}
+    market_service = FakeMarketService(response)
+    use_case = GetHistoricalCandles(market_service)  # type: ignore[arg-type]
+
+    result = use_case.execute(
+        "AAPL.US",
+        start=start,
+        end=end,
+        timeframe=timeframe,
+    )
+
+    assert market_service.calls == [
+        (
+            "AAPL.US",
+            {"start": start, "end": end, "timeframe": timeframe},
+        ),
+    ]
     assert result is response
 
 
