@@ -11,6 +11,7 @@ from kase_pilot.application import (
     GetHistoricalCandles,
     GetPlacedOrders,
     GetSecurityInfo,
+    GetTradesHistory,
     GetUserInfo,
 )
 from kase_pilot.broker import AccountService, MarketService
@@ -81,6 +82,17 @@ def create_get_security_info(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetSecurityInfo(market_service)
+
+
+def create_get_trades_history(
+    public_key: str,
+    private_key: str,
+) -> GetTradesHistory:
+    """Build the object graph for the trades-history use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    account_service = AccountService(adapter)
+    return GetTradesHistory(account_service)
 
 
 def create_get_user_info(
