@@ -36,6 +36,13 @@ class MarketService:
         """Return current quotes for broker instruments."""
         return self._adapter.get_quotes(symbols)
 
+    def find_symbol(
+        self,
+        query: str,
+    ) -> dict[str, JsonValue]:
+        """Return broker instruments matching a search query."""
+        return self._adapter.find_symbol(query)
+
     def get_current_quotes(self) -> object:
         """Return current quotes.
 

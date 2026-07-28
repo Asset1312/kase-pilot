@@ -35,6 +35,16 @@ class FakeQuotesDependency:
         return self.response
 
 
+class FakeFindSymbolDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def find_symbol(self, query: object) -> dict[str, Any]:
+        self.calls.append(query)
+        return self.response
+
+
 def test_get_security_info_passes_ticker_and_default_sup_once() -> None:
     dependency = FakeSecurityInfoDependency({})
     service = MarketService(dependency)  # type: ignore[arg-type]
@@ -124,6 +134,43 @@ def test_get_quotes_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_quotes(["AAPL.US"])
+
+    assert exc_info.value is original
+
+
+def test_find_symbol_delegates_without_transforming_query_or_response() -> None:
+    query = "Apple Inc"
+    response = {
+        "items": [
+            {
+                "ticker": "AAPL.US",
+                "price": "211.16",
+                "unknown_field": {"nested": [True, None]},
+            }
+        ]
+    }
+    dependency = FakeFindSymbolDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.find_symbol(query)
+
+    assert dependency.calls == [query]
+    assert dependency.calls[0] is query
+    assert result is response
+    assert result["items"][0]["price"] == "211.16"  # type: ignore[index]
+
+
+def test_find_symbol_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def find_symbol(self, query: object) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.find_symbol("Apple")
 
     assert exc_info.value is original
 

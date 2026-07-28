@@ -17,6 +17,7 @@ class FakeSdkClient:
         self.response = response
         self.calls: list[tuple[str, bool]] = []
         self.quote_calls: list[object] = []
+        self.find_symbol_calls: list[object] = []
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -24,6 +25,10 @@ class FakeSdkClient:
 
     def get_quotes(self, symbols: object) -> Any:
         self.quote_calls.append(symbols)
+        return self.response
+
+    def find_symbol(self, query: object) -> Any:
+        self.find_symbol_calls.append(query)
         return self.response
 
 
@@ -113,6 +118,44 @@ def test_get_quotes_sdk_exception_becomes_api_request_error_with_cause() -> None
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_quotes(["AAPL.US"])
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_find_symbol_delegates_without_transforming_query_or_response() -> None:
+    query = "Apple Inc"
+    response = {
+        "items": [
+            {
+                "ticker": "AAPL.US",
+                "price": "211.16",
+                "unknown_field": {"nested": [True, None]},
+            }
+        ]
+    }
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.find_symbol(query)
+
+    assert sdk.find_symbol_calls == [query]
+    assert sdk.find_symbol_calls[0] is query
+    assert result is response
+    assert result["items"][0]["price"] == "211.16"  # type: ignore[index]
+
+
+def test_find_symbol_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def find_symbol(self, query: object) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.find_symbol("Apple")
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

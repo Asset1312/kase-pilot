@@ -44,3 +44,13 @@ class TradernetSdkAdapter:
             return cast(dict[str, JsonValue], self._client.get_quotes(symbols))
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
+
+    def find_symbol(
+        self,
+        query: str,
+    ) -> dict[str, JsonValue]:
+        """Return matching instruments without transforming the SDK response."""
+        try:
+            return cast(dict[str, JsonValue], self._client.find_symbol(query))
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
