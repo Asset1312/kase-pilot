@@ -21,6 +21,7 @@ class FakeSdkClient:
         self.find_symbol_calls: list[object] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
+        self.account_summary_calls = 0
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -46,6 +47,10 @@ class FakeSdkClient:
 
     def user_info(self) -> Any:
         self.user_info_calls += 1
+        return self.response
+
+    def account_summary(self) -> Any:
+        self.account_summary_calls += 1
         return self.response
 
 
@@ -280,6 +285,50 @@ def test_user_info_sdk_exception_becomes_api_request_error_with_cause() -> None:
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.user_info()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_account_summary_delegates_without_transforming_response() -> None:
+    positions = [{"ticker": "AAPL.US", "quantity": "12.50"}]
+    response = {
+        "positions": positions,
+        "unknown_field": {"nested": [True, None]},
+    }
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.account_summary()
+
+    assert sdk.account_summary_calls == 1
+    assert result is response
+    assert result["positions"] is positions
+    assert result["unknown_field"] is response["unknown_field"]
+    assert result["positions"][0]["quantity"] == "12.50"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_account_summary_non_mapping_response_raises_validation_error(
+    response: Any,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping"):
+        adapter.account_summary()
+
+
+def test_account_summary_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def account_summary(self) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.account_summary()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

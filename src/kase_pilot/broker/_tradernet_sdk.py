@@ -85,3 +85,17 @@ class TradernetSdkAdapter:
             )
 
         return cast(dict[str, JsonValue], response)
+
+    def account_summary(self) -> dict[str, JsonValue]:
+        """Return an account summary without transforming the SDK response."""
+        try:
+            response: Any = self._client.account_summary()
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping account summary response"
+            )
+
+        return cast(dict[str, JsonValue], response)

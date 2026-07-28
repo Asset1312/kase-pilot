@@ -15,3 +15,7 @@ class AccountService:
     def user_info(self) -> dict[str, JsonValue]:
         """Return raw information for the authenticated user."""
         return self._client.user_info()
+
+    def account_summary(self) -> dict[str, JsonValue]:
+        """Return a raw summary for the authenticated account."""
+        return self._client.account_summary()

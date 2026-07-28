@@ -14,9 +14,14 @@ class FakeAccountDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
         self.calls = 0
+        self.account_summary_calls = 0
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
+        return self.response
+
+    def account_summary(self) -> dict[str, Any]:
+        self.account_summary_calls += 1
         return self.response
 
 
@@ -45,6 +50,35 @@ def test_user_info_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.user_info()
+
+    assert exc_info.value is original
+
+
+def test_account_summary_delegates_once_without_transforming_response() -> None:
+    positions = [{"ticker": "AAPL.US", "quantity": "12.50"}]
+    response = {"positions": positions, "unknown_field": {"nested": [True, None]}}
+    dependency = FakeAccountDependency(response)
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    result = service.account_summary()
+
+    assert dependency.account_summary_calls == 1
+    assert result is response
+    assert result["positions"] is positions
+    assert result["unknown_field"] is response["unknown_field"]
+
+
+def test_account_summary_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def account_summary(self) -> dict[str, Any]:
+            raise original
+
+    service = AccountService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.account_summary()
 
     assert exc_info.value is original
 
