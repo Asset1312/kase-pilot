@@ -129,7 +129,7 @@ class FakeGetTradesHistory:
     ) -> None:
         self.response = {} if response is None else response
         self.error = error
-        self.calls: list[tuple[object, object, object]] = []
+        self.calls: list[tuple[object, object, object, object]] = []
 
     def execute(
         self,
@@ -137,8 +137,9 @@ class FakeGetTradesHistory:
         end: object,
         *,
         symbol: object = None,
+        limit: object = None,
     ) -> dict[str, Any]:
-        self.calls.append((start, end, symbol))
+        self.calls.append((start, end, symbol, limit))
         if self.error is not None:
             raise self.error
         return self.response
@@ -615,7 +616,7 @@ def test_run_routes_trades_history_and_prints_pretty_json(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
-    assert use_case.calls == [(start, end, None)]
+    assert use_case.calls == [(start, end, None, None)]
     assert use_case.calls[0][0] is start
     assert use_case.calls[0][1] is end
     assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
@@ -651,10 +652,74 @@ def test_run_routes_trades_history_symbol_without_normalizing_it(
         environ={},
     )
 
-    assert use_case.calls == [(start, end, symbol)]
+    assert use_case.calls == [(start, end, symbol, None)]
     assert use_case.calls[0][0] is start
     assert use_case.calls[0][1] is end
     assert use_case.calls[0][2] is symbol
+
+
+@pytest.mark.parametrize("limit", [0, -1, 10**100, True])
+def test_run_routes_trades_history_limit_without_validation(
+    limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    use_case = FakeGetTradesHistory()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_trades_history",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "trades",
+        start=start,
+        end=end,
+        limit=limit,
+        environ={},
+    )
+
+    assert use_case.calls == [(start, end, None, limit)]
+    assert use_case.calls[0][3] is limit
+
+
+def test_run_routes_trades_history_symbol_and_limit_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    symbol = "  aApL.Us  "
+    limit = 250
+    use_case = FakeGetTradesHistory()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_trades_history",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "trades",
+        start=start,
+        end=end,
+        symbol=symbol,
+        limit=limit,
+        environ={},
+    )
+
+    assert use_case.calls == [(start, end, symbol, limit)]
+    assert use_case.calls[0][2] is symbol
+    assert use_case.calls[0][3] is limit
 
 
 def test_run_propagates_trades_history_error_without_output(
@@ -892,44 +957,109 @@ def test_main_routes_orders_all_with_false_active(
 
 
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "expected_symbol", "expected_limit"),
     [
-        ["trades", "--from", "2025-01-01", "--to", "2025-02-01"],
-        ["trades", "--to", "2025-02-01", "--from", "2025-01-01"],
-        [
-            "trades",
-            "--from",
-            "2025-01-01",
-            "--to",
-            "2025-02-01",
-            "--symbol",
+        (
+            ["trades", "--from", "2025-01-01", "--to", "2025-02-01"],
+            None,
+            None,
+        ),
+        (
+            ["trades", "--to", "2025-02-01", "--from", "2025-01-01"],
+            None,
+            None,
+        ),
+        (
+            [
+                "trades",
+                "--from",
+                "2025-01-01",
+                "--symbol",
+                "AAPL.US",
+                "--to",
+                "2025-02-01",
+            ],
             "AAPL.US",
-        ],
-        [
-            "trades",
-            "--symbol",
+            None,
+        ),
+        (
+            [
+                "trades",
+                "--limit",
+                "100",
+                "--to",
+                "2025-02-01",
+                "--from",
+                "2025-01-01",
+            ],
+            None,
+            100,
+        ),
+        (
+            [
+                "trades",
+                "--symbol",
+                "AAPL.US",
+                "--limit",
+                "100",
+                "--from",
+                "2025-01-01",
+                "--to",
+                "2025-02-01",
+            ],
             "AAPL.US",
-            "--from",
-            "2025-01-01",
-            "--to",
-            "2025-02-01",
-        ],
-        [
-            "trades",
-            "--to",
-            "2025-02-01",
-            "--symbol",
+            100,
+        ),
+        (
+            [
+                "trades",
+                "--to",
+                "2025-02-01",
+                "--limit",
+                "-1",
+                "--symbol",
+                "AAPL.US",
+                "--from",
+                "2025-01-01",
+            ],
             "AAPL.US",
-            "--from",
-            "2025-01-01",
-        ],
+            -1,
+        ),
+        (
+            [
+                "trades",
+                "--from",
+                "2025-01-01",
+                "--to",
+                "2025-02-01",
+                "--limit",
+                "0",
+            ],
+            None,
+            0,
+        ),
+        (
+            [
+                "trades",
+                "--from",
+                "2025-01-01",
+                "--to",
+                "2025-02-01",
+                "--limit",
+                str(10**100),
+            ],
+            None,
+            10**100,
+        ),
     ],
 )
 def test_main_routes_trades_date_range_in_any_flag_order(
     arguments: list[str],
+    expected_symbol: str | None,
+    expected_limit: int | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, date, date, str | None]] = []
+    calls: list[tuple[str, date, date, str | None, int | None]] = []
 
     def fake_run(
         command: str,
@@ -937,8 +1067,9 @@ def test_main_routes_trades_date_range_in_any_flag_order(
         start: date,
         end: date,
         symbol: str | None,
+        limit: int | None,
     ) -> int:
-        calls.append((command, start, end, symbol))
+        calls.append((command, start, end, symbol, limit))
         return 17
 
     monkeypatch.setattr(main_module, "run", fake_run)
@@ -949,7 +1080,8 @@ def test_main_routes_trades_date_range_in_any_flag_order(
             "trades",
             date(2025, 1, 1),
             date(2025, 2, 1),
-            "AAPL.US" if "--symbol" in arguments else None,
+            expected_symbol,
+            expected_limit,
         )
     ]
 
@@ -1078,11 +1210,39 @@ def test_main_formats_configuration_error(
         ["trades", "--from", "2025-01-01"],
         ["trades", "--to", "2025-02-01"],
         ["trades", "--symbol", "AAPL.US"],
+        ["trades", "--limit", "100"],
         ["trades", "--from"],
         ["trades", "--to"],
         ["trades", "--symbol"],
+        ["trades", "--limit"],
         ["trades", "--from", "invalid", "--to", "2025-02-01"],
         ["trades", "--from", "2025-01-01", "--to", "invalid"],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--limit",
+            "invalid",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--limit",
+            "1.5",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--limit",
+        ],
         [
             "trades",
             "--from",
@@ -1120,6 +1280,17 @@ def test_main_formats_configuration_error(
             "AAPL.US",
             "--symbol",
             "MSFT.US",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--limit",
+            "10",
+            "--limit",
+            "20",
         ],
         [
             "trades",
@@ -1179,7 +1350,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot orders [--all]\n"
-        "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD [--symbol SYMBOL]\n"
+        "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
+        "[--symbol SYMBOL] [--limit NUMBER]\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )

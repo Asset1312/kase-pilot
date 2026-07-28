@@ -27,7 +27,8 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot orders [--all]\n"
-    "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD [--symbol SYMBOL]\n"
+    "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
+    "[--symbol SYMBOL] [--limit NUMBER]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
 )
@@ -40,6 +41,7 @@ def run(
     sup: bool = True,
     active: bool = True,
     symbol: str | None = None,
+    limit: int | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
     timeframe: int | None = None,
@@ -89,7 +91,12 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
-        result = use_case.execute(start, end, symbol=symbol)
+        result = use_case.execute(
+            start,
+            end,
+            symbol=symbol,
+            limit=limit,
+        )
     elif command == "info":
         use_case = create_get_security_info(
             settings.tradernet_public_key,
@@ -140,6 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     start = None
     end = None
     symbol = None
+    limit = None
     timeframe = None
     if arguments in (["user"], ["summary"], ["orders"], ["orders", "--all"]) or (
         len(arguments) == 2
@@ -152,18 +160,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
-    elif len(arguments) in {5, 7} and arguments[0] == "trades":
+    elif len(arguments) in {5, 7, 9} and arguments[0] == "trades":
         seen_flags: set[str] = set()
         for index in range(1, len(arguments), 2):
             flag = arguments[index]
             value = arguments[index + 1]
-            if flag in seen_flags or flag not in {"--from", "--to", "--symbol"}:
+            if flag in seen_flags or flag not in {
+                "--from",
+                "--to",
+                "--symbol",
+                "--limit",
+            }:
                 print(_USAGE, file=sys.stderr)
                 return 2
             seen_flags.add(flag)
 
             if flag == "--symbol":
                 symbol = value
+            elif flag == "--limit":
+                try:
+                    limit = int(value)
+                except ValueError:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
             else:
                 try:
                     parsed_date = date.fromisoformat(value)
@@ -221,7 +240,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments[0] in {"user", "summary", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":
-            return run("trades", start=start, end=end, symbol=symbol)
+            return run(
+                "trades",
+                start=start,
+                end=end,
+                symbol=symbol,
+                limit=limit,
+            )
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
