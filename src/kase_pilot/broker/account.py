@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 from kase_pilot.broker.models import JsonValue
 
@@ -26,3 +28,11 @@ class AccountService:
     ) -> dict[str, JsonValue]:
         """Return raw placed orders for the authenticated account."""
         return self._client.get_placed(active=active)
+
+    def get_trades_history(
+        self,
+        start: date,
+        end: date,
+    ) -> dict[str, JsonValue]:
+        """Return raw trades history for the authenticated account."""
+        return self._client.get_trades_history(start, end)

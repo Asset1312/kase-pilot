@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, cast
 
 from tradernet import Tradernet
@@ -113,6 +113,24 @@ class TradernetSdkAdapter:
         if not isinstance(response, Mapping):
             raise ValidationError(
                 "Tradernet SDK returned a non-mapping placed orders response"
+            )
+
+        return cast(dict[str, JsonValue], response)
+
+    def get_trades_history(
+        self,
+        start: date,
+        end: date,
+    ) -> dict[str, JsonValue]:
+        """Return trades history without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_trades_history(start, end)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping trades history response"
             )
 
         return cast(dict[str, JsonValue], response)

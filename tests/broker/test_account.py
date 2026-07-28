@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -16,6 +17,7 @@ class FakeAccountDependency:
         self.calls = 0
         self.account_summary_calls = 0
         self.get_placed_calls: list[bool] = []
+        self.get_trades_history_calls: list[tuple[object, object]] = []
 
     def user_info(self) -> dict[str, Any]:
         self.calls += 1
@@ -27,6 +29,14 @@ class FakeAccountDependency:
 
     def get_placed(self, *, active: bool = True) -> dict[str, Any]:
         self.get_placed_calls.append(active)
+        return self.response
+
+    def get_trades_history(
+        self,
+        start: object,
+        end: object,
+    ) -> dict[str, Any]:
+        self.get_trades_history_calls.append((start, end))
         return self.response
 
 
@@ -122,6 +132,39 @@ def test_get_placed_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_placed()
+
+    assert exc_info.value is original
+
+
+def test_get_trades_history_delegates_dates_without_transforming_response() -> None:
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    trades = [{"id": 17, "price": "211.16"}]
+    response = {"trades": trades, "unknown_field": {"nested": [True, None]}}
+    dependency = FakeAccountDependency(response)
+    service = AccountService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_trades_history(start, end)
+
+    assert dependency.get_trades_history_calls == [(start, end)]
+    assert dependency.get_trades_history_calls[0][0] is start
+    assert dependency.get_trades_history_calls[0][1] is end
+    assert result is response
+    assert result["trades"] is trades
+    assert result["unknown_field"] is response["unknown_field"]
+
+
+def test_get_trades_history_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_trades_history(self, start: object, end: object) -> dict[str, Any]:
+            raise original
+
+    service = AccountService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_trades_history(date(2025, 1, 1), date(2025, 2, 1))
 
     assert exc_info.value is original
 
