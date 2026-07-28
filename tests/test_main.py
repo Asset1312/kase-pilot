@@ -129,10 +129,16 @@ class FakeGetTradesHistory:
     ) -> None:
         self.response = {} if response is None else response
         self.error = error
-        self.calls: list[tuple[object, object]] = []
+        self.calls: list[tuple[object, object, object]] = []
 
-    def execute(self, start: object, end: object) -> dict[str, Any]:
-        self.calls.append((start, end))
+    def execute(
+        self,
+        start: object,
+        end: object,
+        *,
+        symbol: object = None,
+    ) -> dict[str, Any]:
+        self.calls.append((start, end, symbol))
         if self.error is not None:
             raise self.error
         return self.response
@@ -609,7 +615,7 @@ def test_run_routes_trades_history_and_prints_pretty_json(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
-    assert use_case.calls == [(start, end)]
+    assert use_case.calls == [(start, end, None)]
     assert use_case.calls[0][0] is start
     assert use_case.calls[0][1] is end
     assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
@@ -617,6 +623,38 @@ def test_run_routes_trades_history_and_prints_pretty_json(
     assert "\\u" not in captured.out
     assert json.loads(captured.out) == response
     assert captured.err == ""
+
+
+def test_run_routes_trades_history_symbol_without_normalizing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = date(2025, 1, 1)
+    end = date(2025, 2, 1)
+    symbol = "  aApL.Us  "
+    use_case = FakeGetTradesHistory()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_trades_history",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "trades",
+        start=start,
+        end=end,
+        symbol=symbol,
+        environ={},
+    )
+
+    assert use_case.calls == [(start, end, symbol)]
+    assert use_case.calls[0][0] is start
+    assert use_case.calls[0][1] is end
+    assert use_case.calls[0][2] is symbol
 
 
 def test_run_propagates_trades_history_error_without_output(
@@ -858,21 +896,49 @@ def test_main_routes_orders_all_with_false_active(
     [
         ["trades", "--from", "2025-01-01", "--to", "2025-02-01"],
         ["trades", "--to", "2025-02-01", "--from", "2025-01-01"],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--symbol",
+            "AAPL.US",
+        ],
+        [
+            "trades",
+            "--symbol",
+            "AAPL.US",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+        ],
+        [
+            "trades",
+            "--to",
+            "2025-02-01",
+            "--symbol",
+            "AAPL.US",
+            "--from",
+            "2025-01-01",
+        ],
     ],
 )
 def test_main_routes_trades_date_range_in_any_flag_order(
     arguments: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, date, date]] = []
+    calls: list[tuple[str, date, date, str | None]] = []
 
     def fake_run(
         command: str,
         *,
         start: date,
         end: date,
+        symbol: str | None,
     ) -> int:
-        calls.append((command, start, end))
+        calls.append((command, start, end, symbol))
         return 17
 
     monkeypatch.setattr(main_module, "run", fake_run)
@@ -883,6 +949,7 @@ def test_main_routes_trades_date_range_in_any_flag_order(
             "trades",
             date(2025, 1, 1),
             date(2025, 2, 1),
+            "AAPL.US" if "--symbol" in arguments else None,
         )
     ]
 
@@ -1010,8 +1077,10 @@ def test_main_formats_configuration_error(
         ["trades"],
         ["trades", "--from", "2025-01-01"],
         ["trades", "--to", "2025-02-01"],
+        ["trades", "--symbol", "AAPL.US"],
         ["trades", "--from"],
         ["trades", "--to"],
+        ["trades", "--symbol"],
         ["trades", "--from", "invalid", "--to", "2025-02-01"],
         ["trades", "--from", "2025-01-01", "--to", "invalid"],
         [
@@ -1033,6 +1102,25 @@ def test_main_formats_configuration_error(
             "2025-03-01",
         ],
         ["trades", "--unknown", "value"],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--symbol",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--symbol",
+            "AAPL.US",
+            "--symbol",
+            "MSFT.US",
+        ],
         [
             "trades",
             "extra",
@@ -1091,7 +1179,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot orders [--all]\n"
-        "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
+        "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD [--symbol SYMBOL]\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )

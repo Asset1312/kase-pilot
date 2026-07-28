@@ -27,7 +27,7 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot orders [--all]\n"
-    "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD\n"
+    "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD [--symbol SYMBOL]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
 )
@@ -39,6 +39,7 @@ def run(
     *,
     sup: bool = True,
     active: bool = True,
+    symbol: str | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
     timeframe: int | None = None,
@@ -88,7 +89,7 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
-        result = use_case.execute(start, end)
+        result = use_case.execute(start, end, symbol=symbol)
     elif command == "info":
         use_case = create_get_security_info(
             settings.tradernet_public_key,
@@ -138,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     start = None
     end = None
+    symbol = None
     timeframe = None
     if arguments in (["user"], ["summary"], ["orders"], ["orders", "--all"]) or (
         len(arguments) == 2
@@ -150,28 +152,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
-    elif len(arguments) == 5 and arguments[0] == "trades":
+    elif len(arguments) in {5, 7} and arguments[0] == "trades":
         seen_flags: set[str] = set()
         for index in range(1, len(arguments), 2):
             flag = arguments[index]
             value = arguments[index + 1]
-            if flag in seen_flags or flag not in {"--from", "--to"}:
+            if flag in seen_flags or flag not in {"--from", "--to", "--symbol"}:
                 print(_USAGE, file=sys.stderr)
                 return 2
             seen_flags.add(flag)
 
-            try:
-                parsed_date = date.fromisoformat(value)
-            except ValueError:
-                print(_USAGE, file=sys.stderr)
-                return 2
-
-            if flag == "--from":
-                start = parsed_date
+            if flag == "--symbol":
+                symbol = value
             else:
-                end = parsed_date
+                try:
+                    parsed_date = date.fromisoformat(value)
+                except ValueError:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
 
-        if seen_flags != {"--from", "--to"}:
+                if flag == "--from":
+                    start = parsed_date
+                else:
+                    end = parsed_date
+
+        if not {"--from", "--to"}.issubset(seen_flags):
             print(_USAGE, file=sys.stderr)
             return 2
     elif len(arguments) >= 4 and len(arguments) % 2 == 0 and arguments[0] == "candles":
@@ -216,7 +221,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments[0] in {"user", "summary", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":
-            return run("trades", start=start, end=end)
+            return run("trades", start=start, end=end, symbol=symbol)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
