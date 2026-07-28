@@ -111,6 +111,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "GetHistoricalCandles",
         "GetPlacedOrders",
         "GetSecurityInfo",
+        "GetTradesHistory",
         "GetUserInfo",
     ]
     assert application.GetSecurityInfo is GetSecurityInfo
