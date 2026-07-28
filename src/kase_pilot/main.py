@@ -11,6 +11,7 @@ from kase_pilot.app import (
     create_get_account_summary,
     create_get_current_quotes,
     create_get_historical_candles,
+    create_get_placed_orders,
     create_get_security_info,
     create_get_user_info,
 )
@@ -24,6 +25,7 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
+    "  kase-pilot orders\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
 )
@@ -41,15 +43,29 @@ def run(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     """Execute a broker query and print its JSON result."""
-    if command not in {"info", "quotes", "search", "user", "summary", "candles"}:
+    if command not in {
+        "info",
+        "quotes",
+        "search",
+        "user",
+        "summary",
+        "orders",
+        "candles",
+    }:
         raise ValueError(f"Unknown command: {command}")
-    if command in {"user", "summary"} and ticker is not None:
+    if command in {"user", "summary", "orders"} and ticker is not None:
         raise ValueError(f"The {command} command does not accept an argument")
-    if command not in {"user", "summary"} and ticker is None:
+    if command not in {"user", "summary", "orders"} and ticker is None:
         raise ValueError(f"The {command} command requires an argument")
 
     settings = load_settings(project_root, environ=environ)
-    if command == "summary":
+    if command == "orders":
+        use_case = create_get_placed_orders(
+            settings.tradernet_public_key,
+            settings.tradernet_private_key,
+        )
+        result = use_case.execute()
+    elif command == "summary":
         use_case = create_get_account_summary(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
@@ -111,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     start = None
     end = None
     timeframe = None
-    if arguments in (["user"], ["summary"]) or (
+    if arguments in (["user"], ["summary"], ["orders"]) or (
         len(arguments) == 2
         and arguments[0]
         in {
@@ -159,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_arguments["timeframe"] = timeframe
 
     try:
-        if arguments[0] in {"user", "summary"}:
+        if arguments[0] in {"user", "summary", "orders"}:
             return run(arguments[0])
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
