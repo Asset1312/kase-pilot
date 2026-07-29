@@ -29,6 +29,7 @@ class FakeSdkClient:
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
         self.get_historical_calls: list[tuple[object, object]] = []
         self.corporate_actions_calls: list[object] = []
+        self.get_price_alerts_calls: list[object] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -86,6 +87,10 @@ class FakeSdkClient:
 
     def corporate_actions(self, reception: object = 35) -> Any:
         self.corporate_actions_calls.append(reception)
+        return self.response
+
+    def get_price_alerts(self, symbol: object = None) -> Any:
+        self.get_price_alerts_calls.append(symbol)
         return self.response
 
     def get_candles(
@@ -589,6 +594,63 @@ def test_corporate_actions_sdk_exception_becomes_api_request_error_with_cause() 
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.corporate_actions()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_price_alerts_forwards_default_and_preserves_mapping_identity() -> None:
+    response = {"result": {"alerts": [{"unknown": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_price_alerts()
+
+    assert sdk.get_price_alerts_calls == [None]
+    assert result is response
+
+
+def test_get_price_alerts_forwards_explicit_symbol_unchanged() -> None:
+    symbol = " Aapl.US "
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_price_alerts(symbol)
+
+    assert sdk.get_price_alerts_calls == [symbol]
+    assert sdk.get_price_alerts_calls[0] is symbol
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        (),
+        "not a mapping",
+        42,
+    ],
+)
+def test_get_price_alerts_non_mapping_response_raises_validation_error(
+    response: object,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping price alerts response"):
+        adapter.get_price_alerts()
+
+
+def test_get_price_alerts_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_price_alerts(self, symbol: str | None = None) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_price_alerts()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

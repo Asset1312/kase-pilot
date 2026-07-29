@@ -151,6 +151,18 @@ class TradernetSdkAdapter:
             _require_list(response, "corporate actions"),
         )
 
+    def get_price_alerts(
+        self,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        """Return price alerts without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_price_alerts(symbol)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "price alerts"))
+
     def get_candles(
         self,
         symbol: str,
