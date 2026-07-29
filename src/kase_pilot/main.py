@@ -21,6 +21,7 @@ from kase_pilot.app import (
     create_get_most_traded,
     create_get_news,
     create_get_placed_orders,
+    create_get_price_alerts,
     create_get_security_info,
     create_get_trades_history,
     create_get_user_info,
@@ -40,6 +41,7 @@ _USAGE = (
     "[--losers] [--json]\n"
     "  kase-pilot orders-history [--start DATETIME] [--end DATETIME] [--json]\n"
     "  kase-pilot corporate-actions [--reception DAYS] [--json]\n"
+    "  kase-pilot price-alerts [--symbol SYMBOL] [--json]\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -509,6 +511,21 @@ def _run_corporate_actions(
     return 0
 
 
+def _run_price_alerts(
+    public_key: str,
+    private_key: str,
+    *,
+    symbol: str | None,
+) -> int:
+    use_case = create_get_price_alerts(public_key, private_key)
+    if symbol is None:
+        result = use_case.execute()
+    else:
+        result = use_case.execute(symbol=symbol)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_user(public_key: str, private_key: str) -> int:
     use_case = create_get_user_info(public_key, private_key)
     result = use_case.execute()
@@ -650,6 +667,7 @@ def run(
         "top",
         "orders-history",
         "corporate-actions",
+        "price-alerts",
         "user",
         "summary",
         "portfolio",
@@ -678,10 +696,11 @@ def run(
         "top",
         "orders-history",
         "corporate-actions",
+        "price-alerts",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
-            "market-status, top, orders-history, and corporate-actions"
+            "market-status, top, orders-history, corporate-actions, and price-alerts"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -699,6 +718,7 @@ def run(
             "top",
             "orders-history",
             "corporate-actions",
+            "price-alerts",
         }
         and ticker is not None
     ):
@@ -716,6 +736,7 @@ def run(
             "top",
             "orders-history",
             "corporate-actions",
+            "price-alerts",
         }
         and ticker is None
     ):
@@ -767,6 +788,12 @@ def run(
             public_key,
             private_key,
             reception=reception,
+        )
+    if command == "price-alerts":
+        return _run_price_alerts(
+            public_key,
+            private_key,
+            symbol=symbol,
         )
     if command == "user":
         return _run_user(public_key, private_key)
@@ -834,6 +861,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["top"],
         ["orders-history"],
         ["corporate-actions"],
+        ["price-alerts"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1027,6 +1055,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_USAGE, file=sys.stderr)
                 return 2
             index += 2
+    elif arguments and arguments[0] == "price-alerts":
+        price_alert_flags = {"--symbol", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in price_alert_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            symbol = arguments[index + 1]
+            index += 2
     elif arguments and arguments[0] == "trades":
         seen_flags: set[str] = set()
         trades_flags = {"--from", "--to", "--symbol", "--limit", "--json"}
@@ -1132,6 +1180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "top",
             "orders-history",
             "corporate-actions",
+            "price-alerts",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1187,6 +1236,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 corporate_actions_arguments["json_output"] = True
             return run("corporate-actions", **corporate_actions_arguments)
+        if arguments[0] == "price-alerts":
+            price_alert_arguments: dict[str, object] = {}
+            if symbol is not None:
+                price_alert_arguments["symbol"] = symbol
+            if json_output:
+                price_alert_arguments["json_output"] = True
+            return run("price-alerts", **price_alert_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)

@@ -130,6 +130,16 @@ class FakeGetCorporateActions:
         return self.response
 
 
+class FakeGetPriceAlerts:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[dict[str, object]] = []
+
+    def execute(self, **arguments: object) -> dict[str, Any]:
+        self.calls.append(arguments)
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -817,6 +827,85 @@ def test_run_corporate_actions_explicit_json_matches_plain_output(
     json_output = capsys.readouterr()
 
     assert use_case.calls == [35, 35]
+    assert plain_output == json_output
+
+
+def test_run_price_alerts_uses_application_default_and_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"result": {"alerts": [{"name": "Цена", "nested": [1, None]}]}}
+    use_case = FakeGetPriceAlerts(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetPriceAlerts:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_price_alerts", fake_create)
+
+    assert main_module.run("price-alerts", environ={}) == 0
+
+    captured = capsys.readouterr()
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [{}]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Цена" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_price_alerts_forwards_explicit_symbol_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    symbol = " Aapl.US "
+    use_case = FakeGetPriceAlerts()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_price_alerts",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("price-alerts", symbol=symbol, environ={})
+
+    assert use_case.calls == [{"symbol": symbol}]
+    assert use_case.calls[0]["symbol"] is symbol
+
+
+def test_run_price_alerts_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetPriceAlerts(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_price_alerts",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("price-alerts", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("price-alerts", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [{}, {}]
     assert plain_output == json_output
 
 
@@ -2880,6 +2969,41 @@ def test_main_routes_corporate_actions_options_in_any_order(
     assert calls == [("corporate-actions", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["price-alerts"], {}),
+        (
+            ["price-alerts", "--symbol", " Aapl.US "],
+            {"symbol": " Aapl.US "},
+        ),
+        (
+            ["price-alerts", "--json", "--symbol", "AAPL.US"],
+            {"symbol": "AAPL.US", "json_output": True},
+        ),
+        (
+            ["price-alerts", "--symbol", "AAPL.US", "--json"],
+            {"symbol": "AAPL.US", "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_price_alerts_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("price-alerts", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3700,6 +3824,53 @@ def test_main_rejects_invalid_corporate_actions_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["price-alerts", "extra"],
+        ["price-alerts", "--unknown"],
+        ["price-alerts", "--symbol"],
+        ["price-alerts", "--symbol", "--json"],
+        ["price-alerts", "--json", "--json"],
+        [
+            "price-alerts",
+            "--symbol",
+            "AAPL.US",
+            "--symbol",
+            "MSFT.US",
+        ],
+        ["price-alerts", "--symbol", "AAPL.US", "extra"],
+    ],
+)
+def test_main_rejects_invalid_price_alerts_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetPriceAlerts()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_price_alerts",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -3888,6 +4059,7 @@ def test_main_rejects_invalid_argument_count(
         "[--losers] [--json]\n"
         "  kase-pilot orders-history [--start DATETIME] [--end DATETIME] [--json]\n"
         "  kase-pilot corporate-actions [--reception DAYS] [--json]\n"
+        "  kase-pilot price-alerts [--symbol SYMBOL] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "
