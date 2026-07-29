@@ -746,12 +746,16 @@ def test_format_watch_renders_compact_positions_and_non_zero_cash() -> None:
     assert main_module._format_watch(summary) == (
         "Portfolio\n"
         "\n"
+        "Ticker                     Last          P/L\n"
+        "--------------------------------------------\n"
         "HSBK.KZ                  380.50      +389.36\n"
         "ASBN.KZ                    9.97     -4325.69\n"
         "MISS.KZ                       -            -\n"
         "\n"
         "Cash\n"
         "\n"
+        "Currency                Balance\n"
+        "-------------------------------\n"
         "KZT                        2.98\n"
         "EUR                       -1.50"
     )
@@ -762,6 +766,45 @@ def test_format_watch_reports_empty_positions_and_cash() -> None:
 
     assert main_module._format_watch(summary) == (
         "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
+def test_format_watch_omits_position_header_when_positions_are_empty() -> None:
+    summary = {"result": {"ps": {"pos": [], "acc": [{"curr": "KZT", "s": 2.98}]}}}
+
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n"
+        "\n"
+        "No positions.\n"
+        "\n"
+        "Cash\n"
+        "\n"
+        "Currency                Balance\n"
+        "-------------------------------\n"
+        "KZT                        2.98"
+    )
+
+
+def test_format_watch_omits_cash_header_when_cash_is_empty() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [{"i": "HSBK.KZ", "mkt_price": 380.5, "profit_close": 389.36}],
+                "acc": [],
+            }
+        }
+    }
+
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n"
+        "\n"
+        "Ticker                     Last          P/L\n"
+        "--------------------------------------------\n"
+        "HSBK.KZ                  380.50      +389.36\n"
+        "\n"
+        "Cash\n"
+        "\n"
+        "No cash balances."
     )
 
 
@@ -946,13 +989,15 @@ def test_run_watch_follow_refreshes_until_keyboard_interrupt(
         "sleep-5",
         "execute-3",
     ]
-    assert capsys.readouterr() == (
+    captured = capsys.readouterr()
+    assert captured == (
         actual_format_watch(responses[0])
         + "\n"
         + actual_format_watch(responses[1])
         + "\n",
         "",
     )
+    assert captured.out.count("Ticker                     Last          P/L") == 2
 
 
 def test_run_watch_follow_propagates_application_error(

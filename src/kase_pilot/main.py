@@ -184,6 +184,8 @@ def _format_watch(summary: object) -> str:
 
     lines = ["Portfolio", ""]
     if positions:
+        header = f"{'Ticker':<18} {'Last':>12} {'P/L':>12}"
+        lines.extend((header, "-" * len(header)))
         for position in positions:
             lines.append(
                 f"{_format_text(position.get('i')):<18} "
@@ -200,6 +202,8 @@ def _format_watch(summary: object) -> str:
         if (number := _valid_number(balance.get("s"))) is not None and number != 0
     ]
     if non_zero_cash:
+        header = f"{'Currency':<18} {'Balance':>12}"
+        lines.extend((header, "-" * len(header)))
         for balance, number in non_zero_cash:
             lines.append(
                 f"{_format_text(balance.get('curr')):<18} "
