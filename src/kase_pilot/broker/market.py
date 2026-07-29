@@ -91,6 +91,13 @@ class MarketService:
         """Return raw historical orders."""
         return self._adapter.get_historical(start, end)
 
+    def corporate_actions(
+        self,
+        reception: int = 35,
+    ) -> list[dict[str, Any]]:
+        """Return raw planned corporate actions."""
+        return self._adapter.corporate_actions(reception)
+
     def get_candles(
         self,
         symbol: str,

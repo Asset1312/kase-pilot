@@ -107,6 +107,7 @@ def test_get_security_info_is_public_application_export() -> None:
     assert application.__all__ == [
         "FindInstrument",
         "GetAccountSummary",
+        "GetCorporateActions",
         "GetCurrentQuotes",
         "GetHistorical",
         "GetHistoricalCandles",

@@ -106,6 +106,16 @@ class FakeHistoricalDependency:
         return self.response
 
 
+class FakeCorporateActionsDependency:
+    def __init__(self, response: list[dict[str, Any]]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def corporate_actions(self, reception: object = 35) -> list[dict[str, Any]]:
+        self.calls.append(reception)
+        return self.response
+
+
 class FakeCandlesDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -448,6 +458,46 @@ def test_get_historical_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_historical()
+
+    assert exc_info.value is original
+
+
+def test_corporate_actions_delegates_default_and_preserves_list_identity() -> None:
+    response = [{"id": "action-1", "unknown": {"nested": [True, None]}}]
+    dependency = FakeCorporateActionsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.corporate_actions()
+
+    assert dependency.calls == [35]
+    assert result is response
+
+
+def test_corporate_actions_delegates_explicit_reception_unchanged() -> None:
+    reception = 17
+    dependency = FakeCorporateActionsDependency([])
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    service.corporate_actions(reception)
+
+    assert dependency.calls == [reception]
+    assert dependency.calls[0] is reception
+
+
+def test_corporate_actions_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def corporate_actions(
+            self,
+            reception: int = 35,
+        ) -> list[dict[str, Any]]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.corporate_actions()
 
     assert exc_info.value is original
 
