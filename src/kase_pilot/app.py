@@ -7,6 +7,7 @@ from tradernet import Tradernet
 from kase_pilot.application import (
     FindInstrument,
     GetAccountSummary,
+    GetBrokerReport,
     GetCorporateActions,
     GetCurrentQuotes,
     GetHistorical,
@@ -34,6 +35,17 @@ def create_get_account_summary(
     adapter = TradernetSdkAdapter(sdk_client)
     account_service = AccountService(adapter)
     return GetAccountSummary(account_service)
+
+
+def create_get_broker_report(
+    public_key: str,
+    private_key: str,
+) -> GetBrokerReport:
+    """Build the object graph for the broker-report use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetBrokerReport(market_service)
 
 
 def create_get_corporate_actions(

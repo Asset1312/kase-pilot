@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
@@ -124,6 +124,19 @@ class MarketService:
             limit,
             offset,
             status,
+        )
+
+    def get_broker_report(
+        self,
+        start: str | date = date(1970, 1, 1),
+        end: str | date = date.today(),  # noqa: B008, DTZ011
+        period: time = time(23, 59, 59),
+    ) -> dict[str, Any]:
+        """Return a raw broker report."""
+        return self._adapter.get_broker_report(
+            start=start,
+            end=end,
+            period=period,
         )
 
     def get_candles(

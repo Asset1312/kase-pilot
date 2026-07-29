@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from inspect import signature
 from typing import Any
 
@@ -144,6 +144,22 @@ class FakeRequestsHistoryDependency:
         status: object = None,
     ) -> dict[str, Any]:
         self.calls.append((doc_id, exec_id, start, end, limit, offset, status))
+        return self.response
+
+
+class FakeBrokerReportDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object, object]] = []
+
+    def get_broker_report(
+        self,
+        *,
+        start: object,
+        end: object,
+        period: object,
+    ) -> dict[str, Any]:
+        self.calls.append((start, end, period))
         return self.response
 
 
@@ -641,6 +657,60 @@ def test_get_requests_history_dependency_exception_propagates_unchanged() -> Non
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_requests_history()
+
+    assert exc_info.value is original
+
+
+def test_get_broker_report_forwards_defaults_and_preserves_identity() -> None:
+    response = {"trades": [{"unknown": {"nested": [True, None]}}]}
+    dependency = FakeBrokerReportDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+    parameters = signature(MarketService.get_broker_report).parameters
+
+    result = service.get_broker_report()
+
+    assert dependency.calls == [
+        (
+            parameters["start"].default,
+            parameters["end"].default,
+            parameters["period"].default,
+        )
+    ]
+    assert result is response
+
+
+def test_get_broker_report_forwards_explicit_arguments_unchanged() -> None:
+    start = "2026-01-01"
+    end = date(2026, 1, 31)
+    period = time(18, 30, 15)
+    dependency = FakeBrokerReportDependency({})
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    service.get_broker_report(start=start, end=end, period=period)
+
+    assert dependency.calls == [(start, end, period)]
+    assert dependency.calls[0][0] is start
+    assert dependency.calls[0][1] is end
+    assert dependency.calls[0][2] is period
+
+
+def test_get_broker_report_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_broker_report(
+            self,
+            *,
+            start: str | date,
+            end: str | date,
+            period: time,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_broker_report()
 
     assert exc_info.value is original
 
