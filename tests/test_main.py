@@ -93,6 +93,23 @@ class FakeGetMarketStatus:
         return self.response
 
 
+class FakeGetMostTraded:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    def execute(
+        self,
+        instrument_type: object = "stocks",
+        *,
+        exchange: object = "usa",
+        gainers: object = True,
+        limit: object = 10,
+    ) -> dict[str, Any]:
+        self.calls.append((instrument_type, exchange, gainers, limit))
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -508,6 +525,93 @@ def test_run_market_status_explicit_json_matches_plain_output(
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
     )
+
+
+def test_run_top_uses_defaults_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"result": {"items": [{"ticker": "КАЗТ", "change": 12.5}]}}
+    use_case = FakeGetMostTraded(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetMostTraded:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_most_traded", fake_create)
+
+    assert main_module.run("top", environ={}) == 0
+
+    captured = capsys.readouterr()
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [("stocks", "usa", True, 10)]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "КАЗТ" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_top_forwards_explicit_options_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetMostTraded()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_most_traded",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "top",
+        instrument_type="bonds",
+        exchange="kase",
+        gainers=False,
+        limit=25,
+        environ={},
+    )
+
+    assert use_case.calls == [("bonds", "kase", False, 25)]
+
+
+def test_run_top_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetMostTraded(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_most_traded",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("top", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("top", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [
+        ("stocks", "usa", True, 10),
+        ("stocks", "usa", True, 10),
+    ]
+    assert plain_output == json_output
 
 
 def test_run_routes_candles_using_broker_defaults(
@@ -2362,6 +2466,105 @@ def test_main_routes_market_status_options_in_any_order(
     assert calls == [("market-status", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["top"], {}),
+        (
+            ["top", "--type", "bonds"],
+            {
+                "instrument_type": "bonds",
+                "exchange": "usa",
+                "gainers": True,
+                "limit": 10,
+            },
+        ),
+        (
+            ["top", "--exchange", "kase"],
+            {
+                "instrument_type": "stocks",
+                "exchange": "kase",
+                "gainers": True,
+                "limit": 10,
+            },
+        ),
+        (
+            ["top", "--limit", "25"],
+            {
+                "instrument_type": "stocks",
+                "exchange": "usa",
+                "gainers": True,
+                "limit": 25,
+            },
+        ),
+        (
+            ["top", "--losers"],
+            {
+                "instrument_type": "stocks",
+                "exchange": "usa",
+                "gainers": False,
+                "limit": 10,
+            },
+        ),
+        (
+            [
+                "top",
+                "--json",
+                "--limit",
+                "7",
+                "--exchange",
+                "kase",
+                "--losers",
+                "--type",
+                "bonds",
+            ],
+            {
+                "instrument_type": "bonds",
+                "exchange": "kase",
+                "gainers": False,
+                "limit": 7,
+                "json_output": True,
+            },
+        ),
+        (
+            [
+                "top",
+                "--type",
+                "bonds",
+                "--losers",
+                "--exchange",
+                "kase",
+                "--json",
+                "--limit",
+                "7",
+            ],
+            {
+                "instrument_type": "bonds",
+                "exchange": "kase",
+                "gainers": False,
+                "limit": 7,
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_top_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("top", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3030,6 +3233,55 @@ def test_main_rejects_invalid_market_status_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["top", "extra"],
+        ["top", "--unknown"],
+        ["top", "--type"],
+        ["top", "--exchange"],
+        ["top", "--limit"],
+        ["top", "--type", "--json"],
+        ["top", "--exchange", "--losers"],
+        ["top", "--limit", "invalid"],
+        ["top", "--limit", "1.5"],
+        ["top", "--limit", "0"],
+        ["top", "--limit", "-1"],
+        ["top", "--json", "--json"],
+        ["top", "--losers", "--losers"],
+        ["top", "--type", "stocks", "--type", "bonds"],
+        ["top", "--exchange", "usa", "--exchange", "kase"],
+        ["top", "--limit", "10", "--limit", "20"],
+        ["top", "--type", "stocks", "extra"],
+    ],
+)
+def test_main_rejects_invalid_top_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_most_traded",
+        lambda *args, **kwargs: orchestration_calls.append("factory"),
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -3214,6 +3466,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json]\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
+        "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
+        "[--losers] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "

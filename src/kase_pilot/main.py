@@ -16,6 +16,7 @@ from kase_pilot.app import (
     create_get_current_quotes,
     create_get_historical_candles,
     create_get_market_status,
+    create_get_most_traded,
     create_get_news,
     create_get_placed_orders,
     create_get_security_info,
@@ -33,6 +34,8 @@ _USAGE = (
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json]\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
+    "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
+    "[--losers] [--json]\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -452,6 +455,26 @@ def _run_market_status(
     return 0
 
 
+def _run_top(
+    public_key: str,
+    private_key: str,
+    *,
+    instrument_type: str,
+    exchange: str,
+    gainers: bool,
+    limit: int,
+) -> int:
+    use_case = create_get_most_traded(public_key, private_key)
+    result = use_case.execute(
+        instrument_type,
+        exchange=exchange,
+        gainers=gainers,
+        limit=limit,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_user(public_key: str, private_key: str) -> int:
     use_case = create_get_user_info(public_key, private_key)
     result = use_case.execute()
@@ -572,6 +595,9 @@ def run(
     story_id: str | None = None,
     market: str = "*",
     mode: str | None = None,
+    instrument_type: str = "stocks",
+    exchange: str = "usa",
+    gainers: bool = True,
     limit: int | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
@@ -586,6 +612,7 @@ def run(
         "search",
         "news",
         "market-status",
+        "top",
         "user",
         "summary",
         "portfolio",
@@ -606,17 +633,19 @@ def run(
         "trades",
         "news",
         "market-status",
+        "top",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
-            "and market-status"
+            "market-status, and top"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
         if not symbol:
             raise ValueError("Portfolio symbol must not be empty")
     if (
-        command in {"user", "summary", "portfolio", "watch", "orders", "market-status"}
+        command
+        in {"user", "summary", "portfolio", "watch", "orders", "market-status", "top"}
         and ticker is not None
     ):
         raise ValueError(f"The {command} command does not accept an argument")
@@ -630,6 +659,7 @@ def run(
             "orders",
             "trades",
             "market-status",
+            "top",
         }
         and ticker is None
     ):
@@ -659,6 +689,15 @@ def run(
             private_key,
             market=market,
             mode=mode,
+        )
+    if command == "top":
+        return _run_top(
+            public_key,
+            private_key,
+            instrument_type=instrument_type,
+            exchange=exchange,
+            gainers=gainers,
+            limit=10 if limit is None else limit,
         )
     if command == "user":
         return _run_user(public_key, private_key)
@@ -706,6 +745,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     story_id = None
     market = "*"
     mode = None
+    instrument_type = "stocks"
+    exchange = "usa"
+    gainers = True
     limit = None
     timeframe = None
     sort_field = None
@@ -719,6 +761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["orders"],
         ["orders", "--all"],
         ["market-status"],
+        ["top"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -819,6 +862,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 market = value
             else:
                 mode = value
+            index += 2
+    elif arguments and arguments[0] == "top":
+        top_flags = {"--type", "--exchange", "--limit", "--losers", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in top_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--losers":
+                gainers = False
+                index += 1
+                continue
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
+            if flag == "--type":
+                instrument_type = value
+            elif flag == "--exchange":
+                exchange = value
+            else:
+                try:
+                    limit = int(value)
+                except ValueError:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
+                if limit <= 0:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
             index += 2
     elif arguments and arguments[0] == "trades":
         seen_flags: set[str] = set()
@@ -922,6 +1002,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "watch",
             "orders",
             "market-status",
+            "top",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -951,6 +1032,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 market_status_arguments["json_output"] = True
             return run("market-status", **market_status_arguments)
+        if arguments[0] == "top":
+            top_arguments: dict[str, object] = {
+                "instrument_type": instrument_type,
+                "exchange": exchange,
+                "gainers": gainers,
+                "limit": 10 if limit is None else limit,
+            }
+            if json_output:
+                top_arguments["json_output"] = True
+            return run("top", **top_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
