@@ -22,3 +22,31 @@ logs/
 # Системные файлы
 .DS_Store
 Thumbs.db
+
+# Python caches and reports
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+
+# Virtual environments
+venv/
+
+# Local environment and IDE files
+.env.*
+.idea/
+
+# Local tool configuration and scratch work
+/.claude/
+/scratch/
+
+# Generated API response captures
+/news.json
+/portfolio.json
+/top.json
