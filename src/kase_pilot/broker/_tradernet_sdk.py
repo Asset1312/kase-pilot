@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any, cast
 
 from tradernet import Tradernet
@@ -191,6 +191,24 @@ class TradernetSdkAdapter:
             dict[str, Any],
             _require_mapping(response, "requests history"),
         )
+
+    def get_broker_report(
+        self,
+        start: str | date = date(1970, 1, 1),
+        end: str | date = date.today(),  # noqa: B008, DTZ011
+        period: time = time(23, 59, 59),
+    ) -> dict[str, Any]:
+        """Return a broker report without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_broker_report(
+                start=start,
+                end=end,
+                period=period,
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "broker report"))
 
     def get_candles(
         self,

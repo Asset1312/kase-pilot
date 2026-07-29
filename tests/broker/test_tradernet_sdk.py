@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from inspect import signature
 from typing import Any
 
@@ -33,6 +33,7 @@ class FakeSdkClient:
         self.get_requests_history_calls: list[
             tuple[object, object, object, object, object, object, object]
         ] = []
+        self.get_broker_report_calls: list[tuple[object, object, object]] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -109,6 +110,16 @@ class FakeSdkClient:
         self.get_requests_history_calls.append(
             (doc_id, exec_id, start, end, limit, offset, status)
         )
+        return self.response
+
+    def get_broker_report(
+        self,
+        *,
+        start: object,
+        end: object,
+        period: object,
+    ) -> Any:
+        self.get_broker_report_calls.append((start, end, period))
         return self.response
 
     def get_candles(
@@ -770,6 +781,92 @@ def test_get_requests_history_sdk_exception_becomes_api_request_error_with_cause
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_broker_report_forwards_defaults_once_and_preserves_identity() -> None:
+    response = {"trades": [{"unknown": {"nested": [True, None]}}]}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+    parameters = signature(TradernetSdkAdapter.get_broker_report).parameters
+
+    result = adapter.get_broker_report()
+
+    assert sdk.get_broker_report_calls == [
+        (
+            parameters["start"].default,
+            parameters["end"].default,
+            parameters["period"].default,
+        )
+    ]
+    assert result is response
+
+
+def test_get_broker_report_forwards_representative_values_unchanged() -> None:
+    start = "2026-01-01"
+    end = date(2026, 1, 31)
+    period = time(18, 30, 15)
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_broker_report(start=start, end=end, period=period)
+
+    assert sdk.get_broker_report_calls == [(start, end, period)]
+    assert sdk.get_broker_report_calls[0][0] is start
+    assert sdk.get_broker_report_calls[0][1] is end
+    assert sdk.get_broker_report_calls[0][2] is period
+
+
+def test_get_broker_report_preserves_start_and_end_date_identity() -> None:
+    start = date(2026, 1, 1)
+    end = date(2026, 1, 31)
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_broker_report(start=start, end=end)
+
+    assert sdk.get_broker_report_calls[0][0] is start
+    assert sdk.get_broker_report_calls[0][1] is end
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        [],
+        (),
+        "not a mapping",
+        42,
+        None,
+    ],
+)
+def test_get_broker_report_non_mapping_response_raises_validation_error(
+    response: object,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping broker report response"):
+        adapter.get_broker_report()
+
+
+def test_get_broker_report_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = KeyError("report")
+
+    class FailingSdkClient:
+        def get_broker_report(
+            self,
+            *,
+            start: str | date = date(1970, 1, 1),
+            end: str | date = date.today(),  # noqa: B008, DTZ011
+            period: time = time(23, 59, 59),
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_broker_report()
+
+    assert exc_info.value.__cause__ is original
+    assert "report" not in str(exc_info.value)
 
 
 def test_get_candles_delegates_without_transforming_arguments_or_response() -> None:
