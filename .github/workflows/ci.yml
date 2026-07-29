@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install project and CI tools
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install build twine black ruff pytest
+
+      - name: Run quality checks
+        run: |
+          set -euxo pipefail
+          python -m black --check .
+          python -m ruff check .
+          pytest tests
+
+      - name: Build and validate distributions
+        run: |
+          set -euxo pipefail
+          python -m build
+          python -m twine check dist/*
