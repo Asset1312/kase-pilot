@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
@@ -104,6 +104,27 @@ class MarketService:
     ) -> dict[str, Any]:
         """Return raw price alerts."""
         return self._adapter.get_price_alerts(symbol)
+
+    def get_requests_history(
+        self,
+        doc_id: int | None = None,
+        exec_id: int | None = None,
+        start: date = datetime(2011, 1, 11),  # noqa: DTZ001
+        end: date = datetime.now(),  # noqa: B008, DTZ005
+        limit: int | None = None,
+        offset: int | None = None,
+        status: int | None = None,
+    ) -> dict[str, Any]:
+        """Return raw client requests history."""
+        return self._adapter.get_requests_history(
+            doc_id,
+            exec_id,
+            start,
+            end,
+            limit,
+            offset,
+            status,
+        )
 
     def get_candles(
         self,

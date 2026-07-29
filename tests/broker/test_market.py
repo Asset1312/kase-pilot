@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from inspect import signature
 from typing import Any
 
@@ -123,6 +123,27 @@ class FakePriceAlertsDependency:
 
     def get_price_alerts(self, symbol: object = None) -> dict[str, Any]:
         self.calls.append(symbol)
+        return self.response
+
+
+class FakeRequestsHistoryDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[
+            tuple[object, object, object, object, object, object, object]
+        ] = []
+
+    def get_requests_history(
+        self,
+        doc_id: object = None,
+        exec_id: object = None,
+        start: object = None,
+        end: object = None,
+        limit: object = None,
+        offset: object = None,
+        status: object = None,
+    ) -> dict[str, Any]:
+        self.calls.append((doc_id, exec_id, start, end, limit, offset, status))
         return self.response
 
 
@@ -548,6 +569,78 @@ def test_get_price_alerts_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_price_alerts()
+
+    assert exc_info.value is original
+
+
+def test_get_requests_history_forwards_defaults_and_preserves_identity() -> None:
+    response = {"result": {"requests": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakeRequestsHistoryDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+    parameters = signature(MarketService.get_requests_history).parameters
+
+    result = service.get_requests_history()
+
+    assert dependency.calls == [
+        (
+            None,
+            None,
+            parameters["start"].default,
+            parameters["end"].default,
+            None,
+            None,
+            None,
+        )
+    ]
+    assert result is response
+
+
+def test_get_requests_history_forwards_all_explicit_arguments_unchanged() -> None:
+    doc_id = 17
+    exec_id = 23
+    start = date(2026, 1, 1)
+    end = date(2026, 2, 1)
+    limit = 50
+    offset = 10
+    status = 3
+    dependency = FakeRequestsHistoryDependency({})
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    service.get_requests_history(
+        doc_id,
+        exec_id,
+        start,
+        end,
+        limit,
+        offset,
+        status,
+    )
+
+    assert dependency.calls == [(doc_id, exec_id, start, end, limit, offset, status)]
+    assert dependency.calls[0][2] is start
+    assert dependency.calls[0][3] is end
+
+
+def test_get_requests_history_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_requests_history(
+            self,
+            doc_id: int | None,
+            exec_id: int | None,
+            start: date,
+            end: date,
+            limit: int | None,
+            offset: int | None,
+            status: int | None,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_requests_history()
 
     assert exc_info.value is original
 
