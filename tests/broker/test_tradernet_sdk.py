@@ -20,6 +20,7 @@ class FakeSdkClient:
         self.quote_calls: list[object] = []
         self.find_symbol_calls: list[object] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
+        self.get_market_status_calls: list[tuple[object, object]] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -49,6 +50,15 @@ class FakeSdkClient:
         limit: object = 30,
     ) -> Any:
         self.get_news_calls.append((query, symbol, story_id, limit))
+        return self.response
+
+    def get_market_status(
+        self,
+        market: object = "*",
+        *,
+        mode: object = None,
+    ) -> Any:
+        self.get_market_status_calls.append((market, mode))
         return self.response
 
     def get_candles(
@@ -276,6 +286,72 @@ def test_get_news_sdk_exception_becomes_api_request_error_with_cause() -> None:
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_news("query")
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_market_status_forwards_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"markets": [{"unknown": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_market_status()
+
+    assert sdk.get_market_status_calls == [("*", None)]
+    assert result is response
+
+
+def test_get_market_status_forwards_explicit_market() -> None:
+    market = "KASE"
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_market_status(market)
+
+    assert sdk.get_market_status_calls == [(market, None)]
+    assert sdk.get_market_status_calls[0][0] is market
+
+
+def test_get_market_status_forwards_explicit_mode() -> None:
+    market = "KASE"
+    mode = "demo"
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_market_status(market, mode=mode)
+
+    assert sdk.get_market_status_calls == [(market, mode)]
+    assert sdk.get_market_status_calls[0][0] is market
+    assert sdk.get_market_status_calls[0][1] is mode
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_market_status_non_mapping_response_raises_validation_error(
+    response: Any,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping market status response"):
+        adapter.get_market_status()
+
+
+def test_get_market_status_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_market_status(
+            self,
+            market: str = "*",
+            *,
+            mode: str | None = None,
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_market_status()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

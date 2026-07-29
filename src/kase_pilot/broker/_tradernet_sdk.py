@@ -79,6 +79,24 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], response)
 
+    def get_market_status(
+        self,
+        market: str = "*",
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Return market status without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_market_status(market, mode=mode)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping market status response"
+            )
+
+        return cast(dict[str, Any], response)
+
     def get_candles(
         self,
         symbol: str,
