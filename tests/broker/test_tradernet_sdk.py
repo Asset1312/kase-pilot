@@ -28,6 +28,7 @@ class FakeSdkClient:
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
         self.get_historical_calls: list[tuple[object, object]] = []
+        self.corporate_actions_calls: list[object] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -81,6 +82,10 @@ class FakeSdkClient:
 
     def get_historical(self, start: object, end: object) -> Any:
         self.get_historical_calls.append((start, end))
+        return self.response
+
+    def corporate_actions(self, reception: object = 35) -> Any:
+        self.corporate_actions_calls.append(reception)
         return self.response
 
     def get_candles(
@@ -527,6 +532,63 @@ def test_get_historical_sdk_exception_becomes_api_request_error_with_cause() -> 
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_historical()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_corporate_actions_forwards_default_and_preserves_list_identity() -> None:
+    response = [{"id": "action-1", "unknown": {"nested": [True, None]}}]
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.corporate_actions()
+
+    assert sdk.corporate_actions_calls == [35]
+    assert result is response
+
+
+def test_corporate_actions_forwards_explicit_reception_unchanged() -> None:
+    reception = 17
+    sdk = FakeSdkClient([])
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.corporate_actions(reception)
+
+    assert sdk.corporate_actions_calls == [reception]
+    assert sdk.corporate_actions_calls[0] is reception
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        (),
+        "not a list",
+        {"result": []},
+        42,
+    ],
+)
+def test_corporate_actions_non_list_response_raises_validation_error(
+    response: object,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-list corporate actions response"):
+        adapter.corporate_actions()
+
+
+def test_corporate_actions_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def corporate_actions(self, reception: int = 35) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.corporate_actions()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

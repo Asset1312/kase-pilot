@@ -136,6 +136,21 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "historical orders"))
 
+    def corporate_actions(
+        self,
+        reception: int = 35,
+    ) -> list[dict[str, Any]]:
+        """Return planned corporate actions without transforming the SDK response."""
+        try:
+            response: Any = self._client.corporate_actions(reception)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            list[dict[str, Any]],
+            _require_list(response, "corporate actions"),
+        )
+
     def get_candles(
         self,
         symbol: str,
