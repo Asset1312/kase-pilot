@@ -31,6 +31,7 @@ from kase_pilot.app import (
 )
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import ConfigurationError
+from kase_pilot.core.version import __version__
 
 _USAGE = (
     "Usage:\n"
@@ -931,6 +932,13 @@ def run(
 def main(argv: Sequence[str] | None = None) -> int:
     """Provide the application process boundary."""
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments in (["-h"], ["--help"]):
+        print(_USAGE)
+        return 0
+    if arguments == ["--version"]:
+        print(__version__)
+        return 0
+
     start = None
     end = None
     symbol = None

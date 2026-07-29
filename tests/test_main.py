@@ -13,6 +13,7 @@ import pytest
 
 import kase_pilot.main as main_module
 from kase_pilot.core.exceptions import ConfigurationError
+from kase_pilot.core.version import __version__
 
 
 def test_console_script_targets_main() -> None:
@@ -22,6 +23,60 @@ def test_console_script_targets_main() -> None:
     assert project_metadata["project"]["scripts"]["kase-pilot"] == (
         "kase_pilot.main:main"
     )
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["-h"]])
+def test_main_help_prints_usage_without_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda *args, **kwargs: calls.append("factory"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: calls.append("run"),
+    )
+
+    assert main_module.main(arguments) == 0
+    assert capsys.readouterr() == (main_module._USAGE + "\n", "")
+    assert calls == []
+
+
+def test_main_version_prints_exact_version_without_orchestration(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda *args, **kwargs: calls.append("factory"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: calls.append("run"),
+    )
+
+    assert main_module.main(["--version"]) == 0
+    assert capsys.readouterr() == (__version__ + "\n", "")
+    assert calls == []
 
 
 class FakeGetSecurityInfo:
