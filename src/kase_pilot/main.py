@@ -1,7 +1,9 @@
 """Application entry point."""
 
 import json
+import os
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -28,7 +30,7 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio\n"
-    "  kase-pilot watch\n"
+    "  kase-pilot watch [--follow]\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
     "[--symbol SYMBOL] [--limit NUMBER]\n"
@@ -37,6 +39,7 @@ _USAGE = (
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
+WATCH_REFRESH_SECONDS = 5
 
 
 def _valid_number(value: object) -> Decimal | None:
@@ -208,12 +211,17 @@ def _format_watch(summary: object) -> str:
     return "\n".join(lines)
 
 
+def _clear_terminal() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
+
+
 def run(
     command: str,
     ticker: str | None = None,
     *,
     sup: bool = True,
     active: bool = True,
+    follow: bool = False,
     symbol: str | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
@@ -269,6 +277,15 @@ def run(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
         )
+        if command == "watch" and follow:
+            try:
+                while True:
+                    result = use_case.execute()
+                    _clear_terminal()
+                    print(_format_watch(result))
+                    time.sleep(WATCH_REFRESH_SECONDS)
+            except KeyboardInterrupt:
+                return 0
         result = use_case.execute()
     elif command == "user":
         use_case = create_get_user_info(
@@ -349,6 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["summary"],
         ["portfolio"],
         ["watch"],
+        ["watch", "--follow"],
         ["orders"],
         ["orders", "--all"],
     ) or (
@@ -439,6 +457,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if arguments == ["orders", "--all"]:
             return run("orders", active=False)
+        if arguments == ["watch", "--follow"]:
+            return run("watch", follow=True)
         if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":

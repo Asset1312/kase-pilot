@@ -884,6 +884,137 @@ def test_run_routes_watch_through_account_summary_and_prints_compact_text(
     assert capsys.readouterr() == (main_module._format_watch(response) + "\n", "")
 
 
+def test_run_watch_follow_refreshes_until_keyboard_interrupt(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    responses = [
+        {"result": {"ps": {"pos": [{"i": "FIRST", "mkt_price": 1}]}}},
+        {"result": {"ps": {"pos": [{"i": "SECOND", "mkt_price": 2}]}}},
+    ]
+    events: list[str] = []
+    execute_calls = 0
+
+    class FollowUseCase:
+        def execute(self) -> dict[str, Any]:
+            nonlocal execute_calls
+            execute_calls += 1
+            events.append(f"execute-{execute_calls}")
+            if execute_calls > len(responses):
+                raise KeyboardInterrupt
+            return responses[execute_calls - 1]
+
+    actual_format_watch = main_module._format_watch
+
+    def record_format(summary: object) -> str:
+        events.append("format")
+        return actual_format_watch(summary)
+
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: FollowUseCase(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_clear_terminal",
+        lambda: events.append("clear"),
+    )
+    monkeypatch.setattr(main_module, "_format_watch", record_format)
+    monkeypatch.setattr(
+        main_module.time,
+        "sleep",
+        lambda seconds: events.append(f"sleep-{seconds}"),
+    )
+
+    exit_code = main_module.run("watch", follow=True, environ={})
+
+    assert exit_code == 0
+    assert events == [
+        "execute-1",
+        "clear",
+        "format",
+        "sleep-5",
+        "execute-2",
+        "clear",
+        "format",
+        "sleep-5",
+        "execute-3",
+    ]
+    assert capsys.readouterr() == (
+        actual_format_watch(responses[0])
+        + "\n"
+        + actual_format_watch(responses[1])
+        + "\n",
+        "",
+    )
+
+
+def test_run_watch_follow_propagates_application_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("account summary failed")
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetAccountSummary(error=original)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_clear_terminal",
+        lambda: pytest.fail("terminal must not be cleared"),
+    )
+    monkeypatch.setattr(
+        main_module.time,
+        "sleep",
+        lambda seconds: pytest.fail("sleep must not be called"),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_module.run("watch", follow=True, environ={})
+
+    assert exc_info.value is original
+    assert use_case.calls == 1
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "expected_command"),
+    [
+        ("nt", "cls"),
+        ("posix", "clear"),
+    ],
+)
+def test_clear_terminal_uses_platform_command(
+    platform_name: str,
+    expected_command: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[str] = []
+    monkeypatch.setattr(main_module.os, "name", platform_name)
+    monkeypatch.setattr(
+        main_module.os,
+        "system",
+        lambda command: commands.append(command) or 0,
+    )
+
+    main_module._clear_terminal()
+
+    assert commands == [expected_command]
+
+
 def test_run_propagates_summary_use_case_error_without_output(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1365,6 +1496,21 @@ def test_main_routes_watch_without_operation_arguments(
     assert calls == ["watch"]
 
 
+def test_main_routes_watch_follow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_run(command: str, *, follow: bool) -> int:
+        calls.append((command, follow))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["watch", "--follow"]) == 17
+    assert calls == [("watch", True)]
+
+
 def test_main_routes_orders_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1694,6 +1840,8 @@ def test_main_rejects_invalid_portfolio_before_orchestration(
         ["portfolio", "--anything"],
         ["watch", "extra"],
         ["watch", "--anything"],
+        ["watch", "--follow", "extra"],
+        ["watch", "--follow", "--follow"],
         ["orders", "extra"],
         ["orders", "--anything"],
         ["orders", "orders"],
@@ -1843,7 +1991,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio\n"
-        "  kase-pilot watch\n"
+        "  kase-pilot watch [--follow]\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
         "[--symbol SYMBOL] [--limit NUMBER]\n"
