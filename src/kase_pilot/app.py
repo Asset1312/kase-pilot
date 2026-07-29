@@ -10,6 +10,7 @@ from kase_pilot.application import (
     GetCurrentQuotes,
     GetHistoricalCandles,
     GetMarketStatus,
+    GetMostTraded,
     GetNews,
     GetPlacedOrders,
     GetSecurityInfo,
@@ -73,6 +74,17 @@ def create_get_market_status(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetMarketStatus(market_service)
+
+
+def create_get_most_traded(
+    public_key: str,
+    private_key: str,
+) -> GetMostTraded:
+    """Build the object graph for the most-traded use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetMostTraded(market_service)
 
 
 def create_get_news(

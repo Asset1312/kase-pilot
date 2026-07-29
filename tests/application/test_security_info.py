@@ -110,6 +110,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "GetCurrentQuotes",
         "GetHistoricalCandles",
         "GetMarketStatus",
+        "GetMostTraded",
         "GetNews",
         "GetPlacedOrders",
         "GetSecurityInfo",

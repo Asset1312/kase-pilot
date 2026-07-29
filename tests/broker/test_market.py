@@ -78,6 +78,23 @@ class FakeMarketStatusDependency:
         return self.response
 
 
+class FakeMostTradedDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    def get_most_traded(
+        self,
+        instrument_type: object = "stocks",
+        *,
+        exchange: object = "usa",
+        gainers: object = True,
+        limit: object = 10,
+    ) -> dict[str, Any]:
+        self.calls.append((instrument_type, exchange, gainers, limit))
+        return self.response
+
+
 class FakeCandlesDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -321,6 +338,63 @@ def test_get_market_status_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_market_status()
+
+    assert exc_info.value is original
+
+
+def test_get_most_traded_delegates_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"items": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakeMostTradedDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_most_traded()
+
+    assert dependency.calls == [("stocks", "usa", True, 10)]
+    assert result is response
+
+
+def test_get_most_traded_delegates_explicit_arguments() -> None:
+    instrument_type = "bonds"
+    exchange = "europe"
+    gainers = False
+    limit = 25
+    response = {"result": {"items": []}}
+    dependency = FakeMostTradedDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_most_traded(
+        instrument_type,
+        exchange=exchange,
+        gainers=gainers,
+        limit=limit,
+    )
+
+    assert dependency.calls == [(instrument_type, exchange, gainers, limit)]
+    assert dependency.calls[0][0] is instrument_type
+    assert dependency.calls[0][1] is exchange
+    assert dependency.calls[0][2] is gainers
+    assert dependency.calls[0][3] is limit
+    assert result is response
+
+
+def test_get_most_traded_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_most_traded(
+            self,
+            instrument_type: str = "stocks",
+            *,
+            exchange: str = "usa",
+            gainers: bool = True,
+            limit: int = 10,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_most_traded()
 
     assert exc_info.value is original
 

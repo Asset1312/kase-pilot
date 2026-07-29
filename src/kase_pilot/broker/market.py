@@ -68,6 +68,21 @@ class MarketService:
         """Return raw market status information."""
         return self._adapter.get_market_status(market, mode=mode)
 
+    def get_most_traded(
+        self,
+        instrument_type: str = "stocks",
+        exchange: str = "usa",
+        gainers: bool = True,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Return raw most-traded market data."""
+        return self._adapter.get_most_traded(
+            instrument_type,
+            exchange=exchange,
+            gainers=gainers,
+            limit=limit,
+        )
+
     def get_candles(
         self,
         symbol: str,
