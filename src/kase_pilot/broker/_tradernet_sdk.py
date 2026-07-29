@@ -122,6 +122,24 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], response)
 
+    def get_historical(
+        self,
+        start: datetime = datetime(2011, 1, 11),  # noqa: DTZ001
+        end: datetime = datetime.now(),  # noqa: B008, DTZ005
+    ) -> dict[str, Any]:
+        """Return historical orders without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_historical(start, end)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping historical orders response"
+            )
+
+        return cast(dict[str, Any], response)
+
     def get_candles(
         self,
         symbol: str,

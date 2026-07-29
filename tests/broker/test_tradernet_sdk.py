@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
+from inspect import signature
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ class FakeSdkClient:
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
+        self.get_historical_calls: list[tuple[object, object]] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -71,6 +73,10 @@ class FakeSdkClient:
         limit: object = 10,
     ) -> Any:
         self.get_most_traded_calls.append((instrument_type, exchange, gainers, limit))
+        return self.response
+
+    def get_historical(self, start: object, end: object) -> Any:
+        self.get_historical_calls.append((start, end))
         return self.response
 
     def get_candles(
@@ -429,6 +435,63 @@ def test_get_most_traded_sdk_exception_becomes_api_request_error_with_cause() ->
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_most_traded()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_historical_forwards_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"orders": [{"unknown": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+    parameters = signature(TradernetSdkAdapter.get_historical).parameters
+
+    result = adapter.get_historical()
+
+    assert sdk.get_historical_calls == [
+        (parameters["start"].default, parameters["end"].default)
+    ]
+    assert result is response
+
+
+def test_get_historical_forwards_explicit_arguments_unchanged() -> None:
+    start = datetime(2024, 1, 1, 9, 30, tzinfo=UTC)
+    end = datetime(2024, 2, 1, 16, 0, tzinfo=UTC)
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_historical(start, end)
+
+    assert sdk.get_historical_calls == [(start, end)]
+    assert sdk.get_historical_calls[0][0] is start
+    assert sdk.get_historical_calls[0][1] is end
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_historical_non_mapping_response_raises_validation_error(
+    response: Any,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping historical orders response"):
+        adapter.get_historical()
+
+
+def test_get_historical_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_historical(
+            self,
+            start: datetime = datetime(2011, 1, 11),  # noqa: DTZ001
+            end: datetime = datetime.now(),  # noqa: B008, DTZ005
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_historical()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
