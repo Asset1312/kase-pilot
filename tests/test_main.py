@@ -140,6 +140,16 @@ class FakeGetPriceAlerts:
         return self.response
 
 
+class FakeGetRequestsHistory:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[dict[str, object]] = []
+
+    def execute(self, **arguments: object) -> dict[str, Any]:
+        self.calls.append(arguments)
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -903,6 +913,107 @@ def test_run_price_alerts_explicit_json_matches_plain_output(
     main_module.run("price-alerts", environ={})
     plain_output = capsys.readouterr()
     main_module.run("price-alerts", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [{}, {}]
+    assert plain_output == json_output
+
+
+def test_run_requests_history_omits_defaults_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"result": {"requests": [{"name": "Заявка", "nested": [1, None]}]}}
+    use_case = FakeGetRequestsHistory(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetRequestsHistory:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_requests_history", fake_create)
+
+    assert main_module.run("requests-history", environ={}) == 0
+
+    captured = capsys.readouterr()
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [{}]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Заявка" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_requests_history_forwards_only_explicit_values_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = datetime.fromisoformat("2026-01-01T09:30:00+05:00")
+    end = datetime.fromisoformat("2026-02-01T18:45:00+05:00")
+    use_case = FakeGetRequestsHistory()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_requests_history",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "requests-history",
+        doc_id=15,
+        exec_id=23,
+        start=start,
+        end=end,
+        limit=100,
+        offset=0,
+        status=3,
+        environ={},
+    )
+
+    assert use_case.calls == [
+        {
+            "doc_id": 15,
+            "exec_id": 23,
+            "start": start,
+            "end": end,
+            "limit": 100,
+            "offset": 0,
+            "status": 3,
+        }
+    ]
+    assert use_case.calls[0]["start"] is start
+    assert use_case.calls[0]["end"] is end
+
+
+def test_run_requests_history_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetRequestsHistory(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_requests_history",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("requests-history", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("requests-history", json_output=True, environ={})
     json_output = capsys.readouterr()
 
     assert use_case.calls == [{}, {}]
@@ -3004,6 +3115,76 @@ def test_main_routes_price_alerts_options_in_any_order(
     assert calls == [("price-alerts", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["requests-history"], {}),
+        (["requests-history", "--doc-id", "15"], {"doc_id": 15}),
+        (["requests-history", "--exec-id", "23"], {"exec_id": 23}),
+        (
+            ["requests-history", "--start", "2026-01-01"],
+            {"start": datetime.fromisoformat("2026-01-01")},
+        ),
+        (
+            ["requests-history", "--end", "2026-02-01T18:45:00+05:00"],
+            {"end": datetime.fromisoformat("2026-02-01T18:45:00+05:00")},
+        ),
+        (["requests-history", "--limit", "100"], {"limit": 100}),
+        (["requests-history", "--offset", "0"], {"offset": 0}),
+        (["requests-history", "--status", "-1"], {"status": -1}),
+        (
+            ["requests-history", "--json"],
+            {"json_output": True},
+        ),
+        (
+            [
+                "requests-history",
+                "--status",
+                "3",
+                "--limit",
+                "100",
+                "--doc-id",
+                "1",
+                "--end",
+                "2026-02-01",
+                "--json",
+                "--start",
+                "2026-01-01T09:30:00+05:00",
+                "--offset",
+                "10",
+                "--exec-id",
+                "2",
+            ],
+            {
+                "doc_id": 1,
+                "exec_id": 2,
+                "start": datetime.fromisoformat("2026-01-01T09:30:00+05:00"),
+                "end": datetime.fromisoformat("2026-02-01"),
+                "limit": 100,
+                "offset": 10,
+                "status": 3,
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_requests_history_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("requests-history", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3871,6 +4052,69 @@ def test_main_rejects_invalid_price_alerts_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["requests-history", "extra"],
+        ["requests-history", "--unknown"],
+        ["requests-history", "--doc-id"],
+        ["requests-history", "--exec-id"],
+        ["requests-history", "--start"],
+        ["requests-history", "--end"],
+        ["requests-history", "--limit"],
+        ["requests-history", "--offset"],
+        ["requests-history", "--status"],
+        ["requests-history", "--doc-id", "--json"],
+        ["requests-history", "--doc-id", "invalid"],
+        ["requests-history", "--exec-id", "1.5"],
+        ["requests-history", "--start", "not-a-datetime"],
+        ["requests-history", "--end", "2026-13-01"],
+        ["requests-history", "--limit", "invalid"],
+        ["requests-history", "--limit", "0"],
+        ["requests-history", "--limit", "-1"],
+        ["requests-history", "--offset", "invalid"],
+        ["requests-history", "--offset", "-1"],
+        ["requests-history", "--status", "invalid"],
+        ["requests-history", "--json", "--json"],
+        ["requests-history", "--doc-id", "1", "--doc-id", "2"],
+        ["requests-history", "--exec-id", "1", "--exec-id", "2"],
+        ["requests-history", "--start", "2026-01-01", "--start", "2026-02-01"],
+        ["requests-history", "--end", "2026-01-01", "--end", "2026-02-01"],
+        ["requests-history", "--limit", "1", "--limit", "2"],
+        ["requests-history", "--offset", "1", "--offset", "2"],
+        ["requests-history", "--status", "1", "--status", "2"],
+        ["requests-history", "--doc-id", "1", "extra"],
+    ],
+)
+def test_main_rejects_invalid_requests_history_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetRequestsHistory()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_requests_history",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -4060,6 +4304,9 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot orders-history [--start DATETIME] [--end DATETIME] [--json]\n"
         "  kase-pilot corporate-actions [--reception DAYS] [--json]\n"
         "  kase-pilot price-alerts [--symbol SYMBOL] [--json]\n"
+        "  kase-pilot requests-history [--doc-id ID] [--exec-id ID] "
+        "[--start DATE] [--end DATE] [--limit LIMIT] [--offset OFFSET] "
+        "[--status STATUS] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "
