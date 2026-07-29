@@ -29,7 +29,8 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
-    "  kase-pilot portfolio [--sort ticker|value|pnl|last]\n"
+    "  kase-pilot portfolio [--symbol SYMBOL] "
+    "[--sort ticker|value|pnl|last]\n"
     "  kase-pilot watch [--follow]\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
@@ -140,11 +141,32 @@ def _sort_portfolio_positions(
     return sorted(positions, key=numeric_key)
 
 
-def _format_portfolio(summary: object, sort_field: str | None = None) -> str:
+def _filter_portfolio_positions(
+    positions: list[Mapping[object, object]],
+    symbol: str | None,
+) -> list[Mapping[object, object]]:
+    if symbol is None:
+        return positions
+    normalized_symbol = symbol.casefold()
+    return [
+        position
+        for position in positions
+        if isinstance((ticker := position.get("i")), str)
+        and bool(ticker)
+        and ticker.casefold() == normalized_symbol
+    ]
+
+
+def _format_portfolio(
+    summary: object,
+    sort_field: str | None = None,
+    symbol: str | None = None,
+) -> str:
     positions, cash_balances = _portfolio_rows(summary)
-    displayed_positions = _sort_portfolio_positions(positions, sort_field)
+    filtered_positions = _filter_portfolio_positions(positions, symbol)
+    displayed_positions = _sort_portfolio_positions(filtered_positions, sort_field)
     totals: dict[str, list[Decimal | None]] = {}
-    for position in positions:
+    for position in filtered_positions:
         currency = position.get("curr")
         if not isinstance(currency, str) or not currency:
             continue
@@ -289,6 +311,10 @@ def run(
         command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
     ):
         raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
+    if command == "portfolio" and symbol is not None:
+        symbol = symbol.strip()
+        if not symbol:
+            raise ValueError("Portfolio symbol must not be empty")
     if (
         command in {"user", "summary", "portfolio", "watch", "orders"}
         and ticker is not None
@@ -382,7 +408,7 @@ def run(
         raise ValueError(f"Unknown command: {command}")
 
     if command == "portfolio":
-        print(_format_portfolio(result, sort_field=sort_field))
+        print(_format_portfolio(result, sort_field=sort_field, symbol=symbol))
     elif command == "watch":
         print(_format_watch(result))
     else:
@@ -424,13 +450,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
-    elif (
-        len(arguments) == 3
-        and arguments[0] == "portfolio"
-        and arguments[1] == "--sort"
-        and arguments[2] in _PORTFOLIO_SORT_FIELDS
-    ):
-        sort_field = arguments[2]
+    elif len(arguments) in {3, 5} and arguments[0] == "portfolio":
+        seen_flags: set[str] = set()
+        for index in range(1, len(arguments), 2):
+            flag = arguments[index]
+            value = arguments[index + 1]
+            if flag in seen_flags or flag not in {"--symbol", "--sort"}:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--sort":
+                if value not in _PORTFOLIO_SORT_FIELDS:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
+                sort_field = value
+            else:
+                symbol = value.strip()
+                if not symbol:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
     elif len(arguments) in {5, 7, 9} and arguments[0] == "trades":
         seen_flags: set[str] = set()
         for index in range(1, len(arguments), 2):
@@ -510,8 +549,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run("orders", active=False)
         if arguments == ["watch", "--follow"]:
             return run("watch", follow=True)
-        if arguments[0] == "portfolio" and sort_field is not None:
-            return run("portfolio", sort_field=sort_field)
+        if arguments[0] == "portfolio" and (
+            symbol is not None or sort_field is not None
+        ):
+            portfolio_arguments: dict[str, object] = {}
+            if symbol is not None:
+                portfolio_arguments["symbol"] = symbol
+            if sort_field is not None:
+                portfolio_arguments["sort_field"] = sort_field
+            return run("portfolio", **portfolio_arguments)
         if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":

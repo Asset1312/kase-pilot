@@ -672,6 +672,131 @@ def test_sort_portfolio_positions_by_numeric_field(
     assert result is not positions
 
 
+def test_filter_portfolio_positions_matches_complete_symbol_case_insensitively() -> (
+    None
+):
+    positions = [
+        {"i": "HSBK.KZ", "marker": 1},
+        {"i": "hsbk.kz", "marker": 2},
+        {"i": "HSBK", "marker": 3},
+        {"i": ""},
+        {"i": 42},
+        {},
+    ]
+    original_order = list(positions)
+
+    result = main_module._filter_portfolio_positions(positions, "hSbK.Kz")
+
+    assert [position["marker"] for position in result] == [1, 2]
+    assert positions == original_order
+    assert result is not positions
+
+
+def test_format_portfolio_filter_updates_positions_and_totals_but_not_cash() -> None:
+    positions = [
+        {
+            "i": "HSBK.KZ",
+            "market_value": 10,
+            "profit_close": 1,
+            "curr": "USD",
+        },
+        {
+            "i": "OTHER.KZ",
+            "market_value": 1000,
+            "profit_close": 100,
+            "curr": "EUR",
+        },
+        {
+            "i": "hsbk.kz",
+            "market_value": 20,
+            "profit_close": 2,
+            "curr": "KZT",
+        },
+    ]
+    cash = [{"curr": "EUR", "s": 3}, {"curr": "USD", "s": 2}]
+    summary = {"result": {"ps": {"pos": positions, "acc": cash}}}
+    original_positions = list(positions)
+
+    output = main_module._format_portfolio(summary, symbol="HSBK.KZ")
+
+    assert output.count("HSBK.KZ") == 1
+    assert output.count("hsbk.kz") == 1
+    assert "OTHER.KZ" not in output
+    totals = output.split("Totals\n\n", 1)[1].split("\n\nCash", 1)[0]
+    assert totals == (
+        "Currency              Value          P/L\n"
+        "----------------------------------------\n"
+        "USD                   10.00         1.00\n"
+        "KZT                   20.00         2.00"
+    )
+    assert output.endswith(
+        "Currency            Balance\n"
+        "---------------------------\n"
+        "EUR                    3.00\n"
+        "USD                    2.00"
+    )
+    assert positions == original_positions
+    assert summary["result"]["ps"]["pos"] is positions
+    assert summary["result"]["ps"]["acc"] is cash
+
+
+def test_format_portfolio_filters_before_sorting() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"i": "MATCH", "name": "Low", "market_value": 2},
+                    {"i": "HIDDEN", "name": "Hidden", "market_value": 1000},
+                    {"i": "match", "name": "High", "market_value": 10},
+                ]
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(
+        summary,
+        symbol="MATCH",
+        sort_field="value",
+    )
+
+    assert output.index("High") < output.index("Low")
+    assert "HIDDEN" not in output
+    assert "Hidden" not in output
+
+
+def test_format_portfolio_no_symbol_match_keeps_cash() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"i": "OTHER.KZ", "market_value": 10, "curr": "KZT"},
+                    {"market_value": 20, "curr": "USD"},
+                    {"i": 42, "market_value": 30, "curr": "EUR"},
+                ],
+                "acc": [{"curr": "KZT", "s": 2.98}],
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary, symbol="HSBK.KZ")
+
+    assert output == (
+        "Portfolio\n"
+        "\n"
+        "No positions.\n"
+        "\n"
+        "Totals\n"
+        "\n"
+        "No totals.\n"
+        "\n"
+        "Cash\n"
+        "\n"
+        "Currency            Balance\n"
+        "---------------------------\n"
+        "KZT                    2.98"
+    )
+
+
 def test_format_portfolio_sort_changes_only_position_rows() -> None:
     positions = [
         {
@@ -1043,6 +1168,42 @@ def test_run_applies_requested_portfolio_sort(
         main_module._format_portfolio(response, sort_field="value") + "\n"
     )
     assert captured.out.index("HIGH") < captured.out.index("LOW")
+    assert captured.err == ""
+
+
+def test_run_applies_requested_portfolio_symbol_filter(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"i": "HSBK.KZ"},
+                    {"i": "OTHER.KZ"},
+                ]
+            }
+        }
+    }
+    use_case = FakeGetAccountSummary(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run("portfolio", symbol=" HSBK.KZ ", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert use_case.calls == 1
+    assert "HSBK.KZ" in captured.out
+    assert "OTHER.KZ" not in captured.out
     assert captured.err == ""
 
 
@@ -1696,6 +1857,37 @@ def test_main_routes_portfolio_sort(
     assert calls == [("portfolio", sort_field)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["portfolio", "--symbol", " HSBK.KZ "], {"symbol": "HSBK.KZ"}),
+        (
+            ["portfolio", "--symbol", "HSBK.KZ", "--sort", "pnl"],
+            {"symbol": "HSBK.KZ", "sort_field": "pnl"},
+        ),
+        (
+            ["portfolio", "--sort", "pnl", "--symbol", "HSBK.KZ"],
+            {"symbol": "HSBK.KZ", "sort_field": "pnl"},
+        ),
+    ],
+)
+def test_main_routes_portfolio_symbol_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("portfolio", expected_options)]
+
+
 def test_main_routes_watch_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2012,6 +2204,12 @@ def test_main_formats_portfolio_configuration_error(
         ["portfolio", "--sort", "unknown"],
         ["portfolio", "--sort", "ticker", "extra"],
         ["portfolio", "--sort", "ticker", "--sort", "value"],
+        ["portfolio", "--symbol"],
+        ["portfolio", "--symbol", ""],
+        ["portfolio", "--symbol", "   "],
+        ["portfolio", "--symbol", "HSBK.KZ", "--symbol", "AAPL.US"],
+        ["portfolio", "--symbol", "HSBK.KZ", "--unknown", "value"],
+        ["portfolio", "--symbol", "HSBK.KZ", "extra"],
     ],
 )
 def test_main_rejects_invalid_portfolio_before_orchestration(
@@ -2209,7 +2407,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
-        "  kase-pilot portfolio [--sort ticker|value|pnl|last]\n"
+        "  kase-pilot portfolio [--symbol SYMBOL] "
+        "[--sort ticker|value|pnl|last]\n"
         "  kase-pilot watch [--follow]\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
