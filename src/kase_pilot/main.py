@@ -29,7 +29,7 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
-    "  kase-pilot portfolio\n"
+    "  kase-pilot portfolio [--sort ticker|value|pnl|last]\n"
     "  kase-pilot watch [--follow]\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
@@ -39,6 +39,7 @@ _USAGE = (
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
+_PORTFOLIO_SORT_FIELDS = {"ticker", "value", "pnl", "last"}
 WATCH_REFRESH_SECONDS = 5
 
 
@@ -107,8 +108,41 @@ def _portfolio_rows(
     return positions, cash_balances
 
 
-def _format_portfolio(summary: object) -> str:
+def _sort_portfolio_positions(
+    positions: list[Mapping[object, object]],
+    sort_field: str | None,
+) -> list[Mapping[object, object]]:
+    if sort_field is None:
+        return positions
+    if sort_field == "ticker":
+
+        def ticker_key(position: Mapping[object, object]) -> tuple[int, str]:
+            ticker = position.get("i")
+            if isinstance(ticker, str) and ticker:
+                return 0, ticker.casefold()
+            return 1, ""
+
+        return sorted(positions, key=ticker_key)
+
+    field = {
+        "value": "market_value",
+        "pnl": "profit_close",
+        "last": "mkt_price",
+    }[sort_field]
+    descending = sort_field in {"value", "last"}
+
+    def numeric_key(position: Mapping[object, object]) -> tuple[int, Decimal]:
+        number = _valid_number(position.get(field))
+        if number is None:
+            return 1, Decimal()
+        return 0, -number if descending else number
+
+    return sorted(positions, key=numeric_key)
+
+
+def _format_portfolio(summary: object, sort_field: str | None = None) -> str:
     positions, cash_balances = _portfolio_rows(summary)
+    displayed_positions = _sort_portfolio_positions(positions, sort_field)
     totals: dict[str, list[Decimal | None]] = {}
     for position in positions:
         currency = position.get("curr")
@@ -123,14 +157,14 @@ def _format_portfolio(summary: object) -> str:
             aggregate[1] = (aggregate[1] or Decimal()) + profit_loss
 
     lines = ["Portfolio", ""]
-    if positions:
+    if displayed_positions:
         header = (
             f"{'Ticker':<14} {'Name':<{_PORTFOLIO_NAME_WIDTH}} "
             f"{'Qty':>12} {'Avg':>12} {'Last':>12} {'P/L':>12} "
             f"{'Value':>12} {'Currency':>10}"
         )
         lines.extend((header, "-" * len(header)))
-        for position in positions:
+        for position in displayed_positions:
             lines.append(
                 f"{_format_text(position.get('i')):<14} "
                 f"{_format_portfolio_name(position.get('name')):<{_PORTFOLIO_NAME_WIDTH}} "
@@ -226,6 +260,7 @@ def run(
     sup: bool = True,
     active: bool = True,
     follow: bool = False,
+    sort_field: str | None = None,
     symbol: str | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
@@ -250,6 +285,10 @@ def run(
         raise ValueError(f"Unknown command: {command}")
     if command == "trades" and (ticker is not None or start is None or end is None):
         raise ValueError("The trades command requires a date range")
+    if sort_field is not None and (
+        command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
+    ):
+        raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
     if (
         command in {"user", "summary", "portfolio", "watch", "orders"}
         and ticker is not None
@@ -343,7 +382,7 @@ def run(
         raise ValueError(f"Unknown command: {command}")
 
     if command == "portfolio":
-        print(_format_portfolio(result))
+        print(_format_portfolio(result, sort_field=sort_field))
     elif command == "watch":
         print(_format_watch(result))
     else:
@@ -365,6 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     symbol = None
     limit = None
     timeframe = None
+    sort_field = None
     if arguments in (
         ["user"],
         ["summary"],
@@ -384,6 +424,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif (
+        len(arguments) == 3
+        and arguments[0] == "portfolio"
+        and arguments[1] == "--sort"
+        and arguments[2] in _PORTFOLIO_SORT_FIELDS
+    ):
+        sort_field = arguments[2]
     elif len(arguments) in {5, 7, 9} and arguments[0] == "trades":
         seen_flags: set[str] = set()
         for index in range(1, len(arguments), 2):
@@ -463,6 +510,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run("orders", active=False)
         if arguments == ["watch", "--follow"]:
             return run("watch", follow=True)
+        if arguments[0] == "portfolio" and sort_field is not None:
+            return run("portfolio", sort_field=sort_field)
         if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":

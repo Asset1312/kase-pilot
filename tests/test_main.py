@@ -599,6 +599,121 @@ def test_format_portfolio_truncates_name_without_mutating_response() -> None:
     assert position["name"] == long_name
 
 
+def test_sort_portfolio_positions_by_ticker_is_stable_and_case_insensitive() -> None:
+    positions = [
+        {"i": "beta"},
+        {"i": "ALPHA", "marker": 1},
+        {"i": "alpha", "marker": 2},
+        {"i": ""},
+        {"i": 42},
+        {},
+    ]
+
+    result = main_module._sort_portfolio_positions(positions, "ticker")
+
+    assert [position.get("i") for position in result] == [
+        "ALPHA",
+        "alpha",
+        "beta",
+        "",
+        42,
+        None,
+    ]
+    assert result[0]["marker"] == 1
+    assert result[1]["marker"] == 2
+
+
+@pytest.mark.parametrize(
+    ("sort_field", "positions", "expected_tickers"),
+    [
+        (
+            "value",
+            [
+                {"i": "two", "market_value": 2},
+                {"i": "ten-a", "market_value": 10},
+                {"i": "invalid-bool", "market_value": True},
+                {"i": "ten-b", "market_value": 10},
+                {"i": "invalid-string", "market_value": "100"},
+            ],
+            ["ten-a", "ten-b", "two", "invalid-bool", "invalid-string"],
+        ),
+        (
+            "pnl",
+            [
+                {"i": "positive", "profit_close": 5},
+                {"i": "loss", "profit_close": -10},
+                {"i": "zero", "profit_close": 0},
+                {"i": "invalid", "profit_close": None},
+            ],
+            ["loss", "zero", "positive", "invalid"],
+        ),
+        (
+            "last",
+            [
+                {"i": "low", "mkt_price": 2},
+                {"i": "high", "mkt_price": 10},
+                {"i": "invalid", "mkt_price": "100"},
+            ],
+            ["high", "low", "invalid"],
+        ),
+    ],
+)
+def test_sort_portfolio_positions_by_numeric_field(
+    sort_field: str,
+    positions: list[dict[str, object]],
+    expected_tickers: list[str],
+) -> None:
+    original_order = list(positions)
+
+    result = main_module._sort_portfolio_positions(positions, sort_field)
+
+    assert [position["i"] for position in result] == expected_tickers
+    assert positions == original_order
+    assert result is not positions
+
+
+def test_format_portfolio_sort_changes_only_position_rows() -> None:
+    positions = [
+        {
+            "i": "LOW",
+            "market_value": 2,
+            "profit_close": 1,
+            "curr": "USD",
+        },
+        {
+            "i": "HIGH",
+            "market_value": 10,
+            "profit_close": 2,
+            "curr": "KZT",
+        },
+    ]
+    cash = [{"curr": "USD", "s": 1}, {"curr": "KZT", "s": 2}]
+    summary = {"result": {"ps": {"pos": positions, "acc": cash}}}
+    original_positions = list(positions)
+
+    default_output = main_module._format_portfolio(summary)
+    sorted_output = main_module._format_portfolio(summary, sort_field="value")
+
+    assert default_output.index("LOW") < default_output.index("HIGH")
+    assert sorted_output.index("HIGH") < sorted_output.index("LOW")
+    assert (
+        default_output.split("\nTotals\n", 1)[1]
+        == sorted_output.split("\nTotals\n", 1)[1]
+    )
+    assert positions == original_positions
+    assert summary["result"]["ps"]["pos"] is positions
+    assert summary["result"]["ps"]["acc"] is cash
+
+
+def test_format_portfolio_sort_preserves_empty_positions() -> None:
+    summary = {"result": {"ps": {"pos": [], "acc": []}}}
+
+    assert main_module._format_portfolio(summary, sort_field="ticker") == (
+        "Portfolio\n\nNo positions.\n\nTotals\n\nNo totals.\n\n"
+        "Cash\n\nNo cash balances."
+    )
+
+
 def test_format_portfolio_aggregates_multiple_positions_in_one_currency() -> None:
     summary = {
         "result": {
@@ -890,6 +1005,44 @@ def test_run_routes_portfolio_through_account_summary_and_prints_text_table(
     assert "HSBK.KZ" in captured.out
     assert "362.63" in captured.out
     assert "Позиция" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_applies_requested_portfolio_sort(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"i": "LOW", "market_value": 2},
+                    {"i": "HIGH", "market_value": 10},
+                ]
+            }
+        }
+    }
+    use_case = FakeGetAccountSummary(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run("portfolio", sort_field="value", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert use_case.calls == 1
+    assert captured.out == (
+        main_module._format_portfolio(response, sort_field="value") + "\n"
+    )
+    assert captured.out.index("HIGH") < captured.out.index("LOW")
     assert captured.err == ""
 
 
@@ -1526,6 +1679,23 @@ def test_main_routes_portfolio_without_operation_arguments(
     assert calls == ["portfolio"]
 
 
+@pytest.mark.parametrize("sort_field", ["ticker", "value", "pnl", "last"])
+def test_main_routes_portfolio_sort(
+    sort_field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_run(command: str, *, sort_field: str) -> int:
+        calls.append((command, sort_field))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["portfolio", "--sort", sort_field]) == 17
+    assert calls == [("portfolio", sort_field)]
+
+
 def test_main_routes_watch_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1838,6 +2008,10 @@ def test_main_formats_portfolio_configuration_error(
     [
         ["portfolio", "extra"],
         ["portfolio", "--anything"],
+        ["portfolio", "--sort"],
+        ["portfolio", "--sort", "unknown"],
+        ["portfolio", "--sort", "ticker", "extra"],
+        ["portfolio", "--sort", "ticker", "--sort", "value"],
     ],
 )
 def test_main_rejects_invalid_portfolio_before_orchestration(
@@ -2035,7 +2209,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
-        "  kase-pilot portfolio\n"
+        "  kase-pilot portfolio [--sort ticker|value|pnl|last]\n"
         "  kase-pilot watch [--follow]\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
