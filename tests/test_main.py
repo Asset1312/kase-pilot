@@ -120,6 +120,16 @@ class FakeGetHistorical:
         return self.response
 
 
+class FakeGetCorporateActions:
+    def __init__(self, response: list[dict[str, Any]] | None = None) -> None:
+        self.response = [] if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, reception: object = 35) -> list[dict[str, Any]]:
+        self.calls.append(reception)
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -728,6 +738,85 @@ def test_run_orders_history_explicit_json_matches_plain_output(
     json_output = capsys.readouterr()
 
     assert use_case.calls == [{}, {}]
+    assert plain_output == json_output
+
+
+def test_run_corporate_actions_uses_default_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = [{"name": "Дивиденд", "unknown": {"nested": [True, None]}}]
+    use_case = FakeGetCorporateActions(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetCorporateActions:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_corporate_actions", fake_create)
+
+    assert main_module.run("corporate-actions", environ={}) == 0
+
+    captured = capsys.readouterr()
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [35]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Дивиденд" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_corporate_actions_forwards_explicit_reception_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    reception = 17
+    use_case = FakeGetCorporateActions()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_corporate_actions",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("corporate-actions", reception=reception, environ={})
+
+    assert use_case.calls == [reception]
+    assert use_case.calls[0] is reception
+
+
+def test_run_corporate_actions_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = [{"raw": {"nested": ["данные", 17, None]}}]
+    use_case = FakeGetCorporateActions(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_corporate_actions",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("corporate-actions", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("corporate-actions", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [35, 35]
     assert plain_output == json_output
 
 
@@ -2756,6 +2845,41 @@ def test_main_routes_orders_history_options_in_any_order(
     assert calls == [("orders-history", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["corporate-actions"], {}),
+        (
+            ["corporate-actions", "--reception", "17"],
+            {"reception": 17},
+        ),
+        (
+            ["corporate-actions", "--json", "--reception", "17"],
+            {"reception": 17, "json_output": True},
+        ),
+        (
+            ["corporate-actions", "--reception", "17", "--json"],
+            {"reception": 17, "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_corporate_actions_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("corporate-actions", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3525,6 +3649,57 @@ def test_main_rejects_invalid_orders_history_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["corporate-actions", "extra"],
+        ["corporate-actions", "--unknown"],
+        ["corporate-actions", "--reception"],
+        ["corporate-actions", "--reception", "--json"],
+        ["corporate-actions", "--reception", "invalid"],
+        ["corporate-actions", "--reception", "1.5"],
+        ["corporate-actions", "--reception", "0"],
+        ["corporate-actions", "--reception", "-1"],
+        ["corporate-actions", "--json", "--json"],
+        [
+            "corporate-actions",
+            "--reception",
+            "17",
+            "--reception",
+            "35",
+        ],
+        ["corporate-actions", "--reception", "17", "extra"],
+    ],
+)
+def test_main_rejects_invalid_corporate_actions_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetCorporateActions()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_corporate_actions",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -3712,6 +3887,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
         "[--losers] [--json]\n"
         "  kase-pilot orders-history [--start DATETIME] [--end DATETIME] [--json]\n"
+        "  kase-pilot corporate-actions [--reception DAYS] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "
