@@ -500,6 +500,46 @@ def test_run_routes_summary_without_arguments_and_prints_pretty_json(
     assert captured.err == ""
 
 
+def test_run_routes_portfolio_through_account_summary_and_prints_raw_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key=" PublicKey ",
+        tradernet_private_key=" PrivateKey ",
+    )
+    positions = [{"ticker": "AAPL.US", "quantity": "12.50"}]
+    response = {
+        "title": "Портфель",
+        "positions": positions,
+        "unknown_field": {"nested": [True, None]},
+    }
+    use_case = FakeGetAccountSummary(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetAccountSummary:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_account_summary", fake_create)
+
+    exit_code = main_module.run("portfolio", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [(" PublicKey ", " PrivateKey ")]
+    assert use_case.calls == 1
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert "Портфель" in captured.out
+    assert "\\u" not in captured.out
+    parsed_response = json.loads(captured.out)
+    assert parsed_response == response
+    assert parsed_response["positions"] == positions
+    assert parsed_response["unknown_field"] == response["unknown_field"]
+    assert captured.err == ""
+
+
 def test_run_propagates_summary_use_case_error_without_output(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -519,6 +559,31 @@ def test_run_propagates_summary_use_case_error_without_output(
 
     with pytest.raises(RuntimeError) as exc_info:
         main_module.run("summary", environ={})
+
+    assert exc_info.value is original
+    assert use_case.calls == 1
+    assert capsys.readouterr() == ("", "")
+
+
+def test_run_propagates_portfolio_use_case_error_without_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("portfolio request failed")
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeGetAccountSummary(error=original)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_module.run("portfolio", environ={})
 
     assert exc_info.value is original
     assert use_case.calls == 1
@@ -926,6 +991,21 @@ def test_main_routes_summary_without_operation_arguments(
     assert calls == ["summary"]
 
 
+def test_main_routes_portfolio_without_operation_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run(command: str) -> int:
+        calls.append(command)
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["portfolio"]) == 17
+    assert calls == ["portfolio"]
+
+
 def test_main_routes_orders_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1187,6 +1267,56 @@ def test_main_formats_configuration_error(
     assert private_key not in captured.err
 
 
+def test_main_formats_portfolio_configuration_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "Missing required environment variable: TRADERNET_PUBLIC_KEY"
+
+    def fail_run(command: str) -> None:
+        assert command == "portfolio"
+        raise ConfigurationError(message)
+
+    monkeypatch.setattr(main_module, "run", fail_run)
+
+    assert main_module.main(["portfolio"]) == 1
+    assert capsys.readouterr() == ("", message + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["portfolio", "extra"],
+        ["portfolio", "--anything"],
+    ],
+)
+def test_main_rejects_invalid_portfolio_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda *args, **kwargs: orchestration_calls.append("factory"),
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -1201,6 +1331,8 @@ def test_main_formats_configuration_error(
         ["summary", "extra"],
         ["summary", "--anything"],
         ["summary", "summary"],
+        ["portfolio", "extra"],
+        ["portfolio", "--anything"],
         ["orders", "extra"],
         ["orders", "--anything"],
         ["orders", "orders"],
@@ -1349,6 +1481,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
+        "  kase-pilot portfolio\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
         "[--symbol SYMBOL] [--limit NUMBER]\n"
