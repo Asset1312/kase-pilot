@@ -1,5 +1,6 @@
 """Tests for the KASE Pilot application entry point."""
 
+import copy
 import json
 import sys
 import tomllib
@@ -797,6 +798,123 @@ def test_format_portfolio_no_symbol_match_keeps_cash() -> None:
     )
 
 
+def test_portfolio_json_normalizes_values_and_preserves_schema_order() -> None:
+    long_name = "Очень длинное название инструмента без усечения"
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {
+                        "i": "HSBK.KZ",
+                        "name": long_name,
+                        "q": "2",
+                        "price_a": "362.625",
+                        "mkt_price": True,
+                        "profit_close": float("nan"),
+                        "market_value": "10.5",
+                        "curr": "KZT",
+                    },
+                    {
+                        "name": "",
+                        "q": 0.00018,
+                        "price_a": float("inf"),
+                        "market_value": "invalid",
+                        "curr": "",
+                    },
+                ],
+                "acc": [
+                    {"curr": "KZT", "s": "0"},
+                    {"s": "1.53"},
+                    "malformed",
+                ],
+            }
+        }
+    }
+    original = copy.deepcopy(summary)
+
+    result = main_module._portfolio_json(summary)
+
+    assert list(result) == ["positions", "totals", "cash"]
+    assert result == {
+        "positions": [
+            {
+                "ticker": "HSBK.KZ",
+                "name": long_name,
+                "quantity": 2,
+                "average_price": 362.625,
+                "last_price": None,
+                "profit_loss": None,
+                "market_value": 10.5,
+                "currency": "KZT",
+            },
+            {
+                "ticker": None,
+                "name": "",
+                "quantity": 0.00018,
+                "average_price": None,
+                "last_price": None,
+                "profit_loss": None,
+                "market_value": None,
+                "currency": "",
+            },
+        ],
+        "totals": [
+            {
+                "currency": "KZT",
+                "market_value": 10.5,
+                "profit_loss": None,
+            }
+        ],
+        "cash": [
+            {"currency": "KZT", "balance": 0},
+            {"currency": None, "balance": 1.53},
+        ],
+    }
+    assert summary == original
+
+
+def test_portfolio_json_filters_before_sorting_and_uses_filtered_totals() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {
+                        "i": "HSBK.KZ",
+                        "name": "Low",
+                        "market_value": 2,
+                        "curr": "USD",
+                    },
+                    {
+                        "i": "OTHER.KZ",
+                        "name": "Hidden",
+                        "market_value": 1000,
+                        "curr": "EUR",
+                    },
+                    {
+                        "i": "hsbk.kz",
+                        "name": "High",
+                        "market_value": 10,
+                        "profit_close": "-1.5",
+                        "curr": "KZT",
+                    },
+                ]
+            }
+        }
+    }
+
+    result = main_module._portfolio_json(
+        summary,
+        symbol="HSBK.KZ",
+        sort_field="value",
+    )
+
+    assert [position["name"] for position in result["positions"]] == ["High", "Low"]
+    assert result["totals"] == [
+        {"currency": "USD", "market_value": 2, "profit_loss": None},
+        {"currency": "KZT", "market_value": 10, "profit_loss": -1.5},
+    ]
+
+
 def test_format_portfolio_sort_changes_only_position_rows() -> None:
     positions = [
         {
@@ -1204,6 +1322,51 @@ def test_run_applies_requested_portfolio_symbol_filter(
     assert use_case.calls == 1
     assert "HSBK.KZ" in captured.out
     assert "OTHER.KZ" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_prints_normalized_portfolio_json_without_extra_text(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {
+                        "i": "HSBK.KZ",
+                        "name": "Народный банк Казахстана",
+                        "market_value": "10.5",
+                        "curr": "KZT",
+                    }
+                ],
+                "acc": [{"curr": "KZT", "s": "0"}],
+            }
+        }
+    }
+    use_case = FakeGetAccountSummary(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_account_summary",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run("portfolio", json_output=True, environ={})
+
+    captured = capsys.readouterr()
+    expected = main_module._portfolio_json(response)
+    assert exit_code == 0
+    assert use_case.calls == 1
+    assert captured.out == json.dumps(expected, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == expected
+    assert "Народный банк Казахстана" in captured.out
+    assert "\\u" not in captured.out
+    assert not captured.out.startswith("Portfolio")
     assert captured.err == ""
 
 
@@ -1888,6 +2051,67 @@ def test_main_routes_portfolio_symbol_options_in_any_order(
     assert calls == [("portfolio", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["portfolio", "--json"], {"json_output": True}),
+        (
+            ["portfolio", "--symbol", " HSBK.KZ ", "--json"],
+            {"symbol": "HSBK.KZ", "json_output": True},
+        ),
+        (
+            ["portfolio", "--json", "--symbol", "HSBK.KZ"],
+            {"symbol": "HSBK.KZ", "json_output": True},
+        ),
+        (
+            ["portfolio", "--sort", "pnl", "--json"],
+            {"sort_field": "pnl", "json_output": True},
+        ),
+        (
+            ["portfolio", "--json", "--sort", "pnl"],
+            {"sort_field": "pnl", "json_output": True},
+        ),
+        (
+            [
+                "portfolio",
+                "--symbol",
+                "HSBK.KZ",
+                "--sort",
+                "pnl",
+                "--json",
+            ],
+            {"symbol": "HSBK.KZ", "sort_field": "pnl", "json_output": True},
+        ),
+        (
+            [
+                "portfolio",
+                "--json",
+                "--sort",
+                "pnl",
+                "--symbol",
+                "HSBK.KZ",
+            ],
+            {"symbol": "HSBK.KZ", "sort_field": "pnl", "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_portfolio_json_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("portfolio", expected_options)]
+
+
 def test_main_routes_watch_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2210,6 +2434,9 @@ def test_main_formats_portfolio_configuration_error(
         ["portfolio", "--symbol", "HSBK.KZ", "--symbol", "AAPL.US"],
         ["portfolio", "--symbol", "HSBK.KZ", "--unknown", "value"],
         ["portfolio", "--symbol", "HSBK.KZ", "extra"],
+        ["portfolio", "--json", "--json"],
+        ["portfolio", "--json", "extra"],
+        ["portfolio", "--json", "--symbol"],
     ],
 )
 def test_main_rejects_invalid_portfolio_before_orchestration(
@@ -2408,7 +2635,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "
-        "[--sort ticker|value|pnl|last]\n"
+        "[--sort ticker|value|pnl|last] [--json]\n"
         "  kase-pilot watch [--follow]\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "

@@ -1,6 +1,7 @@
 """Application entry point."""
 
 import json
+import math
 import os
 import sys
 import time
@@ -30,7 +31,7 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
-    "[--sort ticker|value|pnl|last]\n"
+    "[--sort ticker|value|pnl|last] [--json]\n"
     "  kase-pilot watch [--follow]\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
@@ -157,16 +158,24 @@ def _filter_portfolio_positions(
     ]
 
 
-def _format_portfolio(
-    summary: object,
-    sort_field: str | None = None,
-    symbol: str | None = None,
-) -> str:
-    positions, cash_balances = _portfolio_rows(summary)
+def _prepare_portfolio_positions(
+    positions: list[Mapping[object, object]],
+    symbol: str | None,
+    sort_field: str | None,
+) -> tuple[
+    list[Mapping[object, object]],
+    list[Mapping[object, object]],
+]:
     filtered_positions = _filter_portfolio_positions(positions, symbol)
     displayed_positions = _sort_portfolio_positions(filtered_positions, sort_field)
+    return filtered_positions, displayed_positions
+
+
+def _portfolio_totals(
+    positions: list[Mapping[object, object]],
+) -> dict[str, list[Decimal | None]]:
     totals: dict[str, list[Decimal | None]] = {}
-    for position in filtered_positions:
+    for position in positions:
         currency = position.get("curr")
         if not isinstance(currency, str) or not currency:
             continue
@@ -177,6 +186,21 @@ def _format_portfolio(
             aggregate[0] = (aggregate[0] or Decimal()) + market_value
         if profit_loss is not None:
             aggregate[1] = (aggregate[1] or Decimal()) + profit_loss
+    return totals
+
+
+def _format_portfolio(
+    summary: object,
+    sort_field: str | None = None,
+    symbol: str | None = None,
+) -> str:
+    positions, cash_balances = _portfolio_rows(summary)
+    filtered_positions, displayed_positions = _prepare_portfolio_positions(
+        positions,
+        symbol,
+        sort_field,
+    )
+    totals = _portfolio_totals(filtered_positions)
 
     lines = ["Portfolio", ""]
     if displayed_positions:
@@ -235,6 +259,94 @@ def _format_portfolio(
     return "\n".join(lines)
 
 
+def _json_decimal(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
+
+
+def _json_number(value: object) -> int | float | None:
+    number = _json_decimal(value)
+    if number is None:
+        return None
+    if number == number.to_integral_value():
+        return int(number)
+    result = float(number)
+    return result if math.isfinite(result) else None
+
+
+def _json_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _portfolio_json_totals(
+    positions: list[Mapping[object, object]],
+) -> dict[str, list[Decimal | None]]:
+    totals: dict[str, list[Decimal | None]] = {}
+    for position in positions:
+        currency = position.get("curr")
+        if not isinstance(currency, str) or not currency:
+            continue
+        aggregate = totals.setdefault(currency, [None, None])
+        market_value = _json_decimal(position.get("market_value"))
+        profit_loss = _json_decimal(position.get("profit_close"))
+        if market_value is not None:
+            aggregate[0] = (aggregate[0] or Decimal()) + market_value
+        if profit_loss is not None:
+            aggregate[1] = (aggregate[1] or Decimal()) + profit_loss
+    return totals
+
+
+def _portfolio_json(
+    summary: object,
+    sort_field: str | None = None,
+    symbol: str | None = None,
+) -> dict[str, object]:
+    positions, cash_balances = _portfolio_rows(summary)
+    filtered_positions, displayed_positions = _prepare_portfolio_positions(
+        positions,
+        symbol,
+        sort_field,
+    )
+    totals = _portfolio_json_totals(filtered_positions)
+
+    return {
+        "positions": [
+            {
+                "ticker": _json_string(position.get("i")),
+                "name": _json_string(position.get("name")),
+                "quantity": _json_number(position.get("q")),
+                "average_price": _json_number(position.get("price_a")),
+                "last_price": _json_number(position.get("mkt_price")),
+                "profit_loss": _json_number(position.get("profit_close")),
+                "market_value": _json_number(position.get("market_value")),
+                "currency": _json_string(position.get("curr")),
+            }
+            for position in displayed_positions
+        ],
+        "totals": [
+            {
+                "currency": currency,
+                "market_value": _json_number(aggregate[0]),
+                "profit_loss": _json_number(aggregate[1]),
+            }
+            for currency, aggregate in totals.items()
+            if aggregate[0] is not None or aggregate[1] is not None
+        ],
+        "cash": [
+            {
+                "currency": _json_string(balance.get("curr")),
+                "balance": _json_number(balance.get("s")),
+            }
+            for balance in cash_balances
+        ],
+    }
+
+
 def _format_watch(summary: object) -> str:
     positions, cash_balances = _portfolio_rows(summary)
 
@@ -282,6 +394,7 @@ def run(
     sup: bool = True,
     active: bool = True,
     follow: bool = False,
+    json_output: bool = False,
     sort_field: str | None = None,
     symbol: str | None = None,
     limit: int | None = None,
@@ -311,6 +424,8 @@ def run(
         command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
     ):
         raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
+    if json_output and command != "portfolio":
+        raise ValueError("JSON output is supported only for portfolio")
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
         if not symbol:
@@ -408,7 +523,16 @@ def run(
         raise ValueError(f"Unknown command: {command}")
 
     if command == "portfolio":
-        print(_format_portfolio(result, sort_field=sort_field, symbol=symbol))
+        if json_output:
+            print(
+                json.dumps(
+                    _portfolio_json(result, sort_field=sort_field, symbol=symbol),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print(_format_portfolio(result, sort_field=sort_field, symbol=symbol))
     elif command == "watch":
         print(_format_watch(result))
     else:
@@ -431,6 +555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     limit = None
     timeframe = None
     sort_field = None
+    json_output = False
     if arguments in (
         ["user"],
         ["summary"],
@@ -450,16 +575,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
-    elif len(arguments) in {3, 5} and arguments[0] == "portfolio":
+    elif arguments and arguments[0] == "portfolio":
         seen_flags: set[str] = set()
-        for index in range(1, len(arguments), 2):
+        index = 1
+        while index < len(arguments):
             flag = arguments[index]
-            value = arguments[index + 1]
-            if flag in seen_flags or flag not in {"--symbol", "--sort"}:
+            if flag in seen_flags or flag not in {"--symbol", "--sort", "--json"}:
                 print(_USAGE, file=sys.stderr)
                 return 2
             seen_flags.add(flag)
 
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
             if flag == "--sort":
                 if value not in _PORTFOLIO_SORT_FIELDS:
                     print(_USAGE, file=sys.stderr)
@@ -470,6 +603,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not symbol:
                     print(_USAGE, file=sys.stderr)
                     return 2
+            index += 2
     elif len(arguments) in {5, 7, 9} and arguments[0] == "trades":
         seen_flags: set[str] = set()
         for index in range(1, len(arguments), 2):
@@ -550,13 +684,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments == ["watch", "--follow"]:
             return run("watch", follow=True)
         if arguments[0] == "portfolio" and (
-            symbol is not None or sort_field is not None
+            symbol is not None or sort_field is not None or json_output
         ):
             portfolio_arguments: dict[str, object] = {}
             if symbol is not None:
                 portfolio_arguments["symbol"] = symbol
             if sort_field is not None:
                 portfolio_arguments["sort_field"] = sort_field
+            if json_output:
+                portfolio_arguments["json_output"] = True
             return run("portfolio", **portfolio_arguments)
         if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
