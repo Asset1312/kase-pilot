@@ -7,12 +7,14 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from datetime import time as datetime_time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from kase_pilot.app import (
     create_find_instrument,
     create_get_account_summary,
+    create_get_broker_report,
     create_get_corporate_actions,
     create_get_current_quotes,
     create_get_historical,
@@ -46,6 +48,8 @@ _USAGE = (
     "  kase-pilot requests-history [--doc-id ID] [--exec-id ID] "
     "[--start DATE] [--end DATE] [--limit LIMIT] [--offset OFFSET] "
     "[--status STATUS] [--json]\n"
+    "  kase-pilot broker-report [--start DATE] [--end DATE] [--period TIME] "
+    "[--json]\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -563,6 +567,27 @@ def _run_requests_history(
     return 0
 
 
+def _run_broker_report(
+    public_key: str,
+    private_key: str,
+    *,
+    start: date | None,
+    end: date | None,
+    period: datetime_time | None,
+) -> int:
+    use_case = create_get_broker_report(public_key, private_key)
+    arguments: dict[str, object] = {}
+    if start is not None:
+        arguments["start"] = start
+    if end is not None:
+        arguments["end"] = end
+    if period is not None:
+        arguments["period"] = period
+    result = use_case.execute(**arguments)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_user(public_key: str, private_key: str) -> int:
     use_case = create_get_user_info(public_key, private_key)
     result = use_case.execute()
@@ -691,6 +716,7 @@ def run(
     exec_id: int | None = None,
     offset: int | None = None,
     status: int | None = None,
+    period: datetime_time | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
@@ -710,6 +736,7 @@ def run(
         "corporate-actions",
         "price-alerts",
         "requests-history",
+        "broker-report",
         "user",
         "summary",
         "portfolio",
@@ -740,11 +767,12 @@ def run(
         "corporate-actions",
         "price-alerts",
         "requests-history",
+        "broker-report",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
-            "and requests-history"
+            "requests-history, and broker-report"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -764,6 +792,7 @@ def run(
             "corporate-actions",
             "price-alerts",
             "requests-history",
+            "broker-report",
         }
         and ticker is not None
     ):
@@ -783,6 +812,7 @@ def run(
             "corporate-actions",
             "price-alerts",
             "requests-history",
+            "broker-report",
         }
         and ticker is None
     ):
@@ -853,6 +883,14 @@ def run(
             offset=offset,
             status=status,
         )
+    if command == "broker-report":
+        return _run_broker_report(
+            public_key,
+            private_key,
+            start=start,
+            end=end,
+            period=period,
+        )
     if command == "user":
         return _run_user(public_key, private_key)
     if command == "summary":
@@ -907,6 +945,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     exec_id = None
     offset = None
     status = None
+    period = None
     limit = None
     timeframe = None
     sort_field = None
@@ -925,6 +964,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["corporate-actions"],
         ["price-alerts"],
         ["requests-history"],
+        ["broker-report"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1199,6 +1239,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     status = parsed_integer
             index += 2
+    elif arguments and arguments[0] == "broker-report":
+        broker_report_flags = {"--start", "--end", "--period", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in broker_report_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
+            try:
+                if flag == "--period":
+                    period = datetime_time.fromisoformat(value)
+                else:
+                    parsed_date = date.fromisoformat(value)
+                    if flag == "--start":
+                        start = parsed_date
+                    else:
+                        end = parsed_date
+            except ValueError:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            index += 2
     elif arguments and arguments[0] == "trades":
         seen_flags: set[str] = set()
         trades_flags = {"--from", "--to", "--symbol", "--limit", "--json"}
@@ -1306,6 +1378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "corporate-actions",
             "price-alerts",
             "requests-history",
+            "broker-report",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1387,6 +1460,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 request_history_arguments["json_output"] = True
             return run("requests-history", **request_history_arguments)
+        if arguments[0] == "broker-report":
+            broker_report_arguments: dict[str, object] = {}
+            if start is not None:
+                broker_report_arguments["start"] = start
+            if end is not None:
+                broker_report_arguments["end"] = end
+            if period is not None:
+                broker_report_arguments["period"] = period
+            if json_output:
+                broker_report_arguments["json_output"] = True
+            return run("broker-report", **broker_report_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)

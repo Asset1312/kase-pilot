@@ -4,7 +4,7 @@ import copy
 import json
 import sys
 import tomllib
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -141,6 +141,16 @@ class FakeGetPriceAlerts:
 
 
 class FakeGetRequestsHistory:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[dict[str, object]] = []
+
+    def execute(self, **arguments: object) -> dict[str, Any]:
+        self.calls.append(arguments)
+        return self.response
+
+
+class FakeGetBrokerReport:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
         self.calls: list[dict[str, object]] = []
@@ -4307,6 +4317,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot requests-history [--doc-id ID] [--exec-id ID] "
         "[--start DATE] [--end DATE] [--limit LIMIT] [--offset OFFSET] "
         "[--status STATUS] [--json]\n"
+        "  kase-pilot broker-report [--start DATE] [--end DATE] [--period TIME] "
+        "[--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -4336,3 +4348,205 @@ def test_main_propagates_run_error_without_output(
 
     assert exc_info.value is original
     assert capsys.readouterr() == ("", "")
+
+
+def test_run_broker_report_omits_defaults_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"trades": [{"name": "Сделка", "nested": [1, None]}]}
+    use_case = FakeGetBrokerReport(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetBrokerReport:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_broker_report", fake_create)
+
+    assert main_module.run("broker-report", environ={}) == 0
+
+    captured = capsys.readouterr()
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [{}]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Сделка" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_broker_report_forwards_only_explicit_values_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    start = date(2026, 1, 1)
+    end = date(2026, 1, 31)
+    period = time.fromisoformat("18:30:15.123456+05:00")
+    use_case = FakeGetBrokerReport()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_broker_report",
+        lambda public, private: use_case,
+    )
+
+    assert (
+        main_module.run(
+            "broker-report",
+            start=start,
+            end=end,
+            period=period,
+            environ={},
+        )
+        == 0
+    )
+
+    assert use_case.calls == [{"start": start, "end": end, "period": period}]
+    assert use_case.calls[0]["start"] is start
+    assert use_case.calls[0]["end"] is end
+    assert use_case.calls[0]["period"] is period
+
+
+def test_run_broker_report_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetBrokerReport(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_broker_report",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("broker-report", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("broker-report", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [{}, {}]
+    assert plain_output == json_output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["broker-report"], {}),
+        (
+            ["broker-report", "--start", "2026-01-01"],
+            {"start": date(2026, 1, 1)},
+        ),
+        (
+            ["broker-report", "--end", "2026-01-31"],
+            {"end": date(2026, 1, 31)},
+        ),
+        (
+            ["broker-report", "--period", "18:30:15"],
+            {"period": time(18, 30, 15)},
+        ),
+        (
+            ["broker-report", "--period", "18:30:15.123456"],
+            {"period": time(18, 30, 15, 123456)},
+        ),
+        (
+            ["broker-report", "--period", "18:30:15+05:00"],
+            {"period": time.fromisoformat("18:30:15+05:00")},
+        ),
+        (
+            [
+                "broker-report",
+                "--json",
+                "--period",
+                "18:30:15",
+                "--end",
+                "2026-01-31",
+                "--start",
+                "2026-01-01",
+            ],
+            {
+                "start": date(2026, 1, 1),
+                "end": date(2026, 1, 31),
+                "period": time(18, 30, 15),
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_broker_report_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("broker-report", expected_options)]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["broker-report", "--start"],
+        ["broker-report", "--end"],
+        ["broker-report", "--period"],
+        ["broker-report", "--start", "--json"],
+        ["broker-report", "--start", "not-a-date"],
+        ["broker-report", "--start", "2026-01-01T09:30:00"],
+        ["broker-report", "--end", "2026-13-01"],
+        ["broker-report", "--period", "not-a-time"],
+        ["broker-report", "--period", "25:00:00"],
+        ["broker-report", "--json", "--json"],
+        ["broker-report", "--start", "2026-01-01", "--start", "2026-02-01"],
+        ["broker-report", "--end", "2026-01-01", "--end", "2026-02-01"],
+        ["broker-report", "--period", "12:00", "--period", "13:00"],
+        ["broker-report", "--unknown"],
+        ["broker-report", "extra"],
+    ],
+)
+def test_main_rejects_invalid_broker_report_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetBrokerReport()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_broker_report",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
