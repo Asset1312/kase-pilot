@@ -97,6 +97,31 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], response)
 
+    def get_most_traded(
+        self,
+        instrument_type: str = "stocks",
+        exchange: str = "usa",
+        gainers: bool = True,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Return most-traded instruments without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_most_traded(
+                instrument_type,
+                exchange=exchange,
+                gainers=gainers,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError(
+                "Tradernet SDK returned a non-mapping most-traded response"
+            )
+
+        return cast(dict[str, Any], response)
+
     def get_candles(
         self,
         symbol: str,

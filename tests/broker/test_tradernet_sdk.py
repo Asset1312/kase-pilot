@@ -21,6 +21,7 @@ class FakeSdkClient:
         self.find_symbol_calls: list[object] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
+        self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -59,6 +60,17 @@ class FakeSdkClient:
         mode: object = None,
     ) -> Any:
         self.get_market_status_calls.append((market, mode))
+        return self.response
+
+    def get_most_traded(
+        self,
+        instrument_type: object = "stocks",
+        *,
+        exchange: object = "usa",
+        gainers: object = True,
+        limit: object = 10,
+    ) -> Any:
+        self.get_most_traded_calls.append((instrument_type, exchange, gainers, limit))
         return self.response
 
     def get_candles(
@@ -352,6 +364,71 @@ def test_get_market_status_sdk_exception_becomes_api_request_error_with_cause() 
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_market_status()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_most_traded_forwards_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"items": [{"unknown": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_most_traded()
+
+    assert sdk.get_most_traded_calls == [("stocks", "usa", True, 10)]
+    assert result is response
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"instrument_type": "bonds"}, ("bonds", "usa", True, 10)),
+        ({"exchange": "europe"}, ("stocks", "europe", True, 10)),
+        ({"gainers": False}, ("stocks", "usa", False, 10)),
+        ({"limit": 25}, ("stocks", "usa", True, 25)),
+    ],
+)
+def test_get_most_traded_forwards_each_explicit_argument(
+    arguments: dict[str, Any],
+    expected: tuple[object, object, object, object],
+) -> None:
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_most_traded(**arguments)
+
+    assert sdk.get_most_traded_calls == [expected]
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_most_traded_non_mapping_response_raises_validation_error(
+    response: Any,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping most-traded response"):
+        adapter.get_most_traded()
+
+
+def test_get_most_traded_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_most_traded(
+            self,
+            instrument_type: str = "stocks",
+            *,
+            exchange: str = "usa",
+            gainers: bool = True,
+            limit: int = 10,
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_most_traded()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
