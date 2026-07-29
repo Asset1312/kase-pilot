@@ -19,6 +19,7 @@ class FakeSdkClient:
         self.calls: list[tuple[str, bool]] = []
         self.quote_calls: list[object] = []
         self.find_symbol_calls: list[object] = []
+        self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -37,6 +38,17 @@ class FakeSdkClient:
 
     def find_symbol(self, query: object) -> Any:
         self.find_symbol_calls.append(query)
+        return self.response
+
+    def get_news(
+        self,
+        query: object,
+        *,
+        symbol: object = None,
+        story_id: object = None,
+        limit: object = 30,
+    ) -> Any:
+        self.get_news_calls.append((query, symbol, story_id, limit))
         return self.response
 
     def get_candles(
@@ -195,6 +207,75 @@ def test_find_symbol_sdk_exception_becomes_api_request_error_with_cause() -> Non
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.find_symbol("Apple")
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (
+    None
+):
+    query = "Казахстан"
+    response = {"result": {"items": [{"unknown_field": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_news(query)
+
+    assert sdk.get_news_calls == [(query, None, None, 30)]
+    assert sdk.get_news_calls[0][0] is query
+    assert result is response
+
+
+def test_get_news_forwards_explicit_optional_arguments() -> None:
+    query = "ignored query"
+    symbol = "AAPL.US"
+    story_id = "story-17"
+    limit = 7
+    response = {"result": {"items": []}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_news(
+        query,
+        symbol=symbol,
+        story_id=story_id,
+        limit=limit,
+    )
+
+    assert sdk.get_news_calls == [(query, symbol, story_id, limit)]
+    assert sdk.get_news_calls[0][1] is symbol
+    assert sdk.get_news_calls[0][2] is story_id
+    assert sdk.get_news_calls[0][3] is limit
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_news_non_mapping_response_raises_validation_error(response: Any) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping news response"):
+        adapter.get_news("query")
+
+
+def test_get_news_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_news(
+            self,
+            query: str,
+            *,
+            symbol: str | None = None,
+            story_id: str | None = None,
+            limit: int = 30,
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_news("query")
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)

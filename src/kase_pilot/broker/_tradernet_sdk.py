@@ -56,6 +56,29 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
+    def get_news(
+        self,
+        query: str,
+        symbol: str | None = None,
+        story_id: str | None = None,
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        """Return news without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_news(
+                query,
+                symbol=symbol,
+                story_id=story_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        if not isinstance(response, Mapping):
+            raise ValidationError("Tradernet SDK returned a non-mapping news response")
+
+        return cast(dict[str, Any], response)
+
     def get_candles(
         self,
         symbol: str,
