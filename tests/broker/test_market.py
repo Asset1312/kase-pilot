@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from inspect import signature
 from typing import Any
 
 import pytest
@@ -92,6 +93,16 @@ class FakeMostTradedDependency:
         limit: object = 10,
     ) -> dict[str, Any]:
         self.calls.append((instrument_type, exchange, gainers, limit))
+        return self.response
+
+
+class FakeHistoricalDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_historical(self, start: object, end: object) -> dict[str, Any]:
+        self.calls.append((start, end))
         return self.response
 
 
@@ -395,6 +406,48 @@ def test_get_most_traded_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_most_traded()
+
+    assert exc_info.value is original
+
+
+def test_get_historical_delegates_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"orders": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakeHistoricalDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+    parameters = signature(MarketService.get_historical).parameters
+
+    result = service.get_historical()
+
+    assert dependency.calls == [
+        (parameters["start"].default, parameters["end"].default)
+    ]
+    assert result is response
+
+
+def test_get_historical_delegates_explicit_datetimes_unchanged() -> None:
+    start = datetime(2024, 1, 1, 9, 30, tzinfo=UTC)
+    end = datetime(2024, 2, 1, 16, 0, tzinfo=UTC)
+    dependency = FakeHistoricalDependency({})
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    service.get_historical(start, end)
+
+    assert dependency.calls == [(start, end)]
+    assert dependency.calls[0][0] is start
+    assert dependency.calls[0][1] is end
+
+
+def test_get_historical_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_historical(self, start: datetime, end: datetime) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_historical()
 
     assert exc_info.value is original
 

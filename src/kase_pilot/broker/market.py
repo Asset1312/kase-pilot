@@ -83,6 +83,14 @@ class MarketService:
             limit=limit,
         )
 
+    def get_historical(
+        self,
+        start: datetime = datetime(2011, 1, 11),  # noqa: DTZ001
+        end: datetime = datetime.now(),  # noqa: B008, DTZ005
+    ) -> dict[str, Any]:
+        """Return raw historical orders."""
+        return self._adapter.get_historical(start, end)
+
     def get_candles(
         self,
         symbol: str,

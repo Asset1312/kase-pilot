@@ -8,6 +8,7 @@ from kase_pilot.application import (
     FindInstrument,
     GetAccountSummary,
     GetCurrentQuotes,
+    GetHistorical,
     GetHistoricalCandles,
     GetMarketStatus,
     GetMostTraded,
@@ -52,6 +53,17 @@ def create_get_current_quotes(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetCurrentQuotes(market_service)
+
+
+def create_get_historical(
+    public_key: str,
+    private_key: str,
+) -> GetHistorical:
+    """Build the object graph for the historical-orders use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetHistorical(market_service)
 
 
 def create_get_historical_candles(

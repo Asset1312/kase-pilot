@@ -108,6 +108,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "FindInstrument",
         "GetAccountSummary",
         "GetCurrentQuotes",
+        "GetHistorical",
         "GetHistoricalCandles",
         "GetMarketStatus",
         "GetMostTraded",
