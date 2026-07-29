@@ -78,6 +78,21 @@ class FakeGetNews:
         return self.response
 
 
+class FakeGetMarketStatus:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[tuple[object, object]] = []
+
+    def execute(
+        self,
+        market: object = "*",
+        *,
+        mode: object = None,
+    ) -> dict[str, Any]:
+        self.calls.append((market, mode))
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -393,6 +408,101 @@ def test_run_news_explicit_json_output_matches_plain_output(
         ("query", None, None, 30),
         ("query", None, None, 30),
     ]
+    assert plain_output == json_output
+    assert plain_output == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+def test_run_market_status_uses_defaults_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "result": {
+            "markets": [
+                {"name": "Казахстанская фондовая биржа", "unknown": [True, None]}
+            ]
+        }
+    }
+    use_case = FakeGetMarketStatus(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetMarketStatus:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_market_status", fake_create)
+
+    exit_code = main_module.run("market-status", environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [("*", None)]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Казахстанская фондовая биржа" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_market_status_forwards_explicit_options_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    market = "KASE"
+    mode = "demo"
+    use_case = FakeGetMarketStatus()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_market_status",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "market-status",
+        market=market,
+        mode=mode,
+        environ={},
+    )
+
+    assert use_case.calls == [(market, mode)]
+
+
+def test_run_market_status_explicit_json_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetMarketStatus(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_market_status",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("market-status", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("market-status", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [("*", None), ("*", None)]
     assert plain_output == json_output
     assert plain_output == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
@@ -2191,6 +2301,67 @@ def test_main_routes_news_options_in_any_order(
     assert calls == [("news", "market", expected_options)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (["market-status"], {}),
+        (
+            ["market-status", "--market", "KASE"],
+            {"market": "KASE", "mode": None},
+        ),
+        (
+            ["market-status", "--mode", "demo"],
+            {"market": "*", "mode": "demo"},
+        ),
+        (
+            [
+                "market-status",
+                "--json",
+                "--mode",
+                "demo",
+                "--market",
+                "KASE",
+            ],
+            {
+                "market": "KASE",
+                "mode": "demo",
+                "json_output": True,
+            },
+        ),
+        (
+            [
+                "market-status",
+                "--market",
+                "KASE",
+                "--json",
+                "--mode",
+                "demo",
+            ],
+            {
+                "market": "KASE",
+                "mode": "demo",
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_market_status_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("market-status", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2817,6 +2988,48 @@ def test_main_rejects_invalid_news_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["market-status", "extra"],
+        ["market-status", "--unknown"],
+        ["market-status", "--market"],
+        ["market-status", "--mode"],
+        ["market-status", "--market", "--json"],
+        ["market-status", "--mode", "--unknown"],
+        ["market-status", "--json", "--json"],
+        ["market-status", "--market", "KASE", "--market", "USA"],
+        ["market-status", "--mode", "demo", "--mode", "real"],
+        ["market-status", "--market", "KASE", "extra"],
+    ],
+)
+def test_main_rejects_invalid_market_status_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_market_status",
+        lambda *args, **kwargs: orchestration_calls.append("factory"),
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -3000,6 +3213,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json]\n"
+        "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "

@@ -15,6 +15,7 @@ from kase_pilot.app import (
     create_get_account_summary,
     create_get_current_quotes,
     create_get_historical_candles,
+    create_get_market_status,
     create_get_news,
     create_get_placed_orders,
     create_get_security_info,
@@ -31,6 +32,7 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json]\n"
+    "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -437,6 +439,19 @@ def _run_news(
     return 0
 
 
+def _run_market_status(
+    public_key: str,
+    private_key: str,
+    *,
+    market: str,
+    mode: str | None,
+) -> int:
+    use_case = create_get_market_status(public_key, private_key)
+    result = use_case.execute(market, mode=mode)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_user(public_key: str, private_key: str) -> int:
     use_case = create_get_user_info(public_key, private_key)
     result = use_case.execute()
@@ -555,6 +570,8 @@ def run(
     sort_field: str | None = None,
     symbol: str | None = None,
     story_id: str | None = None,
+    market: str = "*",
+    mode: str | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
@@ -568,6 +585,7 @@ def run(
         "quotes",
         "search",
         "news",
+        "market-status",
         "user",
         "summary",
         "portfolio",
@@ -583,16 +601,22 @@ def run(
         command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
     ):
         raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
-    if json_output and command not in {"portfolio", "trades", "news"}:
+    if json_output and command not in {
+        "portfolio",
+        "trades",
+        "news",
+        "market-status",
+    }:
         raise ValueError(
-            "JSON output is supported only for portfolio, trades, and news"
+            "JSON output is supported only for portfolio, trades, news, "
+            "and market-status"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
         if not symbol:
             raise ValueError("Portfolio symbol must not be empty")
     if (
-        command in {"user", "summary", "portfolio", "watch", "orders"}
+        command in {"user", "summary", "portfolio", "watch", "orders", "market-status"}
         and ticker is not None
     ):
         raise ValueError(f"The {command} command does not accept an argument")
@@ -605,6 +629,7 @@ def run(
             "watch",
             "orders",
             "trades",
+            "market-status",
         }
         and ticker is None
     ):
@@ -627,6 +652,13 @@ def run(
             symbol=symbol,
             story_id=story_id,
             limit=30 if limit is None else limit,
+        )
+    if command == "market-status":
+        return _run_market_status(
+            public_key,
+            private_key,
+            market=market,
+            mode=mode,
         )
     if command == "user":
         return _run_user(public_key, private_key)
@@ -672,6 +704,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     end = None
     symbol = None
     story_id = None
+    market = "*"
+    mode = None
     limit = None
     timeframe = None
     sort_field = None
@@ -684,6 +718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["watch", "--follow"],
         ["orders"],
         ["orders", "--all"],
+        ["market-status"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -760,6 +795,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if limit <= 0:
                     print(_USAGE, file=sys.stderr)
                     return 2
+            index += 2
+    elif arguments and arguments[0] == "market-status":
+        market_status_flags = {"--market", "--mode", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in market_status_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
+            if flag == "--market":
+                market = value
+            else:
+                mode = value
             index += 2
     elif arguments and arguments[0] == "trades":
         seen_flags: set[str] = set()
@@ -856,7 +915,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 portfolio_arguments["json_output"] = True
             return run("portfolio", **portfolio_arguments)
-        if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
+        if arguments[0] in {
+            "user",
+            "summary",
+            "portfolio",
+            "watch",
+            "orders",
+            "market-status",
+        } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
             trades_arguments: dict[str, object] = {
@@ -877,6 +943,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 news_arguments["json_output"] = True
             return run("news", arguments[1], **news_arguments)
+        if arguments[0] == "market-status":
+            market_status_arguments: dict[str, object] = {
+                "market": market,
+                "mode": mode,
+            }
+            if json_output:
+                market_status_arguments["json_output"] = True
+            return run("market-status", **market_status_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
