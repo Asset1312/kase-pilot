@@ -10,7 +10,11 @@ from typing import Any
 import pytest
 
 from kase_pilot import broker
-from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+from kase_pilot.broker._tradernet_sdk import (
+    TradernetSdkAdapter,
+    _require_list,
+    _require_mapping,
+)
 from kase_pilot.core.exceptions import ApiRequestError, ValidationError
 
 
@@ -109,6 +113,37 @@ class FakeSdkClient:
     ) -> Any:
         self.get_trades_history_calls.append((start, end, kwargs))
         return self.response
+
+
+def test_require_mapping_preserves_mapping_identity() -> None:
+    response = {"result": {"nested": [True, None]}}
+
+    assert _require_mapping(response, "test") is response
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_require_mapping_rejects_non_mapping(response: object) -> None:
+    with pytest.raises(ValidationError, match="non-mapping test response"):
+        _require_mapping(response, "test")
+
+
+def test_require_list_preserves_list_identity() -> None:
+    response = [{"unknown": {"nested": [True, None]}}]
+
+    assert _require_list(response, "test") is response
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        (),
+        "not a list",
+        {"result": []},
+    ],
+)
+def test_require_list_rejects_other_top_level_shapes(response: object) -> None:
+    with pytest.raises(ValidationError, match="non-list test response"):
+        _require_list(response, "test")
 
 
 def test_calls_security_info_once_with_ticker_and_sup() -> None:

@@ -12,6 +12,22 @@ from kase_pilot.broker.models import JsonValue
 from kase_pilot.core.exceptions import ApiRequestError, ValidationError
 
 
+def _require_mapping(response: object, response_name: str) -> Mapping[str, Any]:
+    if not isinstance(response, Mapping):
+        raise ValidationError(
+            f"Tradernet SDK returned a non-mapping {response_name} response"
+        )
+    return response
+
+
+def _require_list(response: object, response_name: str) -> list[Any]:
+    if not isinstance(response, list):
+        raise ValidationError(
+            f"Tradernet SDK returned a non-list {response_name} response"
+        )
+    return response
+
+
 class TradernetSdkAdapter:
     """Expose confirmed broker operations through the SDK."""
 
@@ -29,12 +45,10 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping security information response"
-            )
-
-        return cast(dict[str, JsonValue], dict(response))
+        return cast(
+            dict[str, JsonValue],
+            dict(_require_mapping(response, "security information")),
+        )
 
     def get_quotes(
         self,
@@ -74,10 +88,7 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError("Tradernet SDK returned a non-mapping news response")
-
-        return cast(dict[str, Any], response)
+        return cast(dict[str, Any], _require_mapping(response, "news"))
 
     def get_market_status(
         self,
@@ -90,12 +101,7 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping market status response"
-            )
-
-        return cast(dict[str, Any], response)
+        return cast(dict[str, Any], _require_mapping(response, "market status"))
 
     def get_most_traded(
         self,
@@ -115,12 +121,7 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping most-traded response"
-            )
-
-        return cast(dict[str, Any], response)
+        return cast(dict[str, Any], _require_mapping(response, "most-traded"))
 
     def get_historical(
         self,
@@ -133,12 +134,7 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping historical orders response"
-            )
-
-        return cast(dict[str, Any], response)
+        return cast(dict[str, Any], _require_mapping(response, "historical orders"))
 
     def get_candles(
         self,
@@ -163,12 +159,10 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping user information response"
-            )
-
-        return cast(dict[str, JsonValue], response)
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "user information"),
+        )
 
     def account_summary(self) -> dict[str, JsonValue]:
         """Return an account summary without transforming the SDK response."""
@@ -177,12 +171,10 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping account summary response"
-            )
-
-        return cast(dict[str, JsonValue], response)
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "account summary"),
+        )
 
     def get_placed(
         self,
@@ -194,12 +186,10 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping placed orders response"
-            )
-
-        return cast(dict[str, JsonValue], response)
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "placed orders"),
+        )
 
     def get_trades_history(
         self,
@@ -227,9 +217,7 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        if not isinstance(response, Mapping):
-            raise ValidationError(
-                "Tradernet SDK returned a non-mapping trades history response"
-            )
-
-        return cast(dict[str, JsonValue], response)
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "trades history"),
+        )
