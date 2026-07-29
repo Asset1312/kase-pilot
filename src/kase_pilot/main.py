@@ -4,6 +4,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from kase_pilot.app import (
@@ -35,6 +36,84 @@ _USAGE = (
 )
 
 
+def _format_number(value: object, decimal_places: int | None = None) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "-"
+
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return "-"
+    if not number.is_finite():
+        return "-"
+
+    if decimal_places is not None:
+        return format(number, f".{decimal_places}f")
+    if number == 0:
+        return "0"
+    rendered = format(number, "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def _format_text(value: object) -> str:
+    return value if isinstance(value, str) else "-"
+
+
+def _mapping_rows(value: object) -> list[Mapping[object, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [row for row in value if isinstance(row, Mapping)]
+
+
+def _format_portfolio(summary: object) -> str:
+    result = summary.get("result") if isinstance(summary, Mapping) else None
+    position_state = result.get("ps") if isinstance(result, Mapping) else None
+    positions = (
+        _mapping_rows(position_state.get("pos"))
+        if isinstance(position_state, Mapping)
+        else []
+    )
+    cash_balances = (
+        _mapping_rows(position_state.get("acc"))
+        if isinstance(position_state, Mapping)
+        else []
+    )
+
+    lines = ["Portfolio", ""]
+    if positions:
+        header = (
+            f"{'Ticker':<14} {'Qty':>12} {'Avg':>12} {'Last':>12} "
+            f"{'P/L':>12} {'Value':>12} {'Currency':>10}"
+        )
+        lines.extend((header, "-" * len(header)))
+        for position in positions:
+            lines.append(
+                f"{_format_text(position.get('i')):<14} "
+                f"{_format_number(position.get('q')):>12} "
+                f"{_format_number(position.get('price_a'), 2):>12} "
+                f"{_format_number(position.get('mkt_price'), 2):>12} "
+                f"{_format_number(position.get('profit_close'), 2):>12} "
+                f"{_format_number(position.get('market_value'), 2):>12} "
+                f"{_format_text(position.get('curr')):>10}"
+            )
+    else:
+        lines.append("No positions.")
+
+    lines.extend(("", "Cash", ""))
+    if cash_balances:
+        header = f"{'Currency':<14} {'Balance':>12}"
+        lines.extend((header, "-" * len(header)))
+        for balance in cash_balances:
+            lines.append(
+                f"{_format_text(balance.get('curr')):<14} "
+                f"{_format_number(balance.get('s'), 2):>12}"
+            )
+    else:
+        lines.append("No cash balances.")
+
+    return "\n".join(lines)
+
+
 def run(
     command: str,
     ticker: str | None = None,
@@ -49,7 +128,7 @@ def run(
     project_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> int:
-    """Execute a broker query and print its JSON result."""
+    """Execute a broker query and print its CLI representation."""
     if command not in {
         "info",
         "quotes",
@@ -143,13 +222,16 @@ def run(
     else:
         raise ValueError(f"Unknown command: {command}")
 
-    print(
-        json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False,
+    if command == "portfolio":
+        print(_format_portfolio(result))
+    else:
+        print(
+            json.dumps(
+                result,
+                indent=2,
+                ensure_ascii=False,
+            )
         )
-    )
     return 0
 
 

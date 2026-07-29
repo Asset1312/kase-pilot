@@ -500,7 +500,111 @@ def test_run_routes_summary_without_arguments_and_prints_pretty_json(
     assert captured.err == ""
 
 
-def test_run_routes_portfolio_through_account_summary_and_prints_raw_json(
+def test_format_portfolio_renders_positions_cash_and_fractional_quantity() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "loaded": True,
+                "acc": [
+                    {"curr": "KZT", "s": 2.98},
+                    {"curr": "USD", "s": 1.53},
+                ],
+                "pos": [
+                    {
+                        "i": "HSBK.KZ",
+                        "name": "Народный банк Казахстана",
+                        "q": 25,
+                        "price_a": 362.625597,
+                        "mkt_price": 380.5,
+                        "profit_close": 389.36,
+                        "market_value": 9525,
+                        "curr": "KZT",
+                    },
+                    {
+                        "i": "TINY.US",
+                        "q": 0.00018,
+                        "price_a": 1,
+                        "mkt_price": 2,
+                        "profit_close": 3,
+                        "market_value": 4,
+                        "curr": "USD",
+                    },
+                ],
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary)
+
+    assert output == (
+        "Portfolio\n"
+        "\n"
+        "Ticker                  Qty          Avg         Last          P/L"
+        "        Value   Currency\n"
+        "---------------------------------------------------------------"
+        "---------------------------\n"
+        "HSBK.KZ                  25       362.63       380.50       389.36"
+        "      9525.00        KZT\n"
+        "TINY.US             0.00018         1.00         2.00         3.00"
+        "         4.00        USD\n"
+        "\n"
+        "Cash\n"
+        "\n"
+        "Currency            Balance\n"
+        "---------------------------\n"
+        "KZT                    2.98\n"
+        "USD                    1.53"
+    )
+    assert "Народный банк Казахстана" not in output
+
+
+def test_format_portfolio_reports_empty_positions_and_cash() -> None:
+    summary = {"result": {"ps": {"pos": [], "acc": []}}}
+
+    assert main_module._format_portfolio(summary) == (
+        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        None,
+        {},
+        {"result": None},
+        {"result": {"ps": None}},
+        {"result": {"ps": {"pos": "not-a-list", "acc": {"curr": "KZT"}}}},
+    ],
+)
+def test_format_portfolio_handles_missing_or_malformed_nested_data(
+    summary: object,
+) -> None:
+    assert main_module._format_portfolio(summary) == (
+        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
+def test_format_portfolio_uses_placeholders_for_missing_fields_and_accepts_unicode() -> (
+    None
+):
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [{"i": "ТЕСТ.KZ", "q": "unknown", "curr": "₸"}],
+                "acc": [{"curr": "₸", "s": None}],
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary)
+
+    assert "ТЕСТ.KZ" in output
+    assert "₸" in output
+    assert "ТЕСТ.KZ                   -            -            -" in output
+    assert "₸                         -" in output
+
+
+def test_run_routes_portfolio_through_account_summary_and_prints_text_table(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -508,11 +612,24 @@ def test_run_routes_portfolio_through_account_summary_and_prints_raw_json(
         tradernet_public_key=" PublicKey ",
         tradernet_private_key=" PrivateKey ",
     )
-    positions = [{"ticker": "AAPL.US", "quantity": "12.50"}]
     response = {
-        "title": "Портфель",
-        "positions": positions,
-        "unknown_field": {"nested": [True, None]},
+        "result": {
+            "ps": {
+                "pos": [
+                    {
+                        "i": "HSBK.KZ",
+                        "q": 25,
+                        "price_a": 362.625597,
+                        "mkt_price": 380.5,
+                        "profit_close": 389.36,
+                        "market_value": 9525,
+                        "curr": "KZT",
+                        "unknown_field": {"label": "Позиция"},
+                    }
+                ],
+                "acc": [{"curr": "KZT", "s": 2.98}],
+            }
+        }
     }
     use_case = FakeGetAccountSummary(response)
     composition_calls: list[tuple[str, str]] = []
@@ -530,13 +647,10 @@ def test_run_routes_portfolio_through_account_summary_and_prints_raw_json(
     assert exit_code == 0
     assert composition_calls == [(" PublicKey ", " PrivateKey ")]
     assert use_case.calls == 1
-    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
-    assert "Портфель" in captured.out
-    assert "\\u" not in captured.out
-    parsed_response = json.loads(captured.out)
-    assert parsed_response == response
-    assert parsed_response["positions"] == positions
-    assert parsed_response["unknown_field"] == response["unknown_field"]
+    assert captured.out == main_module._format_portfolio(response) + "\n"
+    assert "HSBK.KZ" in captured.out
+    assert "362.63" in captured.out
+    assert "Позиция" not in captured.out
     assert captured.err == ""
 
 
