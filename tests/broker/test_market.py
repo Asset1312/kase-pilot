@@ -46,6 +46,23 @@ class FakeFindSymbolDependency:
         return self.response
 
 
+class FakeNewsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    def get_news(
+        self,
+        query: object,
+        *,
+        symbol: object = None,
+        story_id: object = None,
+        limit: object = 30,
+    ) -> dict[str, Any]:
+        self.calls.append((query, symbol, story_id, limit))
+        return self.response
+
+
 class FakeCandlesDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -188,6 +205,61 @@ def test_find_symbol_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.find_symbol("Apple")
+
+    assert exc_info.value is original
+
+
+def test_get_news_delegates_defaults_without_transforming_response() -> None:
+    query = "Казахстан"
+    response = {"result": {"items": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakeNewsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_news(query)
+
+    assert dependency.calls == [(query, None, None, 30)]
+    assert dependency.calls[0][0] is query
+    assert result is response
+
+
+def test_get_news_delegates_explicit_arguments() -> None:
+    query = "ignored"
+    symbol = "AAPL.US"
+    story_id = "story-17"
+    limit = 7
+    response = {"result": {"items": []}}
+    dependency = FakeNewsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_news(
+        query,
+        symbol=symbol,
+        story_id=story_id,
+        limit=limit,
+    )
+
+    assert dependency.calls == [(query, symbol, story_id, limit)]
+    assert result is response
+
+
+def test_get_news_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_news(
+            self,
+            query: str,
+            *,
+            symbol: str | None = None,
+            story_id: str | None = None,
+            limit: int = 30,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_news("query")
 
     assert exc_info.value is original
 

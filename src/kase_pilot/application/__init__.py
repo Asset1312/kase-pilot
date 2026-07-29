@@ -4,6 +4,7 @@ from kase_pilot.application.account_summary import GetAccountSummary
 from kase_pilot.application.current_quotes import GetCurrentQuotes
 from kase_pilot.application.historical_candles import GetHistoricalCandles
 from kase_pilot.application.instrument_search import FindInstrument
+from kase_pilot.application.news import GetNews
 from kase_pilot.application.placed_orders import GetPlacedOrders
 from kase_pilot.application.security_info import GetSecurityInfo
 from kase_pilot.application.trades_history import GetTradesHistory
@@ -14,6 +15,7 @@ __all__ = [
     "GetAccountSummary",
     "GetCurrentQuotes",
     "GetHistoricalCandles",
+    "GetNews",
     "GetPlacedOrders",
     "GetSecurityInfo",
     "GetTradesHistory",
