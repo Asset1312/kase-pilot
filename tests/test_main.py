@@ -548,6 +548,13 @@ def test_format_portfolio_renders_positions_cash_and_fractional_quantity() -> No
         "TINY.US             0.00018         1.00         2.00         3.00"
         "         4.00        USD\n"
         "\n"
+        "Totals\n"
+        "\n"
+        "Currency              Value          P/L\n"
+        "----------------------------------------\n"
+        "KZT                 9525.00       389.36\n"
+        "USD                    4.00         3.00\n"
+        "\n"
         "Cash\n"
         "\n"
         "Currency            Balance\n"
@@ -558,11 +565,83 @@ def test_format_portfolio_renders_positions_cash_and_fractional_quantity() -> No
     assert "Народный банк Казахстана" not in output
 
 
+def test_format_portfolio_aggregates_multiple_positions_in_one_currency() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"curr": "KZT", "market_value": 10, "profit_close": 1.25},
+                    {"curr": "KZT", "market_value": 2.5, "profit_close": 0.75},
+                ]
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary)
+
+    assert (
+        "Currency              Value          P/L\n"
+        "----------------------------------------\n"
+        "KZT                   12.50         2.00"
+    ) in output
+
+
+def test_format_portfolio_totals_are_independent_and_keep_currency_order() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"curr": "KZT", "market_value": 10},
+                    {"curr": "USD", "market_value": 0},
+                    {"curr": "KZT", "profit_close": 2.5},
+                    {"curr": "EUR", "profit_close": 0},
+                ]
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary)
+    totals = output.split("Totals\n\n", 1)[1].split("\n\nCash", 1)[0]
+
+    assert totals == (
+        "Currency              Value          P/L\n"
+        "----------------------------------------\n"
+        "KZT                   10.00         2.50\n"
+        "USD                    0.00            -\n"
+        "EUR                       -         0.00"
+    )
+
+
+def test_format_portfolio_ignores_invalid_totals_and_invalid_currencies() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"curr": "KZT", "market_value": True, "profit_close": "1"},
+                    {
+                        "curr": "USD",
+                        "market_value": float("nan"),
+                        "profit_close": float("inf"),
+                    },
+                    {"market_value": 10, "profit_close": 1},
+                    {"curr": "", "market_value": 10, "profit_close": 1},
+                    "not-a-position",
+                ]
+            }
+        }
+    }
+
+    output = main_module._format_portfolio(summary)
+
+    assert "\nTotals\n\nNo totals.\n\nCash\n" in output
+
+
 def test_format_portfolio_reports_empty_positions_and_cash() -> None:
     summary = {"result": {"ps": {"pos": [], "acc": []}}}
 
     assert main_module._format_portfolio(summary) == (
-        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+        "Portfolio\n\nNo positions.\n\nTotals\n\nNo totals.\n\n"
+        "Cash\n\nNo cash balances."
     )
 
 
@@ -580,7 +659,8 @@ def test_format_portfolio_handles_missing_or_malformed_nested_data(
     summary: object,
 ) -> None:
     assert main_module._format_portfolio(summary) == (
-        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+        "Portfolio\n\nNo positions.\n\nTotals\n\nNo totals.\n\n"
+        "Cash\n\nNo cash balances."
     )
 
 

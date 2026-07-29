@@ -36,15 +36,20 @@ _USAGE = (
 )
 
 
-def _format_number(value: object, decimal_places: int | None = None) -> str:
+def _valid_number(value: object) -> Decimal | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "-"
+        return None
 
     try:
         number = Decimal(str(value))
     except InvalidOperation:
-        return "-"
-    if not number.is_finite():
+        return None
+    return number if number.is_finite() else None
+
+
+def _format_number(value: object, decimal_places: int | None = None) -> str:
+    number = _valid_number(value)
+    if number is None:
         return "-"
 
     if decimal_places is not None:
@@ -78,6 +83,18 @@ def _format_portfolio(summary: object) -> str:
         if isinstance(position_state, Mapping)
         else []
     )
+    totals: dict[str, list[Decimal | None]] = {}
+    for position in positions:
+        currency = position.get("curr")
+        if not isinstance(currency, str) or not currency:
+            continue
+        aggregate = totals.setdefault(currency, [None, None])
+        market_value = _valid_number(position.get("market_value"))
+        profit_loss = _valid_number(position.get("profit_close"))
+        if market_value is not None:
+            aggregate[0] = (aggregate[0] or Decimal()) + market_value
+        if profit_loss is not None:
+            aggregate[1] = (aggregate[1] or Decimal()) + profit_loss
 
     lines = ["Portfolio", ""]
     if positions:
@@ -98,6 +115,26 @@ def _format_portfolio(summary: object) -> str:
             )
     else:
         lines.append("No positions.")
+
+    lines.extend(("", "Totals", ""))
+    valid_totals = [
+        (currency, aggregate)
+        for currency, aggregate in totals.items()
+        if aggregate[0] is not None or aggregate[1] is not None
+    ]
+    if valid_totals:
+        header = f"{'Currency':<14} {'Value':>12} {'P/L':>12}"
+        lines.extend((header, "-" * len(header)))
+        for currency, aggregate in valid_totals:
+            market_value = (
+                format(aggregate[0], ".2f") if aggregate[0] is not None else "-"
+            )
+            profit_loss = (
+                format(aggregate[1], ".2f") if aggregate[1] is not None else "-"
+            )
+            lines.append(f"{currency:<14} {market_value:>12} {profit_loss:>12}")
+    else:
+        lines.append("No totals.")
 
     lines.extend(("", "Cash", ""))
     if cash_balances:
