@@ -387,6 +387,140 @@ def _clear_terminal() -> None:
     os.system("cls" if os.name == "nt" else "clear")
 
 
+def _run_info(
+    public_key: str,
+    private_key: str,
+    ticker: str,
+    *,
+    sup: bool,
+) -> int:
+    use_case = create_get_security_info(public_key, private_key)
+    result = use_case.execute(ticker, sup=sup)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_quotes(public_key: str, private_key: str, ticker: str) -> int:
+    use_case = create_get_current_quotes(public_key, private_key)
+    result = use_case.execute([ticker])
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_search(public_key: str, private_key: str, query: str) -> int:
+    use_case = create_find_instrument(public_key, private_key)
+    result = use_case.execute(query)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_user(public_key: str, private_key: str) -> int:
+    use_case = create_get_user_info(public_key, private_key)
+    result = use_case.execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_summary(public_key: str, private_key: str) -> int:
+    use_case = create_get_account_summary(public_key, private_key)
+    result = use_case.execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_portfolio(
+    public_key: str,
+    private_key: str,
+    *,
+    json_output: bool,
+    sort_field: str | None,
+    symbol: str | None,
+) -> int:
+    use_case = create_get_account_summary(public_key, private_key)
+    result = use_case.execute()
+    if json_output:
+        print(
+            json.dumps(
+                _portfolio_json(result, sort_field=sort_field, symbol=symbol),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(_format_portfolio(result, sort_field=sort_field, symbol=symbol))
+    return 0
+
+
+def _run_watch(
+    public_key: str,
+    private_key: str,
+    *,
+    follow: bool,
+) -> int:
+    use_case = create_get_account_summary(public_key, private_key)
+    if follow:
+        try:
+            while True:
+                result = use_case.execute()
+                _clear_terminal()
+                print(_format_watch(result))
+                time.sleep(WATCH_REFRESH_SECONDS)
+        except KeyboardInterrupt:
+            return 0
+    result = use_case.execute()
+    print(_format_watch(result))
+    return 0
+
+
+def _run_orders(
+    public_key: str,
+    private_key: str,
+    *,
+    active: bool,
+) -> int:
+    use_case = create_get_placed_orders(public_key, private_key)
+    result = use_case.execute(active=active)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_trades(
+    public_key: str,
+    private_key: str,
+    *,
+    start: date | datetime,
+    end: date | datetime,
+    symbol: str | None,
+    limit: int | None,
+) -> int:
+    use_case = create_get_trades_history(public_key, private_key)
+    result = use_case.execute(start, end, symbol=symbol, limit=limit)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_candles(
+    public_key: str,
+    private_key: str,
+    symbol: str,
+    *,
+    start: date | datetime | None,
+    end: date | datetime | None,
+    timeframe: int | None,
+) -> int:
+    use_case = create_get_historical_candles(public_key, private_key)
+    arguments: dict[str, object] = {}
+    if start is not None:
+        arguments["start"] = start
+    if end is not None:
+        arguments["end"] = end
+    if timeframe is not None:
+        arguments["timeframe"] = timeframe
+    result = use_case.execute(symbol, **arguments)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def run(
     command: str,
     ticker: str | None = None,
@@ -450,100 +584,49 @@ def run(
         raise ValueError(f"The {command} command requires an argument")
 
     settings = load_settings(project_root, environ=environ)
+    public_key = settings.tradernet_public_key
+    private_key = settings.tradernet_private_key
+    if command == "info":
+        return _run_info(public_key, private_key, ticker, sup=sup)
+    if command == "quotes":
+        return _run_quotes(public_key, private_key, ticker)
+    if command == "search":
+        return _run_search(public_key, private_key, ticker)
+    if command == "user":
+        return _run_user(public_key, private_key)
+    if command == "summary":
+        return _run_summary(public_key, private_key)
+    if command == "portfolio":
+        return _run_portfolio(
+            public_key,
+            private_key,
+            json_output=json_output,
+            sort_field=sort_field,
+            symbol=symbol,
+        )
+    if command == "watch":
+        return _run_watch(public_key, private_key, follow=follow)
     if command == "orders":
-        use_case = create_get_placed_orders(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        result = use_case.execute(active=active)
-    elif command in {"summary", "portfolio", "watch"}:
-        use_case = create_get_account_summary(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        if command == "watch" and follow:
-            try:
-                while True:
-                    result = use_case.execute()
-                    _clear_terminal()
-                    print(_format_watch(result))
-                    time.sleep(WATCH_REFRESH_SECONDS)
-            except KeyboardInterrupt:
-                return 0
-        result = use_case.execute()
-    elif command == "user":
-        use_case = create_get_user_info(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        result = use_case.execute()
-    elif command == "trades":
-        use_case = create_get_trades_history(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        result = use_case.execute(
-            start,
-            end,
+        return _run_orders(public_key, private_key, active=active)
+    if command == "trades":
+        return _run_trades(
+            public_key,
+            private_key,
+            start=start,
+            end=end,
             symbol=symbol,
             limit=limit,
         )
-    elif command == "info":
-        use_case = create_get_security_info(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
+    if command == "candles":
+        return _run_candles(
+            public_key,
+            private_key,
+            ticker,
+            start=start,
+            end=end,
+            timeframe=timeframe,
         )
-        result = use_case.execute(ticker, sup=sup)
-    elif command == "quotes":
-        use_case = create_get_current_quotes(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        result = use_case.execute([ticker])
-    elif command == "search":
-        use_case = create_find_instrument(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        result = use_case.execute(ticker)
-    elif command == "candles":
-        use_case = create_get_historical_candles(
-            settings.tradernet_public_key,
-            settings.tradernet_private_key,
-        )
-        arguments: dict[str, object] = {}
-        if start is not None:
-            arguments["start"] = start
-        if end is not None:
-            arguments["end"] = end
-        if timeframe is not None:
-            arguments["timeframe"] = timeframe
-        result = use_case.execute(ticker, **arguments)
-    else:
-        raise ValueError(f"Unknown command: {command}")
-
-    if command == "portfolio":
-        if json_output:
-            print(
-                json.dumps(
-                    _portfolio_json(result, sort_field=sort_field, symbol=symbol),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(_format_portfolio(result, sort_field=sort_field, symbol=symbol))
-    elif command == "watch":
-        print(_format_watch(result))
-    else:
-        print(
-            json.dumps(
-                result,
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-    return 0
+    raise ValueError(f"Unknown command: {command}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
