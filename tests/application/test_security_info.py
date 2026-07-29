@@ -115,6 +115,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "GetMostTraded",
         "GetNews",
         "GetPlacedOrders",
+        "GetPriceAlerts",
         "GetSecurityInfo",
         "GetTradesHistory",
         "GetUserInfo",

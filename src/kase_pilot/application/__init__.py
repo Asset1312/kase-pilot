@@ -10,6 +10,7 @@ from kase_pilot.application.market_status import GetMarketStatus
 from kase_pilot.application.most_traded import GetMostTraded
 from kase_pilot.application.news import GetNews
 from kase_pilot.application.placed_orders import GetPlacedOrders
+from kase_pilot.application.price_alerts import GetPriceAlerts
 from kase_pilot.application.security_info import GetSecurityInfo
 from kase_pilot.application.trades_history import GetTradesHistory
 from kase_pilot.application.user_info import GetUserInfo
@@ -25,6 +26,7 @@ __all__ = [
     "GetMostTraded",
     "GetNews",
     "GetPlacedOrders",
+    "GetPriceAlerts",
     "GetSecurityInfo",
     "GetTradesHistory",
     "GetUserInfo",

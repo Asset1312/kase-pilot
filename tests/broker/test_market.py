@@ -116,6 +116,16 @@ class FakeCorporateActionsDependency:
         return self.response
 
 
+class FakePriceAlertsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def get_price_alerts(self, symbol: object = None) -> dict[str, Any]:
+        self.calls.append(symbol)
+        return self.response
+
+
 class FakeCandlesDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -498,6 +508,46 @@ def test_corporate_actions_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.corporate_actions()
+
+    assert exc_info.value is original
+
+
+def test_get_price_alerts_delegates_none_and_preserves_response_identity() -> None:
+    response = {"result": {"alerts": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakePriceAlertsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_price_alerts()
+
+    assert dependency.calls == [None]
+    assert result is response
+
+
+def test_get_price_alerts_delegates_explicit_symbol_unchanged() -> None:
+    symbol = " Aapl.US "
+    dependency = FakePriceAlertsDependency({})
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    service.get_price_alerts(symbol)
+
+    assert dependency.calls == [symbol]
+    assert dependency.calls[0] is symbol
+
+
+def test_get_price_alerts_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_price_alerts(
+            self,
+            symbol: str | None = None,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_price_alerts()
 
     assert exc_info.value is original
 

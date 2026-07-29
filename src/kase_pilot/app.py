@@ -15,6 +15,7 @@ from kase_pilot.application import (
     GetMostTraded,
     GetNews,
     GetPlacedOrders,
+    GetPriceAlerts,
     GetSecurityInfo,
     GetTradesHistory,
     GetUserInfo,
@@ -131,6 +132,17 @@ def create_get_placed_orders(
     adapter = TradernetSdkAdapter(sdk_client)
     account_service = AccountService(adapter)
     return GetPlacedOrders(account_service)
+
+
+def create_get_price_alerts(
+    public_key: str,
+    private_key: str,
+) -> GetPriceAlerts:
+    """Build the object graph for the price-alerts use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetPriceAlerts(market_service)
 
 
 def create_get_security_info(

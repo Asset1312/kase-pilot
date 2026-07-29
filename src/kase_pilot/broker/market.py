@@ -98,6 +98,13 @@ class MarketService:
         """Return raw planned corporate actions."""
         return self._adapter.corporate_actions(reception)
 
+    def get_price_alerts(
+        self,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        """Return raw price alerts."""
+        return self._adapter.get_price_alerts(symbol)
+
     def get_candles(
         self,
         symbol: str,
