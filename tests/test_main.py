@@ -61,6 +61,23 @@ class FakeFindInstrument:
         return self.response
 
 
+class FakeGetNews:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    def execute(
+        self,
+        query: object,
+        *,
+        symbol: object = None,
+        story_id: object = None,
+        limit: object = 30,
+    ) -> dict[str, Any]:
+        self.calls.append((query, symbol, story_id, limit))
+        return self.response
+
+
 class FakeGetHistoricalCandles:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -271,6 +288,113 @@ def test_run_routes_search_without_transforming_query(
     assert use_case.calls == [query]
     assert use_case.calls[0] is query
     assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+def test_run_routes_news_with_defaults_and_prints_raw_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    query = "Казахстан"
+    response = {
+        "result": {
+            "items": [
+                {
+                    "title": "Новости рынка",
+                    "unknown": {"nested": [True, None]},
+                }
+            ]
+        }
+    }
+    use_case = FakeGetNews(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetNews:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_news", fake_create)
+
+    exit_code = main_module.run("news", query, environ={})
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [(query, None, None, 30)]
+    assert use_case.calls[0][0] is query
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Новости рынка" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_news_forwards_explicit_options_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    query = "ignored"
+    symbol = "AAPL.US"
+    story_id = "story-17"
+    limit = 7
+    use_case = FakeGetNews()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_news",
+        lambda public, private: use_case,
+    )
+
+    main_module.run(
+        "news",
+        query,
+        symbol=symbol,
+        story_id=story_id,
+        limit=limit,
+        environ={},
+    )
+
+    assert use_case.calls == [(query, symbol, story_id, limit)]
+
+
+def test_run_news_explicit_json_output_matches_plain_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"raw": {"nested": ["данные", 17, None]}}
+    use_case = FakeGetNews(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_news",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("news", "query", environ={})
+    plain_output = capsys.readouterr()
+    main_module.run("news", "query", json_output=True, environ={})
+    json_output = capsys.readouterr()
+
+    assert use_case.calls == [
+        ("query", None, None, 30),
+        ("query", None, None, 30),
+    ]
+    assert plain_output == json_output
+    assert plain_output == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
     )
@@ -2003,6 +2127,70 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("quotes", "AAPL.US")]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
+        (
+            ["news", "market"],
+            {"symbol": None, "story_id": None, "limit": 30},
+        ),
+        (
+            [
+                "news",
+                "market",
+                "--symbol",
+                "AAPL.US",
+                "--story-id",
+                "story-17",
+                "--limit",
+                "7",
+                "--json",
+            ],
+            {
+                "symbol": "AAPL.US",
+                "story_id": "story-17",
+                "limit": 7,
+                "json_output": True,
+            },
+        ),
+        (
+            [
+                "news",
+                "market",
+                "--json",
+                "--limit",
+                "7",
+                "--story-id",
+                "story-17",
+                "--symbol",
+                "AAPL.US",
+            ],
+            {
+                "symbol": "AAPL.US",
+                "story_id": "story-17",
+                "limit": 7,
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_news_options_in_any_order(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, query: str, **options: object) -> int:
+        calls.append((command, query, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("news", "market", expected_options)]
+
+
 def test_main_routes_user_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2578,6 +2766,57 @@ def test_main_rejects_invalid_portfolio_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["news"],
+        ["news", "--json"],
+        ["news", "--unknown"],
+        ["news", "query", "extra"],
+        ["news", "query", "--unknown"],
+        ["news", "query", "--symbol"],
+        ["news", "query", "--story-id"],
+        ["news", "query", "--limit"],
+        ["news", "query", "--symbol", "--json"],
+        ["news", "query", "--symbol", "--unknown"],
+        ["news", "query", "--story-id", "--limit"],
+        ["news", "query", "--limit", "invalid"],
+        ["news", "query", "--limit", "1.5"],
+        ["news", "query", "--limit", "0"],
+        ["news", "query", "--limit", "-1"],
+        ["news", "query", "--json", "--json"],
+        ["news", "query", "--symbol", "AAPL.US", "--symbol", "MSFT.US"],
+        ["news", "query", "--story-id", "one", "--story-id", "two"],
+        ["news", "query", "--limit", "7", "--limit", "8"],
+    ],
+)
+def test_main_rejects_invalid_news_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_news",
+        lambda *args, **kwargs: orchestration_calls.append("factory"),
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
         ["info"],
         ["quotes"],
@@ -2759,6 +2998,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
+        "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
+        "[--limit LIMIT] [--json]\n"
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio [--symbol SYMBOL] "

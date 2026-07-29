@@ -15,6 +15,7 @@ from kase_pilot.app import (
     create_get_account_summary,
     create_get_current_quotes,
     create_get_historical_candles,
+    create_get_news,
     create_get_placed_orders,
     create_get_security_info,
     create_get_trades_history,
@@ -28,6 +29,8 @@ _USAGE = (
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
     "  kase-pilot search QUERY\n"
+    "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
+    "[--limit LIMIT] [--json]\n"
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio [--symbol SYMBOL] "
@@ -414,6 +417,26 @@ def _run_search(public_key: str, private_key: str, query: str) -> int:
     return 0
 
 
+def _run_news(
+    public_key: str,
+    private_key: str,
+    query: str,
+    *,
+    symbol: str | None,
+    story_id: str | None,
+    limit: int,
+) -> int:
+    use_case = create_get_news(public_key, private_key)
+    result = use_case.execute(
+        query,
+        symbol=symbol,
+        story_id=story_id,
+        limit=limit,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_user(public_key: str, private_key: str) -> int:
     use_case = create_get_user_info(public_key, private_key)
     result = use_case.execute()
@@ -531,6 +554,7 @@ def run(
     json_output: bool = False,
     sort_field: str | None = None,
     symbol: str | None = None,
+    story_id: str | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
     end: date | datetime | None = None,
@@ -543,6 +567,7 @@ def run(
         "info",
         "quotes",
         "search",
+        "news",
         "user",
         "summary",
         "portfolio",
@@ -558,8 +583,10 @@ def run(
         command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
     ):
         raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
-    if json_output and command not in {"portfolio", "trades"}:
-        raise ValueError("JSON output is supported only for portfolio and trades")
+    if json_output and command not in {"portfolio", "trades", "news"}:
+        raise ValueError(
+            "JSON output is supported only for portfolio, trades, and news"
+        )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
         if not symbol:
@@ -592,6 +619,15 @@ def run(
         return _run_quotes(public_key, private_key, ticker)
     if command == "search":
         return _run_search(public_key, private_key, ticker)
+    if command == "news":
+        return _run_news(
+            public_key,
+            private_key,
+            ticker,
+            symbol=symbol,
+            story_id=story_id,
+            limit=30 if limit is None else limit,
+        )
     if command == "user":
         return _run_user(public_key, private_key)
     if command == "summary":
@@ -635,6 +671,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     start = None
     end = None
     symbol = None
+    story_id = None
     limit = None
     timeframe = None
     sort_field = None
@@ -684,6 +721,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 symbol = value.strip()
                 if not symbol:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
+            index += 2
+    elif arguments and arguments[0] == "news":
+        news_flags = {"--symbol", "--story-id", "--limit", "--json"}
+        if len(arguments) < 2 or arguments[1].startswith("--"):
+            print(_USAGE, file=sys.stderr)
+            return 2
+
+        seen_flags: set[str] = set()
+        index = 2
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in news_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
+            if flag == "--symbol":
+                symbol = value
+            elif flag == "--story-id":
+                story_id = value
+            else:
+                try:
+                    limit = int(value)
+                except ValueError:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
+                if limit <= 0:
                     print(_USAGE, file=sys.stderr)
                     return 2
             index += 2
@@ -794,6 +868,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 trades_arguments["json_output"] = True
             return run("trades", **trades_arguments)
+        if arguments[0] == "news":
+            news_arguments: dict[str, object] = {
+                "symbol": symbol,
+                "story_id": story_id,
+                "limit": 30 if limit is None else limit,
+            }
+            if json_output:
+                news_arguments["json_output"] = True
+            return run("news", arguments[1], **news_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)
