@@ -35,6 +35,8 @@ _USAGE = (
     "[--timeframe SECONDS]"
 )
 
+_PORTFOLIO_NAME_WIDTH = 28
+
 
 def _valid_number(value: object) -> Decimal | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -62,6 +64,14 @@ def _format_number(value: object, decimal_places: int | None = None) -> str:
 
 def _format_text(value: object) -> str:
     return value if isinstance(value, str) else "-"
+
+
+def _format_portfolio_name(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return "-"
+    if len(value) <= _PORTFOLIO_NAME_WIDTH:
+        return value
+    return value[: _PORTFOLIO_NAME_WIDTH - 3] + "..."
 
 
 def _mapping_rows(value: object) -> list[Mapping[object, object]]:
@@ -99,13 +109,15 @@ def _format_portfolio(summary: object) -> str:
     lines = ["Portfolio", ""]
     if positions:
         header = (
-            f"{'Ticker':<14} {'Qty':>12} {'Avg':>12} {'Last':>12} "
-            f"{'P/L':>12} {'Value':>12} {'Currency':>10}"
+            f"{'Ticker':<14} {'Name':<{_PORTFOLIO_NAME_WIDTH}} "
+            f"{'Qty':>12} {'Avg':>12} {'Last':>12} {'P/L':>12} "
+            f"{'Value':>12} {'Currency':>10}"
         )
         lines.extend((header, "-" * len(header)))
         for position in positions:
             lines.append(
                 f"{_format_text(position.get('i')):<14} "
+                f"{_format_portfolio_name(position.get('name')):<{_PORTFOLIO_NAME_WIDTH}} "
                 f"{_format_number(position.get('q')):>12} "
                 f"{_format_number(position.get('price_a'), 2):>12} "
                 f"{_format_number(position.get('mkt_price'), 2):>12} "

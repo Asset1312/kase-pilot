@@ -539,13 +539,15 @@ def test_format_portfolio_renders_positions_cash_and_fractional_quantity() -> No
     assert output == (
         "Portfolio\n"
         "\n"
-        "Ticker                  Qty          Avg         Last          P/L"
-        "        Value   Currency\n"
+        "Ticker         Name                                  Qty          Avg"
+        "         Last          P/L        Value   Currency\n"
         "---------------------------------------------------------------"
-        "---------------------------\n"
-        "HSBK.KZ                  25       362.63       380.50       389.36"
+        "--------------------------------------------------------\n"
+        "HSBK.KZ        Народный банк Казахстана               25       362.63"
+        "       380.50       389.36"
         "      9525.00        KZT\n"
-        "TINY.US             0.00018         1.00         2.00         3.00"
+        "TINY.US        -                                 0.00018"
+        "         1.00         2.00         3.00"
         "         4.00        USD\n"
         "\n"
         "Totals\n"
@@ -562,7 +564,39 @@ def test_format_portfolio_renders_positions_cash_and_fractional_quantity() -> No
         "KZT                    2.98\n"
         "USD                    1.53"
     )
-    assert "Народный банк Казахстана" not in output
+    assert "Народный банк Казахстана" in output
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("ForteBank", "ForteBank"),
+        ("Народный банк Казахстана", "Народный банк Казахстана"),
+        (None, "-"),
+        (42, "-"),
+        ("", "-"),
+        ("x" * 28, "x" * 28),
+        ("x" * 29, "x" * 25 + "..."),
+    ],
+)
+def test_format_portfolio_name(
+    name: object,
+    expected: str,
+) -> None:
+    assert main_module._format_portfolio_name(name) == expected
+    assert len(expected) <= 28
+
+
+def test_format_portfolio_truncates_name_without_mutating_response() -> None:
+    long_name = "A very long instrument name beyond the column"
+    position = {"i": "LONG.US", "name": long_name}
+    summary = {"result": {"ps": {"pos": [position]}}}
+
+    output = main_module._format_portfolio(summary)
+
+    assert "A very long instrument na..." in output
+    assert long_name not in output
+    assert position["name"] == long_name
 
 
 def test_format_portfolio_aggregates_multiple_positions_in_one_currency() -> None:
@@ -680,7 +714,10 @@ def test_format_portfolio_uses_placeholders_for_missing_fields_and_accepts_unico
 
     assert "ТЕСТ.KZ" in output
     assert "₸" in output
-    assert "ТЕСТ.KZ                   -            -            -" in output
+    assert output.splitlines()[4] == (
+        "ТЕСТ.KZ        -                                       -            -"
+        "            -            -            -          ₸"
+    )
     assert "₸                         -" in output
 
 
