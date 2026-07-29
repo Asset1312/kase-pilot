@@ -60,6 +60,14 @@ class MarketService:
             limit=limit,
         )
 
+    def get_market_status(
+        self,
+        market: str = "*",
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Return raw market status information."""
+        return self._adapter.get_market_status(market, mode=mode)
+
     def get_candles(
         self,
         symbol: str,

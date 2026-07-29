@@ -63,6 +63,21 @@ class FakeNewsDependency:
         return self.response
 
 
+class FakeMarketStatusDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_market_status(
+        self,
+        market: object = "*",
+        *,
+        mode: object = None,
+    ) -> dict[str, Any]:
+        self.calls.append((market, mode))
+        return self.response
+
+
 class FakeCandlesDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -260,6 +275,52 @@ def test_get_news_dependency_exception_propagates_unchanged() -> None:
 
     with pytest.raises(RuntimeError) as exc_info:
         service.get_news("query")
+
+    assert exc_info.value is original
+
+
+def test_get_market_status_delegates_defaults_and_preserves_response_identity() -> None:
+    response = {"result": {"markets": [{"unknown": {"nested": [True, None]}}]}}
+    dependency = FakeMarketStatusDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_market_status()
+
+    assert dependency.calls == [("*", None)]
+    assert result is response
+
+
+def test_get_market_status_delegates_explicit_arguments() -> None:
+    market = "KASE"
+    mode = "demo"
+    response = {"result": {"markets": []}}
+    dependency = FakeMarketStatusDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_market_status(market, mode=mode)
+
+    assert dependency.calls == [(market, mode)]
+    assert dependency.calls[0][0] is market
+    assert dependency.calls[0][1] is mode
+    assert result is response
+
+
+def test_get_market_status_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_market_status(
+            self,
+            market: str = "*",
+            *,
+            mode: str | None = None,
+        ) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_market_status()
 
     assert exc_info.value is original
 
