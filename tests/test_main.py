@@ -721,6 +721,85 @@ def test_format_portfolio_uses_placeholders_for_missing_fields_and_accepts_unico
     assert "₸                         -" in output
 
 
+def test_format_watch_renders_compact_positions_and_non_zero_cash() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "pos": [
+                    {"i": "HSBK.KZ", "mkt_price": 380.5, "profit_close": 389.36},
+                    {
+                        "i": "ASBN.KZ",
+                        "mkt_price": 9.97,
+                        "profit_close": -4325.69,
+                    },
+                    {"i": "MISS.KZ"},
+                ],
+                "acc": [
+                    {"curr": "KZT", "s": 2.98},
+                    {"curr": "USD", "s": 0},
+                    {"curr": "EUR", "s": -1.5},
+                ],
+            }
+        }
+    }
+
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n"
+        "\n"
+        "HSBK.KZ                  380.50      +389.36\n"
+        "ASBN.KZ                    9.97     -4325.69\n"
+        "MISS.KZ                       -            -\n"
+        "\n"
+        "Cash\n"
+        "\n"
+        "KZT                        2.98\n"
+        "EUR                       -1.50"
+    )
+
+
+def test_format_watch_reports_empty_positions_and_cash() -> None:
+    summary = {"result": {"ps": {"pos": [], "acc": []}}}
+
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        None,
+        {},
+        {"result": None},
+        {"result": {"ps": None}},
+        {"result": {"ps": {"pos": "invalid", "acc": {"curr": "KZT"}}}},
+    ],
+)
+def test_format_watch_handles_malformed_nested_data(summary: object) -> None:
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
+def test_format_watch_suppresses_zero_and_invalid_cash_balances() -> None:
+    summary = {
+        "result": {
+            "ps": {
+                "acc": [
+                    {"curr": "KZT", "s": 0},
+                    {"curr": "USD", "s": 0.0},
+                    {"curr": "EUR", "s": "1.00"},
+                    {"curr": "GBP", "s": True},
+                ]
+            }
+        }
+    }
+
+    assert main_module._format_watch(summary) == (
+        "Portfolio\n\nNo positions.\n\nCash\n\nNo cash balances."
+    )
+
+
 def test_run_routes_portfolio_through_account_summary_and_prints_text_table(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -769,6 +848,40 @@ def test_run_routes_portfolio_through_account_summary_and_prints_text_table(
     assert "362.63" in captured.out
     assert "Позиция" not in captured.out
     assert captured.err == ""
+
+
+def test_run_routes_watch_through_account_summary_and_prints_compact_text(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key=" PublicKey ",
+        tradernet_private_key=" PrivateKey ",
+    )
+    response = {
+        "result": {
+            "ps": {
+                "pos": [{"i": "HSBK.KZ", "mkt_price": 380.5, "profit_close": 389.36}],
+                "acc": [{"curr": "KZT", "s": 2.98}],
+            }
+        }
+    }
+    use_case = FakeGetAccountSummary(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetAccountSummary:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_account_summary", fake_create)
+
+    exit_code = main_module.run("watch", environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [(" PublicKey ", " PrivateKey ")]
+    assert use_case.calls == 1
+    assert capsys.readouterr() == (main_module._format_watch(response) + "\n", "")
 
 
 def test_run_propagates_summary_use_case_error_without_output(
@@ -1237,6 +1350,21 @@ def test_main_routes_portfolio_without_operation_arguments(
     assert calls == ["portfolio"]
 
 
+def test_main_routes_watch_without_operation_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run(command: str) -> int:
+        calls.append(command)
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["watch"]) == 17
+    assert calls == ["watch"]
+
+
 def test_main_routes_orders_without_operation_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1564,6 +1692,8 @@ def test_main_rejects_invalid_portfolio_before_orchestration(
         ["summary", "summary"],
         ["portfolio", "extra"],
         ["portfolio", "--anything"],
+        ["watch", "extra"],
+        ["watch", "--anything"],
         ["orders", "extra"],
         ["orders", "--anything"],
         ["orders", "orders"],
@@ -1713,6 +1843,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot user\n"
         "  kase-pilot summary\n"
         "  kase-pilot portfolio\n"
+        "  kase-pilot watch\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
         "[--symbol SYMBOL] [--limit NUMBER]\n"

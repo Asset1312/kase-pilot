@@ -28,6 +28,7 @@ _USAGE = (
     "  kase-pilot user\n"
     "  kase-pilot summary\n"
     "  kase-pilot portfolio\n"
+    "  kase-pilot watch\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
     "[--symbol SYMBOL] [--limit NUMBER]\n"
@@ -62,6 +63,11 @@ def _format_number(value: object, decimal_places: int | None = None) -> str:
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
 
 
+def _format_signed_number(value: object) -> str:
+    number = _valid_number(value)
+    return format(number, "+.2f") if number is not None else "-"
+
+
 def _format_text(value: object) -> str:
     return value if isinstance(value, str) else "-"
 
@@ -80,7 +86,9 @@ def _mapping_rows(value: object) -> list[Mapping[object, object]]:
     return [row for row in value if isinstance(row, Mapping)]
 
 
-def _format_portfolio(summary: object) -> str:
+def _portfolio_rows(
+    summary: object,
+) -> tuple[list[Mapping[object, object]], list[Mapping[object, object]]]:
     result = summary.get("result") if isinstance(summary, Mapping) else None
     position_state = result.get("ps") if isinstance(result, Mapping) else None
     positions = (
@@ -93,6 +101,11 @@ def _format_portfolio(summary: object) -> str:
         if isinstance(position_state, Mapping)
         else []
     )
+    return positions, cash_balances
+
+
+def _format_portfolio(summary: object) -> str:
+    positions, cash_balances = _portfolio_rows(summary)
     totals: dict[str, list[Decimal | None]] = {}
     for position in positions:
         currency = position.get("curr")
@@ -163,6 +176,38 @@ def _format_portfolio(summary: object) -> str:
     return "\n".join(lines)
 
 
+def _format_watch(summary: object) -> str:
+    positions, cash_balances = _portfolio_rows(summary)
+
+    lines = ["Portfolio", ""]
+    if positions:
+        for position in positions:
+            lines.append(
+                f"{_format_text(position.get('i')):<18} "
+                f"{_format_number(position.get('mkt_price'), 2):>12} "
+                f"{_format_signed_number(position.get('profit_close')):>12}"
+            )
+    else:
+        lines.append("No positions.")
+
+    lines.extend(("", "Cash", ""))
+    non_zero_cash = [
+        (balance, number)
+        for balance in cash_balances
+        if (number := _valid_number(balance.get("s"))) is not None and number != 0
+    ]
+    if non_zero_cash:
+        for balance, number in non_zero_cash:
+            lines.append(
+                f"{_format_text(balance.get('curr')):<18} "
+                f"{format(number, '.2f'):>12}"
+            )
+    else:
+        lines.append("No cash balances.")
+
+    return "\n".join(lines)
+
+
 def run(
     command: str,
     ticker: str | None = None,
@@ -185,6 +230,7 @@ def run(
         "user",
         "summary",
         "portfolio",
+        "watch",
         "orders",
         "trades",
         "candles",
@@ -192,7 +238,10 @@ def run(
         raise ValueError(f"Unknown command: {command}")
     if command == "trades" and (ticker is not None or start is None or end is None):
         raise ValueError("The trades command requires a date range")
-    if command in {"user", "summary", "portfolio", "orders"} and ticker is not None:
+    if (
+        command in {"user", "summary", "portfolio", "watch", "orders"}
+        and ticker is not None
+    ):
         raise ValueError(f"The {command} command does not accept an argument")
     if (
         command
@@ -200,6 +249,7 @@ def run(
             "user",
             "summary",
             "portfolio",
+            "watch",
             "orders",
             "trades",
         }
@@ -214,7 +264,7 @@ def run(
             settings.tradernet_private_key,
         )
         result = use_case.execute(active=active)
-    elif command in {"summary", "portfolio"}:
+    elif command in {"summary", "portfolio", "watch"}:
         use_case = create_get_account_summary(
             settings.tradernet_public_key,
             settings.tradernet_private_key,
@@ -273,6 +323,8 @@ def run(
 
     if command == "portfolio":
         print(_format_portfolio(result))
+    elif command == "watch":
+        print(_format_watch(result))
     else:
         print(
             json.dumps(
@@ -296,6 +348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["user"],
         ["summary"],
         ["portfolio"],
+        ["watch"],
         ["orders"],
         ["orders", "--all"],
     ) or (
@@ -386,7 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if arguments == ["orders", "--all"]:
             return run("orders", active=False)
-        if arguments[0] in {"user", "summary", "portfolio", "orders"}:
+        if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":
             return run(
