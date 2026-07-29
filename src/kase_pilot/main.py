@@ -35,7 +35,7 @@ _USAGE = (
     "  kase-pilot watch [--follow]\n"
     "  kase-pilot orders [--all]\n"
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
-    "[--symbol SYMBOL] [--limit NUMBER]\n"
+    "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]"
 )
@@ -424,8 +424,8 @@ def run(
         command != "portfolio" or sort_field not in _PORTFOLIO_SORT_FIELDS
     ):
         raise ValueError(f"Unsupported portfolio sort field: {sort_field}")
-    if json_output and command != "portfolio":
-        raise ValueError("JSON output is supported only for portfolio")
+    if json_output and command not in {"portfolio", "trades"}:
+        raise ValueError("JSON output is supported only for portfolio and trades")
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
         if not symbol:
@@ -604,21 +604,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(_USAGE, file=sys.stderr)
                     return 2
             index += 2
-    elif len(arguments) in {5, 7, 9} and arguments[0] == "trades":
+    elif arguments and arguments[0] == "trades":
         seen_flags: set[str] = set()
-        for index in range(1, len(arguments), 2):
+        trades_flags = {"--from", "--to", "--symbol", "--limit", "--json"}
+        index = 1
+        while index < len(arguments):
             flag = arguments[index]
-            value = arguments[index + 1]
-            if flag in seen_flags or flag not in {
-                "--from",
-                "--to",
-                "--symbol",
-                "--limit",
-            }:
+            if flag in seen_flags or flag not in trades_flags:
                 print(_USAGE, file=sys.stderr)
                 return 2
             seen_flags.add(flag)
 
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1] in trades_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index + 1]
             if flag == "--symbol":
                 symbol = value
             elif flag == "--limit":
@@ -638,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     start = parsed_date
                 else:
                     end = parsed_date
+            index += 2
 
         if not {"--from", "--to"}.issubset(seen_flags):
             print(_USAGE, file=sys.stderr)
@@ -697,13 +702,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments[0] in {"user", "summary", "portfolio", "watch", "orders"}:
             return run(arguments[0])
         if arguments[0] == "trades":
-            return run(
-                "trades",
-                start=start,
-                end=end,
-                symbol=symbol,
-                limit=limit,
-            )
+            trades_arguments: dict[str, object] = {
+                "start": start,
+                "end": end,
+                "symbol": symbol,
+                "limit": limit,
+            }
+            if json_output:
+                trades_arguments["json_output"] = True
+            return run("trades", **trades_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)

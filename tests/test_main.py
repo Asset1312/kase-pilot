@@ -1688,6 +1688,51 @@ def test_run_routes_trades_history_and_prints_pretty_json(
     assert captured.err == ""
 
 
+def test_run_trades_explicit_json_matches_existing_raw_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {
+        "trades": [
+            {
+                "id": 17,
+                "price": "211.16",
+                "title": "Сделка",
+                "nested": {"values": [1, None, "текст"]},
+            }
+        ],
+        "unknown_field": {"preserved": True},
+    }
+    use_case = FakeGetTradesHistory(response)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_get_trades_history",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run(
+        "trades",
+        start=date(2025, 1, 1),
+        end=date(2025, 2, 1),
+        json_output=True,
+        environ={},
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+    assert json.loads(captured.out) == response
+    assert "Сделка" in captured.out
+    assert "текст" in captured.out
+    assert "\\u" not in captured.out
+    assert captured.err == ""
+
+
 def test_run_routes_trades_history_symbol_without_normalizing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2302,6 +2347,70 @@ def test_main_routes_trades_date_range_in_any_flag_order(
     ]
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--json",
+        ],
+        [
+            "trades",
+            "--json",
+            "--symbol",
+            "AAPL.US",
+            "--limit",
+            "100",
+            "--to",
+            "2025-02-01",
+            "--from",
+            "2025-01-01",
+        ],
+        [
+            "trades",
+            "--limit",
+            "100",
+            "--from",
+            "2025-01-01",
+            "--json",
+            "--to",
+            "2025-02-01",
+            "--symbol",
+            "AAPL.US",
+        ],
+    ],
+)
+def test_main_routes_trades_json_with_options_in_any_order(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **kwargs: object) -> int:
+        calls.append((command, kwargs))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [
+        (
+            "trades",
+            {
+                "start": date(2025, 1, 1),
+                "end": date(2025, 2, 1),
+                "symbol": "AAPL.US" if "--symbol" in arguments else None,
+                "limit": 100 if "--limit" in arguments else None,
+                "json_output": True,
+            },
+        )
+    ]
+
+
 @pytest.mark.parametrize("value", [3600, 0, -60])
 def test_main_passes_candles_timeframe(
     value: int,
@@ -2579,6 +2688,24 @@ def test_main_rejects_invalid_portfolio_before_orchestration(
         ],
         [
             "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--json",
+            "--json",
+        ],
+        [
+            "trades",
+            "--from",
+            "2025-01-01",
+            "--to",
+            "2025-02-01",
+            "--json",
+            "extra",
+        ],
+        [
+            "trades",
             "extra",
             "--from",
             "2025-01-01",
@@ -2639,7 +2766,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot watch [--follow]\n"
         "  kase-pilot orders [--all]\n"
         "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
-        "[--symbol SYMBOL] [--limit NUMBER]\n"
+        "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
     )
