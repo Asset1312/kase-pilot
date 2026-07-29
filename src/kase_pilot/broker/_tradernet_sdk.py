@@ -163,6 +163,35 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "price alerts"))
 
+    def get_requests_history(
+        self,
+        doc_id: int | None = None,
+        exec_id: int | None = None,
+        start: date = datetime(2011, 1, 11),  # noqa: DTZ001
+        end: date = datetime.now(),  # noqa: B008, DTZ005
+        limit: int | None = None,
+        offset: int | None = None,
+        status: int | None = None,
+    ) -> dict[str, Any]:
+        """Return client requests history without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_requests_history(
+                doc_id,
+                exec_id,
+                start,
+                end,
+                limit,
+                offset,
+                status,
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, Any],
+            _require_mapping(response, "requests history"),
+        )
+
     def get_candles(
         self,
         symbol: str,

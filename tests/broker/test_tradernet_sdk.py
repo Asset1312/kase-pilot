@@ -30,6 +30,9 @@ class FakeSdkClient:
         self.get_historical_calls: list[tuple[object, object]] = []
         self.corporate_actions_calls: list[object] = []
         self.get_price_alerts_calls: list[object] = []
+        self.get_requests_history_calls: list[
+            tuple[object, object, object, object, object, object, object]
+        ] = []
         self.candle_calls: list[tuple[object, object, object, object]] = []
         self.user_info_calls = 0
         self.account_summary_calls = 0
@@ -91,6 +94,21 @@ class FakeSdkClient:
 
     def get_price_alerts(self, symbol: object = None) -> Any:
         self.get_price_alerts_calls.append(symbol)
+        return self.response
+
+    def get_requests_history(
+        self,
+        doc_id: object = None,
+        exec_id: object = None,
+        start: object = None,
+        end: object = None,
+        limit: object = None,
+        offset: object = None,
+        status: object = None,
+    ) -> Any:
+        self.get_requests_history_calls.append(
+            (doc_id, exec_id, start, end, limit, offset, status)
+        )
         return self.response
 
     def get_candles(
@@ -651,6 +669,104 @@ def test_get_price_alerts_sdk_exception_becomes_api_request_error_with_cause() -
 
     with pytest.raises(ApiRequestError) as exc_info:
         adapter.get_price_alerts()
+
+    assert exc_info.value.__cause__ is original
+    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_requests_history_forwards_defaults_and_preserves_mapping_identity() -> (
+    None
+):
+    response = {"result": {"requests": [{"unknown": {"nested": [True, None]}}]}}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+    parameters = signature(TradernetSdkAdapter.get_requests_history).parameters
+
+    result = adapter.get_requests_history()
+
+    assert sdk.get_requests_history_calls == [
+        (
+            None,
+            None,
+            parameters["start"].default,
+            parameters["end"].default,
+            None,
+            None,
+            None,
+        )
+    ]
+    assert result is response
+
+
+def test_get_requests_history_forwards_all_explicit_arguments_unchanged() -> None:
+    doc_id = 17
+    exec_id = 23
+    start = date(2026, 1, 1)
+    end = date(2026, 2, 1)
+    limit = 50
+    offset = 10
+    status = 3
+    sdk = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    adapter.get_requests_history(
+        doc_id,
+        exec_id,
+        start,
+        end,
+        limit,
+        offset,
+        status,
+    )
+
+    assert sdk.get_requests_history_calls == [
+        (doc_id, exec_id, start, end, limit, offset, status)
+    ]
+    assert sdk.get_requests_history_calls[0][2] is start
+    assert sdk.get_requests_history_calls[0][3] is end
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        (),
+        "not a mapping",
+        42,
+    ],
+)
+def test_get_requests_history_non_mapping_response_raises_validation_error(
+    response: object,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping requests history response"):
+        adapter.get_requests_history()
+
+
+def test_get_requests_history_sdk_exception_becomes_api_request_error_with_cause() -> (
+    None
+):
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_requests_history(
+            self,
+            doc_id: int | None = None,
+            exec_id: int | None = None,
+            start: date = datetime(2011, 1, 11),  # noqa: DTZ001
+            end: date = datetime.now(),  # noqa: B008, DTZ005
+            limit: int | None = None,
+            offset: int | None = None,
+            status: int | None = None,
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_requests_history()
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
