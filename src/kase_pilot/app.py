@@ -26,6 +26,7 @@ from kase_pilot.application import (
     GetSymbols,
     GetTariffs,
     GetTradesHistory,
+    GetUserData,
     GetUserInfo,
     ListSecuritySessions,
 )
@@ -284,3 +285,14 @@ def create_get_user_info(
     adapter = TradernetSdkAdapter(sdk_client)
     account_service = AccountService(adapter)
     return GetUserInfo(account_service)
+
+
+def create_get_user_data(
+    public_key: str,
+    private_key: str,
+) -> GetUserData:
+    """Build the object graph for the user-data use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetUserData(market_service)

@@ -133,6 +133,16 @@ class FakeOrderFilesDependency:
         return self.response
 
 
+class FakeUserDataDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls = 0
+
+    def get_user_data(self) -> dict[str, Any]:
+        self.calls += 1
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -495,6 +505,17 @@ def test_get_order_files_delegates_and_preserves_response_identity(
     result = service.get_order_files(order_id, internal_id)
 
     assert dependency.calls == [(order_id, internal_id)]
+    assert result is response
+
+
+def test_get_user_data_delegates_and_preserves_response_identity() -> None:
+    response = {"result": {"portfolio": {"name": "Инвестор"}}}
+    dependency = FakeUserDataDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_user_data()
+
+    assert dependency.calls == 1
     assert result is response
 
 

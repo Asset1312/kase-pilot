@@ -22,6 +22,7 @@ from kase_pilot.application.symbol import GetSymbol
 from kase_pilot.application.symbols import GetSymbols
 from kase_pilot.application.tariffs import GetTariffs
 from kase_pilot.application.trades_history import GetTradesHistory
+from kase_pilot.application.user_data import GetUserData
 from kase_pilot.application.user_info import GetUserInfo
 
 __all__ = [
@@ -46,6 +47,7 @@ __all__ = [
     "GetSymbols",
     "GetTariffs",
     "GetTradesHistory",
+    "GetUserData",
     "GetUserInfo",
     "ListSecuritySessions",
 ]

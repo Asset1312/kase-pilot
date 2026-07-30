@@ -126,6 +126,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "GetSymbols",
         "GetTariffs",
         "GetTradesHistory",
+        "GetUserData",
         "GetUserInfo",
         "ListSecuritySessions",
     ]

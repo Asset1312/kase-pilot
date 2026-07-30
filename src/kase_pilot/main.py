@@ -33,6 +33,7 @@ from kase_pilot.app import (
     create_get_symbols,
     create_get_tariffs,
     create_get_trades_history,
+    create_get_user_data,
     create_get_user_info,
     create_list_security_sessions,
 )
@@ -51,6 +52,7 @@ _USAGE = (
     "  kase-pilot tariffs [--json]\n"
     "  kase-pilot security-sessions [--json]\n"
     "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
+    "  kase-pilot user-data [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -508,6 +510,13 @@ def _run_order_files(
     return 0
 
 
+def _run_user_data(public_key: str, private_key: str) -> int:
+    use_case = create_get_user_data(public_key, private_key)
+    result = use_case.execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -842,6 +851,7 @@ def run(
         "tariffs",
         "security-sessions",
         "order-files",
+        "user-data",
         "symbol",
         "symbols",
         "news",
@@ -888,6 +898,7 @@ def run(
         "tariffs",
         "security-sessions",
         "order-files",
+        "user-data",
         "symbol",
         "symbols",
     }:
@@ -895,7 +906,7 @@ def run(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
-            "symbols, tariffs, security-sessions, and order-files"
+            "symbols, tariffs, security-sessions, order-files, and user-data"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -921,6 +932,7 @@ def run(
             "tariffs",
             "security-sessions",
             "order-files",
+            "user-data",
         }
         and ticker is not None
     ):
@@ -946,6 +958,7 @@ def run(
             "tariffs",
             "security-sessions",
             "order-files",
+            "user-data",
         }
         and ticker is None
     ):
@@ -993,6 +1006,8 @@ def run(
             order_id=order_id,
             internal_id=internal_id,
         )
+    if command == "user-data":
+        return _run_user_data(public_key, private_key)
     if command == "symbol":
         return _run_symbol(
             public_key,
@@ -1161,6 +1176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["symbols"],
         ["tariffs"],
         ["security-sessions"],
+        ["user-data"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1173,6 +1189,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "user-data":
+        if arguments == ["user-data", "--json"]:
+            json_output = True
+        else:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "order-files":
         order_file_flags = {"--order-id", "--internal-id", "--json"}
         seen_flags: set[str] = set()
@@ -1724,6 +1746,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "symbols",
             "tariffs",
             "security-sessions",
+            "user-data",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1760,6 +1783,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 order_file_arguments["json_output"] = True
             return run("order-files", **order_file_arguments)
+        if arguments[0] == "user-data":
+            return run("user-data", json_output=True)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

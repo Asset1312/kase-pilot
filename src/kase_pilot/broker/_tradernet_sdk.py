@@ -167,6 +167,15 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "order files"))
 
+    def get_user_data(self) -> dict[str, Any]:
+        """Return user data without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_user_data()
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "user data"))
+
     def get_news(
         self,
         query: str,

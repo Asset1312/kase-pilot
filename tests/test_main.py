@@ -194,6 +194,16 @@ class FakeGetOrderFiles:
         return self.response
 
 
+class FakeGetUserData:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls = 0
+
+    def execute(self) -> dict[str, Any]:
+        self.calls += 1
+        return self.response
+
+
 class FakeGetNews:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -773,6 +783,44 @@ def test_run_order_files_forwards_identifiers_and_prints_unicode_pretty_json(
 
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(order_id, internal_id)]
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_run_user_data_prints_unicode_pretty_json(
+    json_output: bool,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"result": {"portfolio": {"name": "Инвестор"}}}
+    use_case = FakeGetUserData(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetUserData:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_user_data", fake_create)
+
+    assert (
+        main_module.run(
+            "user-data",
+            json_output=json_output,
+            environ={},
+        )
+        == 0
+    )
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == 1
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -3460,6 +3508,30 @@ def test_main_routes_order_files(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (["user-data"], {}),
+        (["user-data", "--json"], {"json_output": True}),
+    ],
+)
+def test_main_routes_user_data(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("user-data", expected_options)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["market-status"], {}),
         (
             ["market-status", "--market", "KASE"],
@@ -4797,6 +4869,43 @@ def test_main_rejects_invalid_order_files_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["user-data", "extra"],
+        ["user-data", "--unknown"],
+        ["user-data", "--json", "--json"],
+    ],
+)
+def test_main_rejects_invalid_user_data_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetUserData()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_user_data",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == 0
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["top", "extra"],
         ["top", "--unknown"],
         ["top", "--type"],
@@ -5246,6 +5355,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot tariffs [--json]\n"
         "  kase-pilot security-sessions [--json]\n"
         "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
+        "  kase-pilot user-data [--json]\n"
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "

@@ -92,6 +92,10 @@ class MarketService:
         """Return raw broker order files."""
         return self._adapter.get_order_files(order_id, internal_id)
 
+    def get_user_data(self) -> dict[str, Any]:
+        """Return raw broker user data."""
+        return self._adapter.get_user_data()
+
     def get_news(
         self,
         query: str,
