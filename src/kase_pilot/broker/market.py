@@ -96,6 +96,14 @@ class MarketService:
         """Return raw broker user data."""
         return self._adapter.get_user_data()
 
+    def check_missing_fields(
+        self,
+        step: int,
+        office: str,
+    ) -> dict[str, Any]:
+        """Return raw missing profile fields."""
+        return self._adapter.check_missing_fields(step, office)
+
     def get_news(
         self,
         query: str,

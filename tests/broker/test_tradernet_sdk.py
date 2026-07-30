@@ -32,6 +32,7 @@ class FakeSdkClient:
         self.list_security_sessions_calls = 0
         self.get_order_files_calls: list[tuple[object, object]] = []
         self.get_user_data_calls = 0
+        self.check_missing_fields_calls: list[tuple[object, object]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -92,6 +93,10 @@ class FakeSdkClient:
 
     def get_user_data(self) -> Any:
         self.get_user_data_calls += 1
+        return self.response
+
+    def check_missing_fields(self, step: object, office: object) -> Any:
+        self.check_missing_fields_calls.append((step, office))
         return self.response
 
     def get_news(
@@ -560,6 +565,30 @@ def test_get_user_data_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping user data response"):
         adapter.get_user_data()
+
+
+def test_check_missing_fields_forwards_arguments_and_preserves_response_identity() -> (
+    None
+):
+    step = 3
+    office = " Almaty "
+    response = {"result": {"not_completed": [{"name": "address"}]}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.check_missing_fields(step, office)
+
+    assert sdk_client.check_missing_fields_calls == [(step, office)]
+    assert sdk_client.check_missing_fields_calls[0][1] is office
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_check_missing_fields_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping missing fields response"):
+        adapter.check_missing_fields(3, "Almaty")
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

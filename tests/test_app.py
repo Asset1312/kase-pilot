@@ -10,6 +10,7 @@ import pytest
 
 from kase_pilot import app
 from kase_pilot.application import (
+    CheckMissingFields,
     ExportSecurities,
     FindInstrument,
     GetAccountSummary,
@@ -41,6 +42,34 @@ from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
 
 class FakeSdkClient:
     pass
+
+
+def test_create_check_missing_fields_builds_graph_without_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class NetworkGuardSdkClient:
+        def check_missing_fields(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    sdk_client = NetworkGuardSdkClient()
+
+    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
+        calls.append((public_key, private_key))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_check_missing_fields("public-value", "private-value")
+
+    assert isinstance(use_case, CheckMissingFields)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
 
 
 def test_create_export_securities_builds_graph_without_sdk_call(

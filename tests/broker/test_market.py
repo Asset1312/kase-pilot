@@ -143,6 +143,20 @@ class FakeUserDataDependency:
         return self.response
 
 
+class FakeMissingFieldsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def check_missing_fields(
+        self,
+        step: object,
+        office: object,
+    ) -> dict[str, Any]:
+        self.calls.append((step, office))
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -516,6 +530,20 @@ def test_get_user_data_delegates_and_preserves_response_identity() -> None:
     result = service.get_user_data()
 
     assert dependency.calls == 1
+    assert result is response
+
+
+def test_check_missing_fields_delegates_and_preserves_response_identity() -> None:
+    step = 3
+    office = " Almaty "
+    response = {"result": {"not_completed": [{"name": "address"}]}}
+    dependency = FakeMissingFieldsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.check_missing_fields(step, office)
+
+    assert dependency.calls == [(step, office)]
+    assert dependency.calls[0][1] is office
     assert result is response
 
 

@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from kase_pilot.app import (
+    create_check_missing_fields,
     create_export_securities,
     create_find_instrument,
     create_get_account_summary,
@@ -53,6 +54,7 @@ _USAGE = (
     "  kase-pilot security-sessions [--json]\n"
     "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
     "  kase-pilot user-data [--json]\n"
+    "  kase-pilot check-missing-fields --step STEP --office OFFICE [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -517,6 +519,19 @@ def _run_user_data(public_key: str, private_key: str) -> int:
     return 0
 
 
+def _run_check_missing_fields(
+    public_key: str,
+    private_key: str,
+    *,
+    step: int,
+    office: str,
+) -> int:
+    use_case = create_check_missing_fields(public_key, private_key)
+    result = use_case.execute(step, office)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -833,6 +848,8 @@ def run(
     internal_id: int | None = None,
     offset: int | None = None,
     status: int | None = None,
+    step: int | None = None,
+    office: str | None = None,
     period: datetime_time | None = None,
     limit: int | None = None,
     start: date | datetime | None = None,
@@ -852,6 +869,7 @@ def run(
         "security-sessions",
         "order-files",
         "user-data",
+        "check-missing-fields",
         "symbol",
         "symbols",
         "news",
@@ -899,6 +917,7 @@ def run(
         "security-sessions",
         "order-files",
         "user-data",
+        "check-missing-fields",
         "symbol",
         "symbols",
     }:
@@ -906,7 +925,8 @@ def run(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
-            "symbols, tariffs, security-sessions, order-files, and user-data"
+            "symbols, tariffs, security-sessions, order-files, user-data, and "
+            "check-missing-fields"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -933,6 +953,7 @@ def run(
             "security-sessions",
             "order-files",
             "user-data",
+            "check-missing-fields",
         }
         and ticker is not None
     ):
@@ -959,6 +980,7 @@ def run(
             "security-sessions",
             "order-files",
             "user-data",
+            "check-missing-fields",
         }
         and ticker is None
     ):
@@ -969,6 +991,8 @@ def run(
         raise ValueError("The options command requires an exchange")
     if command == "order-files" and order_id is None and internal_id is None:
         raise ValueError("The order-files command requires an identifier")
+    if command == "check-missing-fields" and (step is None or office is None):
+        raise ValueError("The check-missing-fields command requires step and office")
 
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
@@ -1008,6 +1032,15 @@ def run(
         )
     if command == "user-data":
         return _run_user_data(public_key, private_key)
+    if command == "check-missing-fields":
+        assert step is not None
+        assert office is not None
+        return _run_check_missing_fields(
+            public_key,
+            private_key,
+            step=step,
+            office=office,
+        )
     if command == "symbol":
         return _run_symbol(
             public_key,
@@ -1153,6 +1186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     internal_id = None
     offset = None
     status = None
+    step = None
+    office = None
     period = None
     limit = None
     timeframe = None
@@ -1189,6 +1224,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "check-missing-fields":
+        missing_field_flags = {"--step", "--office", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in missing_field_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            index += 1
+
+            if flag == "--json":
+                json_output = True
+                continue
+            if index >= len(arguments) or arguments[index].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            value = arguments[index]
+            if flag == "--step":
+                try:
+                    step = int(value)
+                except ValueError:
+                    print(_USAGE, file=sys.stderr)
+                    return 2
+            else:
+                office = value
+            index += 1
+
+        if step is None or office is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "user-data":
         if arguments == ["user-data", "--json"]:
             json_output = True
@@ -1785,6 +1852,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run("order-files", **order_file_arguments)
         if arguments[0] == "user-data":
             return run("user-data", json_output=True)
+        if arguments[0] == "check-missing-fields":
+            missing_field_arguments: dict[str, object] = {
+                "step": step,
+                "office": office,
+            }
+            if json_output:
+                missing_field_arguments["json_output"] = True
+            return run("check-missing-fields", **missing_field_arguments)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

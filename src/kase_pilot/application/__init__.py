@@ -9,6 +9,7 @@ from kase_pilot.application.historical import GetHistorical
 from kase_pilot.application.historical_candles import GetHistoricalCandles
 from kase_pilot.application.instrument_search import FindInstrument
 from kase_pilot.application.market_status import GetMarketStatus
+from kase_pilot.application.missing_fields import CheckMissingFields
 from kase_pilot.application.most_traded import GetMostTraded
 from kase_pilot.application.news import GetNews
 from kase_pilot.application.options import GetOptions
@@ -26,6 +27,7 @@ from kase_pilot.application.user_data import GetUserData
 from kase_pilot.application.user_info import GetUserInfo
 
 __all__ = [
+    "CheckMissingFields",
     "ExportSecurities",
     "FindInstrument",
     "GetAccountSummary",

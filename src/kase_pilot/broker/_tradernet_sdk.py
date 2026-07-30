@@ -176,6 +176,22 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "user data"))
 
+    def check_missing_fields(
+        self,
+        step: int,
+        office: str,
+    ) -> dict[str, Any]:
+        """Return missing profile fields without transforming the SDK response."""
+        try:
+            response: Any = self._client.check_missing_fields(step, office)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, Any],
+            _require_mapping(response, "missing fields"),
+        )
+
     def get_news(
         self,
         query: str,

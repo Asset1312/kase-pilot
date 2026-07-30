@@ -5,6 +5,7 @@ from __future__ import annotations
 from tradernet import Tradernet
 
 from kase_pilot.application import (
+    CheckMissingFields,
     ExportSecurities,
     FindInstrument,
     GetAccountSummary,
@@ -32,6 +33,17 @@ from kase_pilot.application import (
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+
+
+def create_check_missing_fields(
+    public_key: str,
+    private_key: str,
+) -> CheckMissingFields:
+    """Build the object graph for the missing-fields use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return CheckMissingFields(market_service)
 
 
 def create_export_securities(
