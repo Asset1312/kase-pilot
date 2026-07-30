@@ -88,6 +88,27 @@ kase-pilot --help
 kase-pilot --version
 ```
 
+## CLI validation
+
+Invalid syntax prints Usage and exits with status `2`. Parsing failures are
+handled before credentials are loaded or application objects are composed.
+Required arguments and options must be present; duplicate options, unknown
+flags, and unexpected positional arguments are rejected. Boolean flags take no
+value.
+
+Numeric validation is command-specific and follows the verified Tradernet SDK
+contract for each operation. Empty or whitespace-only values are rejected only
+where the command explicitly implements that rule, currently for the
+`portfolio` symbol filter and the required `instruments` market. Other string
+values are not uniformly normalized or rejected.
+
+Help is global: use `kase-pilot --help`. Command-specific forms such as
+`kase-pilot symbols --help` are unsupported and are treated as invalid usage.
+
+Raw JSON commands preserve the Tradernet response shape and use the output
+format described below. Explicitly documented exceptions may transform the
+response; notably, `portfolio --json` emits normalized portfolio JSON.
+
 ## Commands
 
 Values explicitly shown as `YYYY-MM-DD` are parsed as ISO dates. Options
@@ -378,8 +399,9 @@ traceback.
 
 - `news` currently fails inside the external Tradernet SDK; KASE Pilot does not
   fix or work around that SDK failure.
-- `Tradernet.get_all()` is intentionally not exposed: an unfiltered SDK call
-  may download all reference books and require at least 40 GB of memory.
+- `Tradernet.get_all()` is exposed only through the restricted `instruments`
+  command. An explicit market filter is mandatory to prevent an unbounded
+  download of all reference books.
 - KASE Pilot does not place or cancel orders.
 - Read-only behavior depends on Tradernet API availability and account
   permissions.
