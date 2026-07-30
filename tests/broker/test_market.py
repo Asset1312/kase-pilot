@@ -57,6 +57,20 @@ class FakeSymbolsDependency:
         return self.response
 
 
+class FakeSymbolDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_symbol(
+        self,
+        symbol: object,
+        lang: object = None,
+    ) -> dict[str, Any]:
+        self.calls.append((symbol, lang))
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -330,6 +344,23 @@ def test_get_symbols_delegates_and_preserves_response_identity(
     result = service.get_symbols(exchange)
 
     assert dependency.calls == [exchange]
+    assert result is response
+
+
+@pytest.mark.parametrize("lang", [None, " ru "])
+def test_get_symbol_delegates_and_preserves_response_identity(
+    lang: str | None,
+) -> None:
+    symbol = " AAPL.US "
+    response = {"result": {"ticker": "AAPL.US", "name": "Apple"}}
+    dependency = FakeSymbolDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_symbol(symbol, lang)
+
+    assert dependency.calls == [(symbol, lang)]
+    assert dependency.calls[0][0] is symbol
+    assert dependency.calls[0][1] is lang
     assert result is response
 
 

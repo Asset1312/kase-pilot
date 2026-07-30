@@ -24,6 +24,7 @@ class FakeSdkClient:
         self.calls: list[tuple[str, bool]] = []
         self.quote_calls: list[object] = []
         self.find_symbol_calls: list[object] = []
+        self.symbol_calls: list[tuple[object, ...]] = []
         self.symbols_calls: list[tuple[object, ...]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
@@ -57,6 +58,10 @@ class FakeSdkClient:
 
     def symbols(self, *args: object) -> Any:
         self.symbols_calls.append(args)
+        return self.response
+
+    def symbol(self, *args: object) -> Any:
+        self.symbol_calls.append(args)
         return self.response
 
     def get_news(
@@ -347,6 +352,40 @@ def test_get_symbols_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping symbols response"):
         adapter.get_symbols()
+
+
+def test_get_symbol_omits_lang_and_preserves_response_identity() -> None:
+    symbol = " AAPL.US "
+    response = {"result": {"ticker": "AAPL.US", "name": "Apple"}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.get_symbol(symbol)
+
+    assert sdk_client.symbol_calls == [(symbol,)]
+    assert sdk_client.symbol_calls[0][0] is symbol
+    assert result is response
+
+
+def test_get_symbol_forwards_explicit_lang_unchanged() -> None:
+    symbol = "AAPL.US"
+    lang = " ru "
+    sdk_client = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    adapter.get_symbol(symbol, lang)
+
+    assert sdk_client.symbol_calls == [(symbol, lang)]
+    assert sdk_client.symbol_calls[0][0] is symbol
+    assert sdk_client.symbol_calls[0][1] is lang
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_symbol_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping symbol response"):
+        adapter.get_symbol("AAPL.US")
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

@@ -85,6 +85,22 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "symbols"))
 
+    def get_symbol(
+        self,
+        symbol: str,
+        lang: str | None = None,
+    ) -> dict[str, Any]:
+        """Return symbol information without transforming the SDK response."""
+        try:
+            if lang is None:
+                response: Any = self._client.symbol(symbol)
+            else:
+                response = self._client.symbol(symbol, lang)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "symbol"))
+
     def get_news(
         self,
         query: str,

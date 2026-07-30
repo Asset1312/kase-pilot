@@ -19,6 +19,7 @@ from kase_pilot.application import (
     GetPriceAlerts,
     GetRequestsHistory,
     GetSecurityInfo,
+    GetSymbol,
     GetSymbols,
     GetTradesHistory,
     GetUserInfo,
@@ -190,6 +191,17 @@ def create_get_symbols(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetSymbols(market_service)
+
+
+def create_get_symbol(
+    public_key: str,
+    private_key: str,
+) -> GetSymbol:
+    """Build the object graph for the symbol use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetSymbol(market_service)
 
 
 def create_get_trades_history(

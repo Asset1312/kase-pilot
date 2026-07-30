@@ -24,6 +24,7 @@ from kase_pilot.application import (
     GetPriceAlerts,
     GetRequestsHistory,
     GetSecurityInfo,
+    GetSymbol,
     GetSymbols,
     GetTradesHistory,
     GetUserInfo,
@@ -427,6 +428,34 @@ def test_create_get_symbols_builds_graph_without_sdk_call(
     use_case = app.create_get_symbols("public-value", "private-value")
 
     assert isinstance(use_case, GetSymbols)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_get_symbol_builds_graph_without_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class NetworkGuardSdkClient:
+        def symbol(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    sdk_client = NetworkGuardSdkClient()
+
+    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
+        calls.append((public_key, private_key))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_get_symbol("public-value", "private-value")
+
+    assert isinstance(use_case, GetSymbol)
     market_service = use_case._market_service
     assert isinstance(market_service, MarketService)
     adapter = market_service._adapter

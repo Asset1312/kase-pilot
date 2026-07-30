@@ -52,6 +52,14 @@ class MarketService:
         """Return raw broker symbol lists."""
         return self._adapter.get_symbols(exchange)
 
+    def get_symbol(
+        self,
+        symbol: str,
+        lang: str | None = None,
+    ) -> dict[str, Any]:
+        """Return raw broker symbol information."""
+        return self._adapter.get_symbol(symbol, lang)
+
     def get_news(
         self,
         query: str,

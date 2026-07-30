@@ -26,6 +26,7 @@ from kase_pilot.app import (
     create_get_price_alerts,
     create_get_requests_history,
     create_get_security_info,
+    create_get_symbol,
     create_get_symbols,
     create_get_trades_history,
     create_get_user_info,
@@ -39,6 +40,7 @@ _USAGE = (
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
     "  kase-pilot search QUERY\n"
+    "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json]\n"
@@ -454,6 +456,22 @@ def _run_symbols(
     return 0
 
 
+def _run_symbol(
+    public_key: str,
+    private_key: str,
+    symbol: str,
+    *,
+    lang: str | None,
+) -> int:
+    use_case = create_get_symbol(public_key, private_key)
+    if lang is None:
+        result = use_case.execute(symbol)
+    else:
+        result = use_case.execute(symbol, lang=lang)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_news(
     public_key: str,
     private_key: str,
@@ -724,6 +742,7 @@ def run(
     sort_field: str | None = None,
     symbol: str | None = None,
     story_id: str | None = None,
+    lang: str | None = None,
     market: str = "*",
     mode: str | None = None,
     instrument_type: str = "stocks",
@@ -747,6 +766,7 @@ def run(
         "info",
         "quotes",
         "search",
+        "symbol",
         "symbols",
         "news",
         "market-status",
@@ -787,12 +807,13 @@ def run(
         "price-alerts",
         "requests-history",
         "broker-report",
+        "symbol",
         "symbols",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
-            "requests-history, broker-report, and symbols"
+            "requests-history, broker-report, symbol, and symbols"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -849,6 +870,13 @@ def run(
         return _run_quotes(public_key, private_key, ticker)
     if command == "search":
         return _run_search(public_key, private_key, ticker)
+    if command == "symbol":
+        return _run_symbol(
+            public_key,
+            private_key,
+            ticker,
+            lang=lang,
+        )
     if command == "symbols":
         return _run_symbols(
             public_key,
@@ -970,6 +998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     end = None
     symbol = None
     story_id = None
+    lang = None
     market = "*"
     mode = None
     instrument_type = "stocks"
@@ -1009,6 +1038,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "info",
             "quotes",
             "search",
+            "symbol",
             "candles",
         }
     ):
@@ -1122,6 +1152,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_USAGE, file=sys.stderr)
                 return 2
             symbols_exchange = arguments[index + 1]
+            index += 2
+    elif arguments and arguments[0] == "symbol":
+        if len(arguments) < 2 or arguments[1].startswith("--"):
+            print(_USAGE, file=sys.stderr)
+            return 2
+
+        symbol_flags = {"--lang", "--json"}
+        seen_flags: set[str] = set()
+        index = 2
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in symbol_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            lang = arguments[index + 1]
             index += 2
     elif arguments and arguments[0] == "top":
         top_flags = {"--type", "--exchange", "--limit", "--losers", "--json"}
@@ -1473,6 +1527,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 symbols_arguments["json_output"] = True
             return run("symbols", **symbols_arguments)
+        if arguments[0] == "symbol":
+            symbol_arguments: dict[str, object] = {}
+            if lang is not None:
+                symbol_arguments["lang"] = lang
+            if json_output:
+                symbol_arguments["json_output"] = True
+            return run("symbol", arguments[1], **symbol_arguments)
         if arguments[0] == "top":
             top_arguments: dict[str, object] = {
                 "instrument_type": instrument_type,
