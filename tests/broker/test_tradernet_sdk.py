@@ -29,6 +29,7 @@ class FakeSdkClient:
         self.export_securities_calls: list[tuple[object, ...]] = []
         self.get_options_calls: list[tuple[object, object]] = []
         self.get_tariffs_list_calls = 0
+        self.list_security_sessions_calls = 0
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -77,6 +78,10 @@ class FakeSdkClient:
 
     def get_tariffs_list(self) -> Any:
         self.get_tariffs_list_calls += 1
+        return self.response
+
+    def list_security_sessions(self) -> Any:
+        self.list_security_sessions_calls += 1
         return self.response
 
     def get_news(
@@ -477,6 +482,29 @@ def test_get_tariffs_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping tariffs response"):
         adapter.get_tariffs()
+
+
+def test_list_security_sessions_delegates_once_and_preserves_response_identity() -> (
+    None
+):
+    response = {"result": {"sessions": [{"market": "KASE"}]}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.list_security_sessions()
+
+    assert sdk_client.list_security_sessions_calls == 1
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_list_security_sessions_rejects_non_mapping_response(
+    response: object,
+) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping security sessions response"):
+        adapter.list_security_sessions()
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

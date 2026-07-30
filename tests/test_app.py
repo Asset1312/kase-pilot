@@ -31,6 +31,7 @@ from kase_pilot.application import (
     GetTariffs,
     GetTradesHistory,
     GetUserInfo,
+    ListSecuritySessions,
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
@@ -116,6 +117,34 @@ def test_create_get_tariffs_builds_graph_without_sdk_call(
     use_case = app.create_get_tariffs("public-value", "private-value")
 
     assert isinstance(use_case, GetTariffs)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_list_security_sessions_builds_graph_without_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class NetworkGuardSdkClient:
+        def list_security_sessions(self) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    sdk_client = NetworkGuardSdkClient()
+
+    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
+        calls.append((public_key, private_key))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_list_security_sessions("public-value", "private-value")
+
+    assert isinstance(use_case, ListSecuritySessions)
     market_service = use_case._market_service
     assert isinstance(market_service, MarketService)
     adapter = market_service._adapter

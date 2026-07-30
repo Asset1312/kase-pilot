@@ -142,6 +142,18 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "tariffs"))
 
+    def list_security_sessions(self) -> dict[str, Any]:
+        """Return security sessions without transforming the SDK response."""
+        try:
+            response: Any = self._client.list_security_sessions()
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, Any],
+            _require_mapping(response, "security sessions"),
+        )
+
     def get_news(
         self,
         query: str,

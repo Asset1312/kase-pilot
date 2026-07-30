@@ -33,6 +33,7 @@ from kase_pilot.app import (
     create_get_tariffs,
     create_get_trades_history,
     create_get_user_info,
+    create_list_security_sessions,
 )
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import ConfigurationError
@@ -47,6 +48,7 @@ _USAGE = (
     "[--fields FIELD [FIELD ...]] [--json]\n"
     "  kase-pilot options UNDERLYING --exchange EXCHANGE [--json]\n"
     "  kase-pilot tariffs [--json]\n"
+    "  kase-pilot security-sessions [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -484,6 +486,13 @@ def _run_tariffs(public_key: str, private_key: str) -> int:
     return 0
 
 
+def _run_security_sessions(public_key: str, private_key: str) -> int:
+    use_case = create_list_security_sessions(public_key, private_key)
+    result = use_case.execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -814,6 +823,7 @@ def run(
         "export-securities",
         "options",
         "tariffs",
+        "security-sessions",
         "symbol",
         "symbols",
         "news",
@@ -858,6 +868,7 @@ def run(
         "export-securities",
         "options",
         "tariffs",
+        "security-sessions",
         "symbol",
         "symbols",
     }:
@@ -865,7 +876,7 @@ def run(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
-            "symbols, and tariffs"
+            "symbols, tariffs, and security-sessions"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -889,6 +900,7 @@ def run(
             "symbols",
             "export-securities",
             "tariffs",
+            "security-sessions",
         }
         and ticker is not None
     ):
@@ -912,6 +924,7 @@ def run(
             "symbols",
             "export-securities",
             "tariffs",
+            "security-sessions",
         }
         and ticker is None
     ):
@@ -948,6 +961,8 @@ def run(
         )
     if command == "tariffs":
         return _run_tariffs(public_key, private_key)
+    if command == "security-sessions":
+        return _run_security_sessions(public_key, private_key)
     if command == "symbol":
         return _run_symbol(
             public_key,
@@ -1113,6 +1128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["broker-report"],
         ["symbols"],
         ["tariffs"],
+        ["security-sessions"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1125,6 +1141,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "security-sessions":
+        if arguments == ["security-sessions", "--json"]:
+            json_output = True
+        else:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "tariffs":
         if arguments == ["tariffs", "--json"]:
             json_output = True
@@ -1637,6 +1659,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "broker-report",
             "symbols",
             "tariffs",
+            "security-sessions",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1663,6 +1686,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run("options", arguments[1], **options_arguments)
         if arguments[0] == "tariffs":
             return run("tariffs", json_output=True)
+        if arguments[0] == "security-sessions":
+            return run("security-sessions", json_output=True)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

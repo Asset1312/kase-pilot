@@ -80,6 +80,10 @@ class MarketService:
         """Return raw broker tariffs."""
         return self._adapter.get_tariffs()
 
+    def list_security_sessions(self) -> dict[str, Any]:
+        """Return raw broker security sessions."""
+        return self._adapter.list_security_sessions()
+
     def get_news(
         self,
         query: str,

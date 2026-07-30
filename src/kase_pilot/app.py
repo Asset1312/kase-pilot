@@ -26,6 +26,7 @@ from kase_pilot.application import (
     GetTariffs,
     GetTradesHistory,
     GetUserInfo,
+    ListSecuritySessions,
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
@@ -205,6 +206,17 @@ def create_get_security_info(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetSecurityInfo(market_service)
+
+
+def create_list_security_sessions(
+    public_key: str,
+    private_key: str,
+) -> ListSecuritySessions:
+    """Build the object graph for the security-sessions use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return ListSecuritySessions(market_service)
 
 
 def create_get_symbols(

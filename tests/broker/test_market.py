@@ -109,6 +109,16 @@ class FakeTariffsDependency:
         return self.response
 
 
+class FakeSecuritySessionsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls = 0
+
+    def list_security_sessions(self) -> dict[str, Any]:
+        self.calls += 1
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -440,6 +450,17 @@ def test_get_tariffs_delegates_and_preserves_response_identity() -> None:
     service = MarketService(dependency)  # type: ignore[arg-type]
 
     result = service.get_tariffs()
+
+    assert dependency.calls == 1
+    assert result is response
+
+
+def test_list_security_sessions_delegates_and_preserves_response_identity() -> None:
+    response = {"result": {"sessions": [{"market": "KASE"}]}}
+    dependency = FakeSecuritySessionsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.list_security_sessions()
 
     assert dependency.calls == 1
     assert result is response
