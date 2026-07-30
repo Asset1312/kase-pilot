@@ -45,6 +45,13 @@ class MarketService:
         """Return broker instruments matching a search query."""
         return self._adapter.find_symbol(query)
 
+    def get_symbols(
+        self,
+        exchange: str | None = None,
+    ) -> dict[str, Any]:
+        """Return raw broker symbol lists."""
+        return self._adapter.get_symbols(exchange)
+
     def get_news(
         self,
         query: str,

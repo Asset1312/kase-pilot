@@ -24,6 +24,7 @@ class FakeSdkClient:
         self.calls: list[tuple[str, bool]] = []
         self.quote_calls: list[object] = []
         self.find_symbol_calls: list[object] = []
+        self.symbols_calls: list[tuple[object, ...]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -52,6 +53,10 @@ class FakeSdkClient:
 
     def find_symbol(self, query: object) -> Any:
         self.find_symbol_calls.append(query)
+        return self.response
+
+    def symbols(self, *args: object) -> Any:
+        self.symbols_calls.append(args)
         return self.response
 
     def get_news(
@@ -312,6 +317,36 @@ def test_find_symbol_sdk_exception_becomes_api_request_error_with_cause() -> Non
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
+
+
+def test_get_symbols_omits_exchange_and_preserves_response_identity() -> None:
+    response = {"result": {"symbols": [{"ticker": "HSBK.KZ"}]}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.get_symbols()
+
+    assert sdk_client.symbols_calls == [()]
+    assert result is response
+
+
+def test_get_symbols_forwards_explicit_exchange_unchanged() -> None:
+    exchange = " KASE "
+    sdk_client = FakeSdkClient({})
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    adapter.get_symbols(exchange)
+
+    assert sdk_client.symbols_calls == [(exchange,)]
+    assert sdk_client.symbols_calls[0][0] is exchange
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_symbols_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping symbols response"):
+        adapter.get_symbols()
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

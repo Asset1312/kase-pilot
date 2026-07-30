@@ -47,6 +47,16 @@ class FakeFindSymbolDependency:
         return self.response
 
 
+class FakeSymbolsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def get_symbols(self, exchange: object = None) -> dict[str, Any]:
+        self.calls.append(exchange)
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -307,6 +317,20 @@ def test_find_symbol_dependency_exception_propagates_unchanged() -> None:
         service.find_symbol("Apple")
 
     assert exc_info.value is original
+
+
+@pytest.mark.parametrize("exchange", [None, " KASE "])
+def test_get_symbols_delegates_and_preserves_response_identity(
+    exchange: str | None,
+) -> None:
+    response = {"result": {"symbols": [{"ticker": "HSBK.KZ"}]}}
+    dependency = FakeSymbolsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_symbols(exchange)
+
+    assert dependency.calls == [exchange]
+    assert result is response
 
 
 def test_get_news_delegates_defaults_without_transforming_response() -> None:

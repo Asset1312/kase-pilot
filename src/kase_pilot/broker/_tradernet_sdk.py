@@ -70,6 +70,21 @@ class TradernetSdkAdapter:
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
+    def get_symbols(
+        self,
+        exchange: str | None = None,
+    ) -> dict[str, Any]:
+        """Return symbol lists without transforming the SDK response."""
+        try:
+            if exchange is None:
+                response: Any = self._client.symbols()
+            else:
+                response = self._client.symbols(exchange)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "symbols"))
+
     def get_news(
         self,
         query: str,

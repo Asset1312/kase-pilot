@@ -26,6 +26,7 @@ from kase_pilot.app import (
     create_get_price_alerts,
     create_get_requests_history,
     create_get_security_info,
+    create_get_symbols,
     create_get_trades_history,
     create_get_user_info,
 )
@@ -38,6 +39,7 @@ _USAGE = (
     "  kase-pilot info TICKER\n"
     "  kase-pilot quotes TICKER\n"
     "  kase-pilot search QUERY\n"
+    "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json]\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
@@ -437,6 +439,21 @@ def _run_search(public_key: str, private_key: str, query: str) -> int:
     return 0
 
 
+def _run_symbols(
+    public_key: str,
+    private_key: str,
+    *,
+    exchange: str | None,
+) -> int:
+    use_case = create_get_symbols(public_key, private_key)
+    if exchange is None:
+        result = use_case.execute()
+    else:
+        result = use_case.execute(exchange=exchange)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_news(
     public_key: str,
     private_key: str,
@@ -710,7 +727,7 @@ def run(
     market: str = "*",
     mode: str | None = None,
     instrument_type: str = "stocks",
-    exchange: str = "usa",
+    exchange: str | None = None,
     gainers: bool = True,
     reception: int = 35,
     doc_id: int | None = None,
@@ -730,6 +747,7 @@ def run(
         "info",
         "quotes",
         "search",
+        "symbols",
         "news",
         "market-status",
         "top",
@@ -769,11 +787,12 @@ def run(
         "price-alerts",
         "requests-history",
         "broker-report",
+        "symbols",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
-            "requests-history, and broker-report"
+            "requests-history, broker-report, and symbols"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -794,6 +813,7 @@ def run(
             "price-alerts",
             "requests-history",
             "broker-report",
+            "symbols",
         }
         and ticker is not None
     ):
@@ -814,6 +834,7 @@ def run(
             "price-alerts",
             "requests-history",
             "broker-report",
+            "symbols",
         }
         and ticker is None
     ):
@@ -828,6 +849,12 @@ def run(
         return _run_quotes(public_key, private_key, ticker)
     if command == "search":
         return _run_search(public_key, private_key, ticker)
+    if command == "symbols":
+        return _run_symbols(
+            public_key,
+            private_key,
+            exchange=exchange,
+        )
     if command == "news":
         return _run_news(
             public_key,
@@ -849,7 +876,7 @@ def run(
             public_key,
             private_key,
             instrument_type=instrument_type,
-            exchange=exchange,
+            exchange="usa" if exchange is None else exchange,
             gainers=gainers,
             limit=10 if limit is None else limit,
         )
@@ -947,6 +974,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = None
     instrument_type = "stocks"
     exchange = "usa"
+    symbols_exchange = None
     gainers = True
     reception = 35
     doc_id = None
@@ -973,6 +1001,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["price-alerts"],
         ["requests-history"],
         ["broker-report"],
+        ["symbols"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1073,6 +1102,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 market = value
             else:
                 mode = value
+            index += 2
+    elif arguments and arguments[0] == "symbols":
+        symbols_flags = {"--exchange", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in symbols_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            symbols_exchange = arguments[index + 1]
             index += 2
     elif arguments and arguments[0] == "top":
         top_flags = {"--type", "--exchange", "--limit", "--losers", "--json"}
@@ -1387,6 +1436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "price-alerts",
             "requests-history",
             "broker-report",
+            "symbols",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1416,6 +1466,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 market_status_arguments["json_output"] = True
             return run("market-status", **market_status_arguments)
+        if arguments[0] == "symbols":
+            symbols_arguments: dict[str, object] = {}
+            if symbols_exchange is not None:
+                symbols_arguments["exchange"] = symbols_exchange
+            if json_output:
+                symbols_arguments["json_output"] = True
+            return run("symbols", **symbols_arguments)
         if arguments[0] == "top":
             top_arguments: dict[str, object] = {
                 "instrument_type": instrument_type,

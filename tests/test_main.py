@@ -116,6 +116,16 @@ class FakeFindInstrument:
         return self.response
 
 
+class FakeGetSymbols:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[dict[str, object]] = []
+
+    def execute(self, **arguments: object) -> dict[str, Any]:
+        self.calls.append(arguments)
+        return self.response
+
+
 class FakeGetNews:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -424,6 +434,41 @@ def test_run_routes_search_without_transforming_query(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [query]
     assert use_case.calls[0] is query
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    ("exchange", "expected_arguments"),
+    [(None, {}), (" KASE ", {"exchange": " KASE "})],
+)
+def test_run_symbols_forwards_exchange_and_prints_raw_pretty_json(
+    exchange: str | None,
+    expected_arguments: dict[str, object],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    response = {"result": {"symbols": [{"ticker": "HSBK.KZ", "name": "Халық"}]}}
+    use_case = FakeGetSymbols(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetSymbols:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_symbols", fake_create)
+
+    assert main_module.run("symbols", exchange=exchange, environ={}) == 0
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [expected_arguments]
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -2879,6 +2924,34 @@ def test_main_routes_news_options_in_any_order(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (["symbols"], {}),
+        (["symbols", "--exchange", "KASE"], {"exchange": "KASE"}),
+        (
+            ["symbols", "--json", "--exchange", "KASE"],
+            {"exchange": "KASE", "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_symbols_options(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("symbols", expected_options)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["market-status"], {}),
         (
             ["market-status", "--market", "KASE"],
@@ -3918,6 +3991,46 @@ def test_main_rejects_invalid_market_status_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["symbols", "extra"],
+        ["symbols", "--unknown"],
+        ["symbols", "--exchange"],
+        ["symbols", "--exchange", "--json"],
+        ["symbols", "--json", "--json"],
+        ["symbols", "--exchange", "KASE", "--exchange", "USA"],
+    ],
+)
+def test_main_rejects_invalid_symbols_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetSymbols()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_symbols",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["top", "extra"],
         ["top", "--unknown"],
         ["top", "--type"],
@@ -4361,6 +4474,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
+        "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json]\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
