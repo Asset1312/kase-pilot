@@ -71,6 +71,20 @@ class FakeSymbolDependency:
         return self.response
 
 
+class FakeExportSecuritiesDependency:
+    def __init__(self, response: list[dict[str, Any]]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def export_securities(
+        self,
+        symbols: object,
+        fields: object = None,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((symbols, fields))
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -361,6 +375,23 @@ def test_get_symbol_delegates_and_preserves_response_identity(
     assert dependency.calls == [(symbol, lang)]
     assert dependency.calls[0][0] is symbol
     assert dependency.calls[0][1] is lang
+    assert result is response
+
+
+@pytest.mark.parametrize("fields", [None, ["ticker", "ltp"]])
+def test_export_securities_delegates_and_preserves_response_identity(
+    fields: list[str] | None,
+) -> None:
+    symbols = ["AAPL", "MSFT"]
+    response = [{"ticker": "AAPL"}, {"ticker": "MSFT"}]
+    dependency = FakeExportSecuritiesDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.export_securities(symbols, fields)
+
+    assert dependency.calls == [(symbols, fields)]
+    assert dependency.calls[0][0] is symbols
+    assert dependency.calls[0][1] is fields
     assert result is response
 
 

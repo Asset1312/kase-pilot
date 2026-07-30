@@ -136,6 +136,16 @@ class FakeGetSymbol:
         return self.response
 
 
+class FakeExportSecurities:
+    def __init__(self, response: list[dict[str, Any]] | None = None) -> None:
+        self.response = [] if response is None else response
+        self.calls: list[tuple[object, dict[str, object]]] = []
+
+    def execute(self, symbols: object, **arguments: object) -> list[dict[str, Any]]:
+        self.calls.append((symbols, arguments))
+        return self.response
+
+
 class FakeGetNews:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -516,6 +526,51 @@ def test_run_symbol_forwards_arguments_and_prints_raw_pretty_json(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(symbol, expected_arguments)]
     assert use_case.calls[0][0] is symbol
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected_arguments"),
+    [(None, {}), (["ticker", "name"], {"fields": ["ticker", "name"]})],
+)
+def test_run_export_securities_forwards_ordered_values_and_prints_pretty_json(
+    fields: list[str] | None,
+    expected_arguments: dict[str, object],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    symbols = ["AAPL", "MSFT"]
+    response = [{"ticker": "AAPL", "name": "Эппл"}]
+    use_case = FakeExportSecurities(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeExportSecurities:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_export_securities", fake_create)
+
+    assert (
+        main_module.run(
+            "export-securities",
+            symbols=symbols,
+            fields=fields,
+            environ={},
+        )
+        == 0
+    )
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [(symbols, expected_arguments)]
+    assert use_case.calls[0][0] is symbols
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -3028,6 +3083,62 @@ def test_main_routes_symbol_options(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (["export-securities", "AAPL"], {"symbols": ["AAPL"]}),
+        (
+            ["export-securities", "AAPL", "MSFT"],
+            {"symbols": ["AAPL", "MSFT"]},
+        ),
+        (
+            [
+                "export-securities",
+                "AAPL",
+                "MSFT",
+                "--fields",
+                "ticker",
+                "ltp",
+                "currency",
+            ],
+            {
+                "symbols": ["AAPL", "MSFT"],
+                "fields": ["ticker", "ltp", "currency"],
+            },
+        ),
+        (
+            [
+                "export-securities",
+                "AAPL",
+                "--json",
+                "--fields",
+                "ticker",
+            ],
+            {
+                "symbols": ["AAPL"],
+                "fields": ["ticker"],
+                "json_output": True,
+            },
+        ),
+    ],
+)
+def test_main_routes_export_securities_options(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("export-securities", expected_options)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["market-status"], {}),
         (
             ["market-status", "--market", "KASE"],
@@ -4149,6 +4260,54 @@ def test_main_rejects_invalid_symbol_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["export-securities"],
+        ["export-securities", "--json"],
+        ["export-securities", "AAPL", "--fields"],
+        ["export-securities", "AAPL", "--fields", "--json"],
+        ["export-securities", "AAPL", "--unknown"],
+        ["export-securities", "AAPL", "--json", "--json"],
+        [
+            "export-securities",
+            "AAPL",
+            "--fields",
+            "ticker",
+            "--fields",
+            "ltp",
+        ],
+    ],
+)
+def test_main_rejects_invalid_export_securities_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeExportSecurities()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_export_securities",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["top", "extra"],
         ["top", "--unknown"],
         ["top", "--type"],
@@ -4592,6 +4751,8 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot info TICKER\n"
         "  kase-pilot quotes TICKER\n"
         "  kase-pilot search QUERY\n"
+        "  kase-pilot export-securities SYMBOL [SYMBOL ...] "
+        "[--fields FIELD [FIELD ...]] [--json]\n"
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "

@@ -26,6 +26,7 @@ class FakeSdkClient:
         self.find_symbol_calls: list[object] = []
         self.symbol_calls: list[tuple[object, ...]] = []
         self.symbols_calls: list[tuple[object, ...]] = []
+        self.export_securities_calls: list[tuple[object, ...]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -62,6 +63,10 @@ class FakeSdkClient:
 
     def symbol(self, *args: object) -> Any:
         self.symbol_calls.append(args)
+        return self.response
+
+    def export_securities(self, *args: object) -> Any:
+        self.export_securities_calls.append(args)
         return self.response
 
     def get_news(
@@ -386,6 +391,40 @@ def test_get_symbol_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping symbol response"):
         adapter.get_symbol("AAPL.US")
+
+
+def test_export_securities_omits_fields_and_preserves_response_identity() -> None:
+    symbols = ["AAPL"]
+    response = [{"ticker": "AAPL", "name": "Apple"}]
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.export_securities(symbols)
+
+    assert sdk_client.export_securities_calls == [(symbols,)]
+    assert sdk_client.export_securities_calls[0][0] is symbols
+    assert result is response
+
+
+def test_export_securities_forwards_symbols_and_fields_in_order() -> None:
+    symbols = ["AAPL", "MSFT"]
+    fields = ["ticker", "ltp", "currency"]
+    sdk_client = FakeSdkClient([])
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    adapter.export_securities(symbols, fields)
+
+    assert sdk_client.export_securities_calls == [(symbols, fields)]
+    assert sdk_client.export_securities_calls[0][0] is symbols
+    assert sdk_client.export_securities_calls[0][1] is fields
+
+
+@pytest.mark.parametrize("response", [None, {}, (), "not a list", 42])
+def test_export_securities_rejects_non_list_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-list securities export response"):
+        adapter.export_securities(["AAPL"])
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

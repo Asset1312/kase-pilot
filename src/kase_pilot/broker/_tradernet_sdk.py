@@ -101,6 +101,25 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "symbol"))
 
+    def export_securities(
+        self,
+        symbols: Sequence[str],
+        fields: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Export securities without transforming the SDK response."""
+        try:
+            if fields is None:
+                response: Any = self._client.export_securities(symbols)
+            else:
+                response = self._client.export_securities(symbols, fields)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            list[dict[str, Any]],
+            _require_list(response, "securities export"),
+        )
+
     def get_news(
         self,
         query: str,
