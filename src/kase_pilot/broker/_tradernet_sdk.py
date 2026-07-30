@@ -85,6 +85,23 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "symbols"))
 
+    def get_all(
+        self,
+        market: str,
+        show_expired: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return instruments for one market without transforming the response."""
+        filters = {"mkt_short_code": market}
+        try:
+            response: Any = self._client.get_all(
+                filters,
+                show_expired=show_expired,
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(list[dict[str, Any]], _require_list(response, "instruments"))
+
     def get_symbol(
         self,
         symbol: str,

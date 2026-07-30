@@ -52,6 +52,14 @@ class MarketService:
         """Return raw broker symbol lists."""
         return self._adapter.get_symbols(exchange)
 
+    def get_all(
+        self,
+        market: str,
+        show_expired: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return raw broker instruments for one market."""
+        return self._adapter.get_all(market, show_expired)
+
     def get_symbol(
         self,
         symbol: str,

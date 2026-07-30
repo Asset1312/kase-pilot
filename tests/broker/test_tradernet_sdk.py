@@ -26,6 +26,7 @@ class FakeSdkClient:
         self.find_symbol_calls: list[object] = []
         self.symbol_calls: list[tuple[object, ...]] = []
         self.symbols_calls: list[tuple[object, ...]] = []
+        self.get_all_calls: list[tuple[object, object]] = []
         self.export_securities_calls: list[tuple[object, ...]] = []
         self.get_options_calls: list[tuple[object, object]] = []
         self.get_tariffs_list_calls = 0
@@ -66,6 +67,15 @@ class FakeSdkClient:
 
     def symbols(self, *args: object) -> Any:
         self.symbols_calls.append(args)
+        return self.response
+
+    def get_all(
+        self,
+        filters: object,
+        *,
+        show_expired: object = False,
+    ) -> Any:
+        self.get_all_calls.append((filters, show_expired))
         return self.response
 
     def symbol(self, *args: object) -> Any:
@@ -392,6 +402,61 @@ def test_get_symbols_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping symbols response"):
         adapter.get_symbols()
+
+
+@pytest.mark.parametrize("show_expired", [False, True])
+def test_get_all_creates_fresh_market_filter_and_forwards_expiry(
+    show_expired: bool,
+) -> None:
+    market = " KASE "
+    sdk_client = FakeSdkClient([])
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    adapter.get_all(market, show_expired)
+    adapter.get_all(market, show_expired)
+
+    first_filters, first_expiry = sdk_client.get_all_calls[0]
+    second_filters, second_expiry = sdk_client.get_all_calls[1]
+    assert first_filters == {"mkt_short_code": market}
+    assert second_filters == {"mkt_short_code": market}
+    assert first_filters is not second_filters
+    assert "istrade" not in first_filters  # type: ignore[operator]
+    assert (first_expiry, second_expiry) == (show_expired, show_expired)
+
+
+def test_get_all_preserves_exact_list_identity() -> None:
+    response = [{"ticker": "HSBK.KZ"}]
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    assert adapter.get_all("KASE") is response
+
+
+@pytest.mark.parametrize("response", [None, {}, (), "not a list", 42])
+def test_get_all_rejects_non_list_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-list instruments response"):
+        adapter.get_all("KASE")
+
+
+def test_get_all_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def get_all(
+            self,
+            filters: object,
+            *,
+            show_expired: object = False,
+        ) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_all("KASE")
+
+    assert exc_info.value.__cause__ is original
 
 
 def test_get_symbol_omits_lang_and_preserves_response_identity() -> None:

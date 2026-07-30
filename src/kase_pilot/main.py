@@ -21,6 +21,7 @@ from kase_pilot.app import (
     create_get_current_quotes,
     create_get_historical,
     create_get_historical_candles,
+    create_get_instruments,
     create_get_market_status,
     create_get_most_traded,
     create_get_news,
@@ -59,6 +60,7 @@ _USAGE = (
     "  kase-pilot profile-fields --reception RECEPTION [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
+    "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json]\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
@@ -561,6 +563,19 @@ def _run_symbols(
     return 0
 
 
+def _run_instruments(
+    public_key: str,
+    private_key: str,
+    *,
+    market: str,
+    show_expired: bool,
+) -> int:
+    use_case = create_get_instruments(public_key, private_key)
+    result = use_case.execute(market, show_expired=show_expired)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbol(
     public_key: str,
     private_key: str,
@@ -842,13 +857,14 @@ def run(
     *,
     sup: bool = True,
     active: bool = True,
+    show_expired: bool = False,
     follow: bool = False,
     json_output: bool = False,
     sort_field: str | None = None,
     symbol: str | None = None,
     story_id: str | None = None,
     lang: str | None = None,
-    market: str = "*",
+    market: str | None = None,
     mode: str | None = None,
     instrument_type: str = "stocks",
     exchange: str | None = None,
@@ -887,6 +903,7 @@ def run(
         "profile-fields",
         "symbol",
         "symbols",
+        "instruments",
         "news",
         "market-status",
         "top",
@@ -936,6 +953,7 @@ def run(
         "profile-fields",
         "symbol",
         "symbols",
+        "instruments",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
@@ -964,6 +982,7 @@ def run(
             "requests-history",
             "broker-report",
             "symbols",
+            "instruments",
             "export-securities",
             "tariffs",
             "security-sessions",
@@ -992,6 +1011,7 @@ def run(
             "requests-history",
             "broker-report",
             "symbols",
+            "instruments",
             "export-securities",
             "tariffs",
             "security-sessions",
@@ -1007,6 +1027,8 @@ def run(
         raise ValueError("The export-securities command requires symbols")
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
+    if command == "instruments" and market is None:
+        raise ValueError("The instruments command requires a market")
     if command == "order-files" and order_id is None and internal_id is None:
         raise ValueError("The order-files command requires an identifier")
     if command == "check-missing-fields" and (step is None or office is None):
@@ -1078,6 +1100,14 @@ def run(
             private_key,
             exchange=exchange,
         )
+    if command == "instruments":
+        assert market is not None
+        return _run_instruments(
+            public_key,
+            private_key,
+            market=market,
+            show_expired=show_expired,
+        )
     if command == "news":
         return _run_news(
             public_key,
@@ -1091,7 +1121,7 @@ def run(
         return _run_market_status(
             public_key,
             private_key,
-            market=market,
+            market="*" if market is None else market,
             mode=mode,
         )
     if command == "top":
@@ -1199,6 +1229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     instrument_type = "stocks"
     exchange = "usa"
     symbols_exchange = None
+    instruments_market = None
     options_exchange = None
     export_symbols: list[str] = []
     export_fields: list[str] | None = None
@@ -1218,6 +1249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     timeframe = None
     sort_field = None
     json_output = False
+    show_expired = False
     if arguments in (
         ["user"],
         ["summary"],
@@ -1526,6 +1558,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             symbols_exchange = arguments[index + 1]
             index += 2
+    elif arguments and arguments[0] == "instruments":
+        instruments_flags = {"--market", "--show-expired", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in instruments_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+
+            if flag == "--json":
+                json_output = True
+                index += 1
+                continue
+            if flag == "--show-expired":
+                show_expired = True
+                index += 1
+                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            instruments_market = arguments[index + 1]
+            if not instruments_market.strip():
+                print(_USAGE, file=sys.stderr)
+                return 2
+            index += 2
+
+        if instruments_market is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "symbol":
         if len(arguments) < 2 or arguments[1].startswith("--"):
             print(_USAGE, file=sys.stderr)
@@ -1944,6 +2007,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 symbols_arguments["json_output"] = True
             return run("symbols", **symbols_arguments)
+        if arguments[0] == "instruments":
+            instruments_arguments: dict[str, object] = {
+                "market": instruments_market,
+                "show_expired": show_expired,
+            }
+            if json_output:
+                instruments_arguments["json_output"] = True
+            return run("instruments", **instruments_arguments)
         if arguments[0] == "symbol":
             symbol_arguments: dict[str, object] = {}
             if lang is not None:

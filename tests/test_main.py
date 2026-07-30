@@ -126,6 +126,20 @@ class FakeGetSymbols:
         return self.response
 
 
+class FakeGetInstruments:
+    def __init__(self, response: list[dict[str, Any]] | None = None) -> None:
+        self.response = [] if response is None else response
+        self.calls: list[tuple[object, dict[str, object]]] = []
+
+    def execute(
+        self,
+        market: object,
+        **arguments: object,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((market, arguments))
+        return self.response
+
+
 class FakeGetSymbol:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -567,6 +581,47 @@ def test_run_symbols_forwards_exchange_and_prints_raw_pretty_json(
 
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [expected_arguments]
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize("show_expired", [False, True])
+def test_run_instruments_forwards_market_and_prints_raw_pretty_json(
+    show_expired: bool,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    market = " KASE "
+    response = [{"ticker": "HSBK.KZ", "name": "Халық"}]
+    use_case = FakeGetInstruments(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetInstruments:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_instruments", fake_create)
+
+    assert (
+        main_module.run(
+            "instruments",
+            market=market,
+            show_expired=show_expired,
+            json_output=True,
+            environ={},
+        )
+        == 0
+    )
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [(market, {"show_expired": show_expired})]
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -3403,6 +3458,45 @@ def test_main_routes_symbols_options(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (
+            ["instruments", "--market", "KASE"],
+            {"market": "KASE", "show_expired": False},
+        ),
+        (
+            ["instruments", "--json", "--market", "KASE", "--show-expired"],
+            {
+                "market": "KASE",
+                "show_expired": True,
+                "json_output": True,
+            },
+        ),
+        (
+            ["instruments", "--show-expired", "--market", "KASE"],
+            {"market": "KASE", "show_expired": True},
+        ),
+    ],
+)
+def test_main_routes_safe_instruments_options(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("instruments", expected_options)]
+    assert expected_options["market"] is not None
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["symbol", "AAPL.US"], {}),
         (["symbol", "AAPL.US", "--lang", "ru"], {"lang": "ru"}),
         (["symbol", "AAPL.US", "--json"], {"json_output": True}),
@@ -4777,6 +4871,68 @@ def test_main_rejects_invalid_symbols_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["instruments"],
+        ["instruments", "--market"],
+        ["instruments", "--market", "--json"],
+        ["instruments", "--market", ""],
+        ["instruments", "--market", "   "],
+        ["instruments", "--market", "KASE", "--market", "USA"],
+        ["instruments", "--market", "KASE", "--show-expired", "--show-expired"],
+        ["instruments", "--market", "KASE", "--json", "--json"],
+        ["instruments", "--market", "KASE", "--unknown"],
+        ["instruments", "KASE"],
+        ["instruments", "--market", "KASE", "--show-expired", "true"],
+        ["instruments", "--market", "KASE", "--json", "true"],
+    ],
+)
+def test_main_rejects_unsafe_instruments_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetInstruments()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_instruments",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+def test_run_instruments_requires_market_before_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: calls.append("settings"),
+    )
+
+    with pytest.raises(ValueError, match="requires a market"):
+        main_module.run("instruments")
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["symbol"],
         ["symbol", "--lang", "ru"],
         ["symbol", "AAPL.US", "extra"],
@@ -5644,6 +5800,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot profile-fields --reception RECEPTION [--json]\n"
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
+        "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json]\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"

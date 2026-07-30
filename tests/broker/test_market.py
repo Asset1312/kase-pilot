@@ -57,6 +57,20 @@ class FakeSymbolsDependency:
         return self.response
 
 
+class FakeInstrumentsDependency:
+    def __init__(self, response: list[dict[str, Any]]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_all(
+        self,
+        market: object,
+        show_expired: object = False,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((market, show_expired))
+        return self.response
+
+
 class FakeSymbolDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -440,6 +454,22 @@ def test_get_symbols_delegates_and_preserves_response_identity(
     result = service.get_symbols(exchange)
 
     assert dependency.calls == [exchange]
+    assert result is response
+
+
+@pytest.mark.parametrize("show_expired", [False, True])
+def test_get_all_delegates_and_preserves_response_identity(
+    show_expired: bool,
+) -> None:
+    market = " KASE "
+    response = [{"ticker": "HSBK.KZ"}]
+    dependency = FakeInstrumentsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_all(market, show_expired)
+
+    assert dependency.calls == [(market, show_expired)]
+    assert dependency.calls[0][0] is market
     assert result is response
 
 
