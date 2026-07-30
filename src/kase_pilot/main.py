@@ -28,6 +28,7 @@ from kase_pilot.app import (
     create_get_order_files,
     create_get_placed_orders,
     create_get_price_alerts,
+    create_get_profile_fields,
     create_get_requests_history,
     create_get_security_info,
     create_get_symbol,
@@ -55,6 +56,7 @@ _USAGE = (
     "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
     "  kase-pilot user-data [--json]\n"
     "  kase-pilot check-missing-fields --step STEP --office OFFICE [--json]\n"
+    "  kase-pilot profile-fields --reception RECEPTION [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -532,6 +534,18 @@ def _run_check_missing_fields(
     return 0
 
 
+def _run_profile_fields(
+    public_key: str,
+    private_key: str,
+    *,
+    reception: int,
+) -> int:
+    use_case = create_get_profile_fields(public_key, private_key)
+    result = use_case.execute(reception)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -870,6 +884,7 @@ def run(
         "order-files",
         "user-data",
         "check-missing-fields",
+        "profile-fields",
         "symbol",
         "symbols",
         "news",
@@ -918,6 +933,7 @@ def run(
         "order-files",
         "user-data",
         "check-missing-fields",
+        "profile-fields",
         "symbol",
         "symbols",
     }:
@@ -926,7 +942,7 @@ def run(
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
             "symbols, tariffs, security-sessions, order-files, user-data, and "
-            "check-missing-fields"
+            "check-missing-fields and profile-fields"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -954,6 +970,7 @@ def run(
             "order-files",
             "user-data",
             "check-missing-fields",
+            "profile-fields",
         }
         and ticker is not None
     ):
@@ -981,6 +998,7 @@ def run(
             "order-files",
             "user-data",
             "check-missing-fields",
+            "profile-fields",
         }
         and ticker is None
     ):
@@ -1040,6 +1058,12 @@ def run(
             private_key,
             step=step,
             office=office,
+        )
+    if command == "profile-fields":
+        return _run_profile_fields(
+            public_key,
+            private_key,
+            reception=reception,
         )
     if command == "symbol":
         return _run_symbol(
@@ -1180,6 +1204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_fields: list[str] | None = None
     gainers = True
     reception = 35
+    profile_reception = None
     doc_id = None
     exec_id = None
     order_id = None
@@ -1224,6 +1249,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "profile-fields":
+        profile_field_flags = {"--reception", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in profile_field_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            index += 1
+
+            if flag == "--json":
+                json_output = True
+                continue
+            if index >= len(arguments) or arguments[index].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            try:
+                profile_reception = int(arguments[index])
+            except ValueError:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            index += 1
+
+        if profile_reception is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "check-missing-fields":
         missing_field_flags = {"--step", "--office", "--json"}
         seen_flags: set[str] = set()
@@ -1860,6 +1913,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 missing_field_arguments["json_output"] = True
             return run("check-missing-fields", **missing_field_arguments)
+        if arguments[0] == "profile-fields":
+            profile_field_arguments: dict[str, object] = {
+                "reception": profile_reception,
+            }
+            if json_output:
+                profile_field_arguments["json_output"] = True
+            return run("profile-fields", **profile_field_arguments)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

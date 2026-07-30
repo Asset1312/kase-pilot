@@ -16,6 +16,7 @@ from kase_pilot.application.options import GetOptions
 from kase_pilot.application.order_files import GetOrderFiles
 from kase_pilot.application.placed_orders import GetPlacedOrders
 from kase_pilot.application.price_alerts import GetPriceAlerts
+from kase_pilot.application.profile_fields import GetProfileFields
 from kase_pilot.application.requests_history import GetRequestsHistory
 from kase_pilot.application.security_info import GetSecurityInfo
 from kase_pilot.application.security_sessions import ListSecuritySessions
@@ -43,6 +44,7 @@ __all__ = [
     "GetOrderFiles",
     "GetPlacedOrders",
     "GetPriceAlerts",
+    "GetProfileFields",
     "GetRequestsHistory",
     "GetSecurityInfo",
     "GetSymbol",

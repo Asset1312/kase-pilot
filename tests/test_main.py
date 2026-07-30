@@ -214,6 +214,16 @@ class FakeCheckMissingFields:
         return self.response
 
 
+class FakeGetProfileFields:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, reception: object) -> dict[str, Any]:
+        self.calls.append(reception)
+        return self.response
+
+
 class FakeGetNews:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -872,6 +882,44 @@ def test_run_check_missing_fields_forwards_arguments_and_prints_pretty_json(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(step, office)]
     assert use_case.calls[0][1] is office
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+def test_run_profile_fields_forwards_reception_and_prints_unicode_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    reception = 17
+    response = {"result": {"fields": [{"name": "Адрес"}]}}
+    use_case = FakeGetProfileFields(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetProfileFields:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_profile_fields", fake_create)
+
+    assert (
+        main_module.run(
+            "profile-fields",
+            reception=reception,
+            json_output=True,
+            environ={},
+        )
+        == 0
+    )
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [reception]
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -3620,6 +3668,36 @@ def test_main_routes_check_missing_fields(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (
+            ["profile-fields", "--reception", "17"],
+            {"reception": 17},
+        ),
+        (
+            ["profile-fields", "--json", "--reception", "23"],
+            {"reception": 23, "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_profile_fields(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("profile-fields", expected_options)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["market-status"], {}),
         (
             ["market-status", "--market", "KASE"],
@@ -5063,6 +5141,55 @@ def test_main_rejects_invalid_check_missing_fields_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["profile-fields"],
+        ["profile-fields", "17"],
+        ["profile-fields", "--json"],
+        ["profile-fields", "--unknown", "17"],
+        ["profile-fields", "--reception"],
+        ["profile-fields", "--reception", "--json"],
+        ["profile-fields", "--reception", "invalid"],
+        ["profile-fields", "--json", "--json", "--reception", "17"],
+        [
+            "profile-fields",
+            "--reception",
+            "17",
+            "--reception",
+            "23",
+        ],
+    ],
+)
+def test_main_rejects_invalid_profile_fields_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetProfileFields()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_profile_fields",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["top", "extra"],
         ["top", "--unknown"],
         ["top", "--type"],
@@ -5514,6 +5641,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
         "  kase-pilot user-data [--json]\n"
         "  kase-pilot check-missing-fields --step STEP --office OFFICE [--json]\n"
+        "  kase-pilot profile-fields --reception RECEPTION [--json]\n"
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "

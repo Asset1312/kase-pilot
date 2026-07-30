@@ -21,6 +21,7 @@ from kase_pilot.application import (
     GetOrderFiles,
     GetPlacedOrders,
     GetPriceAlerts,
+    GetProfileFields,
     GetRequestsHistory,
     GetSecurityInfo,
     GetSymbol,
@@ -209,6 +210,17 @@ def create_get_price_alerts(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetPriceAlerts(market_service)
+
+
+def create_get_profile_fields(
+    public_key: str,
+    private_key: str,
+) -> GetProfileFields:
+    """Build the object graph for the profile-fields use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetProfileFields(market_service)
 
 
 def create_get_requests_history(
