@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import UTC, date, datetime, time
 from inspect import signature
 from typing import Any
@@ -254,25 +253,23 @@ def test_calls_security_info_once_with_ticker_and_sup() -> None:
     assert sdk.calls == [("AAPL.US", False)]
 
 
-def test_returns_separate_dict_without_filtering_or_conversion() -> None:
-    original: Mapping[str, Any] = {
+def test_security_info_preserves_mapping_identity_without_conversion() -> None:
+    nested = {"nested": True}
+    original: dict[str, Any] = {
         "nt_ticker": "AAPL.US",
         "min_step": "0.01",
         "lot": "1",
-        "unknown_field": {"nested": True},
+        "unknown_field": nested,
     }
     adapter = TradernetSdkAdapter(FakeSdkClient(original))  # type: ignore[arg-type]
 
     result = adapter.get_security_info("AAPL.US")
 
-    assert type(result) is dict
-    assert result == original
+    assert result is original
     assert result["min_step"] == "0.01"
     assert result["lot"] == "1"
-    assert "unknown_field" in result
+    assert result["unknown_field"] is nested
     assert "mrkt" not in result
-    result["nt_ticker"] = "changed"
-    assert original["nt_ticker"] == "AAPL.US"
 
 
 @pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
@@ -336,6 +333,14 @@ def test_get_quotes_sdk_exception_becomes_api_request_error_with_cause() -> None
     assert "SDK failure" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_quotes_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping quotes response"):
+        adapter.get_quotes(["AAPL.US"])
+
+
 def test_find_symbol_delegates_without_transforming_query_or_response() -> None:
     query = "Apple Inc"
     response = {
@@ -372,6 +377,14 @@ def test_find_symbol_sdk_exception_becomes_api_request_error_with_cause() -> Non
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_find_symbol_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping instrument search response"):
+        adapter.find_symbol("Apple")
 
 
 def test_get_symbols_omits_exchange_and_preserves_response_identity() -> None:
@@ -1300,6 +1313,14 @@ def test_get_candles_sdk_exception_becomes_api_request_error_with_cause() -> Non
 
     assert exc_info.value.__cause__ is original
     assert "SDK failure" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_candles_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping candles response"):
+        adapter.get_candles("AAPL.US")
 
 
 def test_user_info_delegates_without_transforming_response() -> None:

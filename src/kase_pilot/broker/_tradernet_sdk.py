@@ -47,7 +47,7 @@ class TradernetSdkAdapter:
 
         return cast(
             dict[str, JsonValue],
-            dict(_require_mapping(response, "security information")),
+            _require_mapping(response, "security information"),
         )
 
     def get_quotes(
@@ -56,9 +56,14 @@ class TradernetSdkAdapter:
     ) -> dict[str, JsonValue]:
         """Return current quotes without transforming the SDK response."""
         try:
-            return cast(dict[str, JsonValue], self._client.get_quotes(symbols))
+            response: Any = self._client.get_quotes(symbols)
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "quotes"),
+        )
 
     def find_symbol(
         self,
@@ -66,9 +71,14 @@ class TradernetSdkAdapter:
     ) -> dict[str, JsonValue]:
         """Return matching instruments without transforming the SDK response."""
         try:
-            return cast(dict[str, JsonValue], self._client.find_symbol(query))
+            response: Any = self._client.find_symbol(query)
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "instrument search"),
+        )
 
     def get_symbols(
         self,
@@ -367,12 +377,14 @@ class TradernetSdkAdapter:
     ) -> dict[str, JsonValue]:
         """Return historical candles without transforming the SDK response."""
         try:
-            return cast(
-                dict[str, JsonValue],
-                self._client.get_candles(symbol, start, end, timeframe),
-            )
+            response: Any = self._client.get_candles(symbol, start, end, timeframe)
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "candles"),
+        )
 
     def user_info(self) -> dict[str, JsonValue]:
         """Return user information without transforming the SDK response."""
