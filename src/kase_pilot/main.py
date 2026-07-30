@@ -30,6 +30,7 @@ from kase_pilot.app import (
     create_get_security_info,
     create_get_symbol,
     create_get_symbols,
+    create_get_tariffs,
     create_get_trades_history,
     create_get_user_info,
 )
@@ -45,6 +46,7 @@ _USAGE = (
     "  kase-pilot export-securities SYMBOL [SYMBOL ...] "
     "[--fields FIELD [FIELD ...]] [--json]\n"
     "  kase-pilot options UNDERLYING --exchange EXCHANGE [--json]\n"
+    "  kase-pilot tariffs [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -475,6 +477,13 @@ def _run_options(
     return 0
 
 
+def _run_tariffs(public_key: str, private_key: str) -> int:
+    use_case = create_get_tariffs(public_key, private_key)
+    result = use_case.execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -804,6 +813,7 @@ def run(
         "search",
         "export-securities",
         "options",
+        "tariffs",
         "symbol",
         "symbols",
         "news",
@@ -847,6 +857,7 @@ def run(
         "broker-report",
         "export-securities",
         "options",
+        "tariffs",
         "symbol",
         "symbols",
     }:
@@ -854,7 +865,7 @@ def run(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
-            "and symbols"
+            "symbols, and tariffs"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -877,6 +888,7 @@ def run(
             "broker-report",
             "symbols",
             "export-securities",
+            "tariffs",
         }
         and ticker is not None
     ):
@@ -899,6 +911,7 @@ def run(
             "broker-report",
             "symbols",
             "export-securities",
+            "tariffs",
         }
         and ticker is None
     ):
@@ -933,6 +946,8 @@ def run(
             ticker,
             exchange=exchange,
         )
+    if command == "tariffs":
+        return _run_tariffs(public_key, private_key)
     if command == "symbol":
         return _run_symbol(
             public_key,
@@ -1097,6 +1112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ["requests-history"],
         ["broker-report"],
         ["symbols"],
+        ["tariffs"],
     ) or (
         len(arguments) == 2
         and arguments[0]
@@ -1109,6 +1125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "tariffs":
+        if arguments == ["tariffs", "--json"]:
+            json_output = True
+        else:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "options":
         if len(arguments) < 2 or arguments[1].startswith("--"):
             print(_USAGE, file=sys.stderr)
@@ -1614,6 +1636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "requests-history",
             "broker-report",
             "symbols",
+            "tariffs",
         } and arguments == [arguments[0]]:
             return run(arguments[0])
         if arguments[0] == "trades":
@@ -1638,6 +1661,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 options_arguments["json_output"] = True
             return run("options", arguments[1], **options_arguments)
+        if arguments[0] == "tariffs":
+            return run("tariffs", json_output=True)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

@@ -76,6 +76,10 @@ class MarketService:
         """Return raw broker options."""
         return self._adapter.get_options(underlying, exchange)
 
+    def get_tariffs(self) -> dict[str, Any]:
+        """Return raw broker tariffs."""
+        return self._adapter.get_tariffs()
+
     def get_news(
         self,
         query: str,

@@ -99,6 +99,16 @@ class FakeOptionsDependency:
         return self.response
 
 
+class FakeTariffsDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls = 0
+
+    def get_tariffs(self) -> dict[str, Any]:
+        self.calls += 1
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -421,6 +431,17 @@ def test_get_options_delegates_and_preserves_response_identity() -> None:
     assert dependency.calls == [(underlying, exchange)]
     assert dependency.calls[0][0] is underlying
     assert dependency.calls[0][1] is exchange
+    assert result is response
+
+
+def test_get_tariffs_delegates_and_preserves_response_identity() -> None:
+    response = {"result": {"tariffs": [{"name": "Investor"}]}}
+    dependency = FakeTariffsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_tariffs()
+
+    assert dependency.calls == 1
     assert result is response
 
 

@@ -28,6 +28,7 @@ class FakeSdkClient:
         self.symbols_calls: list[tuple[object, ...]] = []
         self.export_securities_calls: list[tuple[object, ...]] = []
         self.get_options_calls: list[tuple[object, object]] = []
+        self.get_tariffs_list_calls = 0
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -72,6 +73,10 @@ class FakeSdkClient:
 
     def get_options(self, underlying: object, exchange: object) -> Any:
         self.get_options_calls.append((underlying, exchange))
+        return self.response
+
+    def get_tariffs_list(self) -> Any:
+        self.get_tariffs_list_calls += 1
         return self.response
 
     def get_news(
@@ -453,6 +458,25 @@ def test_get_options_rejects_non_list_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-list options response"):
         adapter.get_options("AAPL", "usa")
+
+
+def test_get_tariffs_delegates_once_and_preserves_response_identity() -> None:
+    response = {"result": {"tariffs": [{"name": "Investor"}]}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.get_tariffs()
+
+    assert sdk_client.get_tariffs_list_calls == 1
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_tariffs_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping tariffs response"):
+        adapter.get_tariffs()
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (
