@@ -12,16 +12,14 @@ _PRIVATE_KEY_ENV = "TRADERNET_PRIVATE_KEY"
 
 
 def _find_project_root() -> Path:
-    """Find the project root directory containing pyproject.toml."""
+    """Find the source root, falling back to the runtime working directory."""
     config_file = Path(__file__).resolve()
 
     for directory in config_file.parents:
         if (directory / "pyproject.toml").is_file():
             return directory
 
-    raise FileNotFoundError(
-        "Cannot determine the KASE Pilot project root: " "pyproject.toml was not found."
-    )
+    return Path.cwd().resolve()
 
 
 @dataclass(frozen=True)
@@ -67,8 +65,8 @@ def load_settings(
     Parameters
     ----------
     project_root:
-        Explicit project root.  When omitted, ``_find_project_root()``
-        locates the directory containing ``pyproject.toml``.
+        Explicit project root. When omitted, ``_find_project_root()`` uses the
+        source root for editable installs and the working directory otherwise.
     environ:
         Environment mapping. Defaults to the current process environment.
 

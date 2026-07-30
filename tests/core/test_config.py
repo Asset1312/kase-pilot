@@ -50,26 +50,28 @@ class TestFindProjectRoot:
     def test_returns_path_instance(self) -> None:
         assert isinstance(_find_project_root(), Path)
 
-    def test_raises_file_not_found_when_pyproject_toml_missing(
+    def test_returns_working_directory_when_pyproject_toml_missing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         fake_file = tmp_path / "subdir" / "config.py"
         fake_file.parent.mkdir(parents=True)
         fake_file.touch()
+        working_directory = tmp_path / "working"
+        working_directory.mkdir()
         monkeypatch.setattr(config_module, "__file__", str(fake_file))
+        monkeypatch.chdir(working_directory)
 
-        with pytest.raises(FileNotFoundError, match="pyproject.toml was not found"):
-            _find_project_root()
+        assert _find_project_root() == working_directory.resolve()
 
-    def test_error_message_mentions_kase_pilot(
+    def test_fallback_working_directory_is_resolved(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         fake_file = tmp_path / "config.py"
         fake_file.touch()
         monkeypatch.setattr(config_module, "__file__", str(fake_file))
+        monkeypatch.chdir(tmp_path)
 
-        with pytest.raises(FileNotFoundError, match="KASE Pilot project root"):
-            _find_project_root()
+        assert _find_project_root().is_absolute()
 
 
 # ---------------------------------------------------------------------------
