@@ -30,6 +30,7 @@ class FakeSdkClient:
         self.get_options_calls: list[tuple[object, object]] = []
         self.get_tariffs_list_calls = 0
         self.list_security_sessions_calls = 0
+        self.get_order_files_calls: list[tuple[object, object]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -82,6 +83,10 @@ class FakeSdkClient:
 
     def list_security_sessions(self) -> Any:
         self.list_security_sessions_calls += 1
+        return self.response
+
+    def get_order_files(self, order_id: object, internal_id: object) -> Any:
+        self.get_order_files_calls.append((order_id, internal_id))
         return self.response
 
     def get_news(
@@ -505,6 +510,32 @@ def test_list_security_sessions_rejects_non_mapping_response(
 
     with pytest.raises(ValidationError, match="non-mapping security sessions response"):
         adapter.list_security_sessions()
+
+
+@pytest.mark.parametrize(
+    ("order_id", "internal_id"),
+    [(17, None), (None, 23), (17, 23)],
+)
+def test_get_order_files_forwards_identifiers_and_preserves_response_identity(
+    order_id: int | None,
+    internal_id: int | None,
+) -> None:
+    response = {"result": {"files": [{"name": "document.pdf"}]}}
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.get_order_files(order_id, internal_id)
+
+    assert sdk_client.get_order_files_calls == [(order_id, internal_id)]
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_order_files_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping order files response"):
+        adapter.get_order_files(17, None)
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

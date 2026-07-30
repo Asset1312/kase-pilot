@@ -24,6 +24,7 @@ from kase_pilot.app import (
     create_get_most_traded,
     create_get_news,
     create_get_options,
+    create_get_order_files,
     create_get_placed_orders,
     create_get_price_alerts,
     create_get_requests_history,
@@ -49,6 +50,7 @@ _USAGE = (
     "  kase-pilot options UNDERLYING --exchange EXCHANGE [--json]\n"
     "  kase-pilot tariffs [--json]\n"
     "  kase-pilot security-sessions [--json]\n"
+    "  kase-pilot order-files [--order-id ID] [--internal-id ID] [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -493,6 +495,19 @@ def _run_security_sessions(public_key: str, private_key: str) -> int:
     return 0
 
 
+def _run_order_files(
+    public_key: str,
+    private_key: str,
+    *,
+    order_id: int | None,
+    internal_id: int | None,
+) -> int:
+    use_case = create_get_order_files(public_key, private_key)
+    result = use_case.execute(order_id, internal_id)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -805,6 +820,8 @@ def run(
     reception: int = 35,
     doc_id: int | None = None,
     exec_id: int | None = None,
+    order_id: int | None = None,
+    internal_id: int | None = None,
     offset: int | None = None,
     status: int | None = None,
     period: datetime_time | None = None,
@@ -824,6 +841,7 @@ def run(
         "options",
         "tariffs",
         "security-sessions",
+        "order-files",
         "symbol",
         "symbols",
         "news",
@@ -869,6 +887,7 @@ def run(
         "options",
         "tariffs",
         "security-sessions",
+        "order-files",
         "symbol",
         "symbols",
     }:
@@ -876,7 +895,7 @@ def run(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
-            "symbols, tariffs, and security-sessions"
+            "symbols, tariffs, security-sessions, and order-files"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -901,6 +920,7 @@ def run(
             "export-securities",
             "tariffs",
             "security-sessions",
+            "order-files",
         }
         and ticker is not None
     ):
@@ -925,6 +945,7 @@ def run(
             "export-securities",
             "tariffs",
             "security-sessions",
+            "order-files",
         }
         and ticker is None
     ):
@@ -933,6 +954,8 @@ def run(
         raise ValueError("The export-securities command requires symbols")
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
+    if command == "order-files" and order_id is None and internal_id is None:
+        raise ValueError("The order-files command requires an identifier")
 
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
@@ -963,6 +986,13 @@ def run(
         return _run_tariffs(public_key, private_key)
     if command == "security-sessions":
         return _run_security_sessions(public_key, private_key)
+    if command == "order-files":
+        return _run_order_files(
+            public_key,
+            private_key,
+            order_id=order_id,
+            internal_id=internal_id,
+        )
     if command == "symbol":
         return _run_symbol(
             public_key,
@@ -1104,6 +1134,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     reception = 35
     doc_id = None
     exec_id = None
+    order_id = None
+    internal_id = None
     offset = None
     status = None
     period = None
@@ -1141,6 +1173,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "order-files":
+        order_file_flags = {"--order-id", "--internal-id", "--json"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in order_file_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            index += 1
+
+            if flag == "--json":
+                json_output = True
+                continue
+            if index >= len(arguments) or arguments[index].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            try:
+                identifier = int(arguments[index])
+            except ValueError:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            if flag == "--order-id":
+                order_id = identifier
+            else:
+                internal_id = identifier
+            index += 1
+
+        if order_id is None and internal_id is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "security-sessions":
         if arguments == ["security-sessions", "--json"]:
             json_output = True
@@ -1688,6 +1752,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run("tariffs", json_output=True)
         if arguments[0] == "security-sessions":
             return run("security-sessions", json_output=True)
+        if arguments[0] == "order-files":
+            order_file_arguments: dict[str, object] = {
+                "order_id": order_id,
+                "internal_id": internal_id,
+            }
+            if json_output:
+                order_file_arguments["json_output"] = True
+            return run("order-files", **order_file_arguments)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,

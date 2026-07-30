@@ -84,6 +84,14 @@ class MarketService:
         """Return raw broker security sessions."""
         return self._adapter.list_security_sessions()
 
+    def get_order_files(
+        self,
+        order_id: int | None,
+        internal_id: int | None,
+    ) -> dict[str, Any]:
+        """Return raw broker order files."""
+        return self._adapter.get_order_files(order_id, internal_id)
+
     def get_news(
         self,
         query: str,

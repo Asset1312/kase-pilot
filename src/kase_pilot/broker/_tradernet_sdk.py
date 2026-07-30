@@ -154,6 +154,19 @@ class TradernetSdkAdapter:
             _require_mapping(response, "security sessions"),
         )
 
+    def get_order_files(
+        self,
+        order_id: int | None,
+        internal_id: int | None,
+    ) -> dict[str, Any]:
+        """Return order files without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_order_files(order_id, internal_id)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "order files"))
+
     def get_news(
         self,
         query: str,

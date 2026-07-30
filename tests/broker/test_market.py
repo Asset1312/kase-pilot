@@ -119,6 +119,20 @@ class FakeSecuritySessionsDependency:
         return self.response
 
 
+class FakeOrderFilesDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_order_files(
+        self,
+        order_id: object,
+        internal_id: object,
+    ) -> dict[str, Any]:
+        self.calls.append((order_id, internal_id))
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -463,6 +477,24 @@ def test_list_security_sessions_delegates_and_preserves_response_identity() -> N
     result = service.list_security_sessions()
 
     assert dependency.calls == 1
+    assert result is response
+
+
+@pytest.mark.parametrize(
+    ("order_id", "internal_id"),
+    [(17, None), (None, 23), (17, 23)],
+)
+def test_get_order_files_delegates_and_preserves_response_identity(
+    order_id: int | None,
+    internal_id: int | None,
+) -> None:
+    response = {"result": {"files": [{"name": "document.pdf"}]}}
+    dependency = FakeOrderFilesDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_order_files(order_id, internal_id)
+
+    assert dependency.calls == [(order_id, internal_id)]
     assert result is response
 
 
