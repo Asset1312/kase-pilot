@@ -1,8 +1,15 @@
 # BROKER_ARCHITECTURE.md — `kase_pilot.broker` Package Design
 
-> **Status:** Revised — implementation status aligned; REST contract pending
-> **Last updated:** 2026-07-27
+> **Status:** Historical design with a current implementation note
+> **Last updated:** 2026-07-30
 > **Scope:** Architecture and current implementation status.
+
+> **Current implementation note:** The active CLI composition path uses the
+> installed Tradernet SDK through `TradernetSdkAdapter`, `AccountService`, and
+> `MarketService`. `BrokerClient` and the skeleton services in `orders.py`,
+> `portfolio.py`, and `reports.py` are provisional Python internals and are not
+> part of the stable 1.0 CLI compatibility contract. Historical design and
+> research material below is retained for context.
 
 ---
 
@@ -45,12 +52,10 @@ module owns exactly one concern.
 
 **Responsibility**
 
-`client.py` is the single point through which every implemented HTTP
-interaction with the broker API passes. It currently owns base URL handling,
-request assembly, an injectable transport callable, response decoding, and
-conversion of transport and API errors into KASE Pilot exceptions. Timeout,
-retry, and persistent-session policies are not yet implemented. Service modules
-receive `BrokerClient` through constructor injection but remain stubs.
+`client.py` is a legacy direct-HTTP transport component. It owns base URL
+handling, request assembly, an injectable transport callable, response
+decoding, and conversion of transport and API errors into KASE Pilot
+exceptions. The active CLI operations use `TradernetSdkAdapter` instead.
 
 **Why it is the central component**
 
@@ -125,11 +130,10 @@ either module.
 
 **How other modules use it**
 
-Every service module (`portfolio.py`, `market.py`, `orders.py`, `reports.py`)
-receives a fully constructed `BrokerClient` instance — through constructor
-injection or a future factory. Their API methods are currently stubs and do not
-yet call the client. Once implemented, service modules call the generic request
-method and never construct HTTP requests themselves.
+The active `AccountService` and `MarketService` receive
+`TradernetSdkAdapter`. The legacy skeleton modules `portfolio.py`, `orders.py`,
+and `reports.py` receive `BrokerClient`; their deferred methods are not used by
+CLI composition.
 
 **Public surface**
 
@@ -370,8 +374,11 @@ test and evolve independently.
 
 **Responsibility**
 
-Intended to retrieve current and historical quotes. The class currently stores
-an injected `BrokerClient`; both service methods raise `NotImplementedError`.
+`MarketService` is an active read-only delegation boundary. It receives
+`TradernetSdkAdapter` and exposes the verified market, reference-data, report,
+and account-adjacent SDK operations used by application use cases. Two legacy
+placeholder methods, `get_current_quotes()` and `get_historical_quotes()`,
+remain unused by CLI composition.
 
 **Why separate**
 
@@ -381,12 +388,13 @@ makes that future transition contained.
 
 **Public surface**
 
-- `MarketService` class — methods for current quotes and historical quotes.
+- `MarketService` class — provisional Python API; not part of the stable CLI
+  compatibility contract.
 
 **Dependencies**
 
-- `client.py`
-- Future model dependencies remain blocked on confirmed response schemas
+- `_tradernet_sdk.py`
+- Raw response schemas remain owned by the installed SDK
 
 ---
 

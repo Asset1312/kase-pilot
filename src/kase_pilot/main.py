@@ -41,7 +41,7 @@ from kase_pilot.app import (
     create_list_security_sessions,
 )
 from kase_pilot.core.config import load_settings
-from kase_pilot.core.exceptions import ConfigurationError
+from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
 
 _USAGE = (
@@ -2083,6 +2083,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigurationError as error:
         print(error, file=sys.stderr)
         return 1
+    except BrokerError, ValidationError:
+        print("Broker/API operation failed.", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

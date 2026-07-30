@@ -2,8 +2,17 @@
 
 KASE Pilot is a command-line client for read-only Tradernet account and
 KASE-related market data. It is an independent project and is not affiliated
-with Tradernet. Version 0.3.0 does not place or cancel orders and does not
-provide a stable public API.
+with Tradernet. Version 1.0.0rc1 does not place or cancel orders.
+
+## Compatibility contract
+
+KASE Pilot 1.0 provides a stable CLI compatibility contract. The contract
+covers documented command names and options, output modes and JSON formatting,
+exit codes, and documented CLI behavior.
+
+Python subpackages, classes, services, adapters, use cases, constructors, and
+raw Tradernet SDK response schemas are internal or provisional. They may change
+without the compatibility guarantees applied to the CLI.
 
 ## Requirements
 
@@ -40,6 +49,13 @@ Install KASE Pilot in editable mode:
 ```console
 python -m pip install --upgrade pip
 python -m pip install -e .
+```
+
+For local development and release validation, install the project tools into
+the activated `.venv`:
+
+```console
+python -m pip install black ruff pytest build twine
 ```
 
 ## Credentials
@@ -283,6 +299,18 @@ kase-pilot symbols --exchange KASE
 
 Options: `--exchange EXCHANGE`, `--json`.
 
+`instruments` prints raw reference-book instruments for one required market.
+The explicit market filter is mandatory because an unfiltered
+`Tradernet.get_all()` call may download every reference book and require
+extreme memory.
+
+```console
+kase-pilot instruments --market KASE
+kase-pilot instruments --market KASE --show-expired --json
+```
+
+Options: required `--market MARKET`; optional `--show-expired`, `--json`.
+
 `symbol` prints raw information for one security, optionally in a selected
 language.
 
@@ -397,8 +425,8 @@ exceptions to the raw JSON output described above.
 - `2`: invalid CLI usage
 - `3`: expected broker or API operation failure
 
-Unexpected SDK or application failures may currently produce a Python
-traceback.
+Expected broker and API failures print a concise message to stderr without a
+traceback. Unexpected programming errors continue to propagate normally.
 
 ## Known limitations
 
@@ -420,11 +448,12 @@ Run the project checks with:
 ```console
 python -m black --check .
 python -m ruff check .
-pytest tests
+python -m pytest
 ```
 
-For documentation-only changes, run `git diff --check`. Use targeted tests for
-localized code changes, and run the full suite before creating a release tag.
+Run these commands from the activated `.venv`. For documentation-only changes,
+run `git diff --check`. Use targeted tests for localized code changes, and run
+the full suite before creating a release tag.
 
 ## License
 

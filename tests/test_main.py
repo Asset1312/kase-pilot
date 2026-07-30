@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 import kase_pilot.main as main_module
-from kase_pilot.core.exceptions import ConfigurationError
+from kase_pilot.core.exceptions import (
+    ApiRequestError,
+    ConfigurationError,
+    ValidationError,
+)
 from kase_pilot.core.version import __version__
 
 
@@ -4681,6 +4685,31 @@ def test_main_formats_portfolio_configuration_error(
 
     assert main_module.main(["portfolio"]) == 1
     assert capsys.readouterr() == ("", message + "\n")
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [ApiRequestError, ValidationError],
+)
+def test_main_formats_expected_api_error_without_sensitive_details(
+    error_type: type[Exception],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = "private-secret"
+
+    def fail_run(command: str, ticker: str) -> None:
+        raise error_type(f"request failed with credential {private_key}")
+
+    monkeypatch.setattr(main_module, "run", fail_run)
+
+    assert main_module.main(["info", "AAPL.US"]) == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Broker/API operation failed.\n"
+    assert "Traceback" not in captured.err
+    assert private_key not in captured.err
 
 
 @pytest.mark.parametrize(
