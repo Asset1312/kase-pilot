@@ -1,6 +1,6 @@
 [project]
 name = "kase-pilot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Personal investment assistant for Freedom Broker / Tradernet"
 readme = "README.md"
 requires-python = ">=3.14"

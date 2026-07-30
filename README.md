@@ -2,7 +2,7 @@
 
 KASE Pilot is a command-line client for read-only Tradernet account and
 KASE-related market data. It is an independent project and is not affiliated
-with Tradernet. Version 0.2.0 does not place or cancel orders and does not
+with Tradernet. Version 0.3.0 does not place or cancel orders and does not
 provide a stable public API.
 
 ## Requirements
@@ -44,7 +44,7 @@ python -m pip install -e .
 
 ## Credentials
 
-Every command requires these environment variables:
+Every data command requires these environment variables:
 
 - `TRADERNET_PUBLIC_KEY`
 - `TRADERNET_PRIVATE_KEY`
@@ -81,7 +81,12 @@ If the editable console script is unavailable, the package also supports:
 python -m kase_pilot.main COMMAND [OPTIONS]
 ```
 
-The CLI does not currently provide `--help` or `--version`.
+Display Usage or the installed version without credentials:
+
+```console
+kase-pilot --help
+kase-pilot --version
+```
 
 ## Commands
 
@@ -132,6 +137,32 @@ kase-pilot summary
 
 No command-specific options.
 
+`user-data` prints the raw initial user-data response, including the sections
+provided by Tradernet for the current account.
+
+```console
+kase-pilot user-data
+```
+
+Option: `--json`.
+
+`check-missing-fields` checks for missing profile fields for a required step
+and office.
+
+```console
+kase-pilot check-missing-fields --step 3 --office Almaty
+```
+
+Options: required `--step STEP` and `--office OFFICE`; optional `--json`.
+
+`profile-fields` prints profile fields for a required reception number.
+
+```console
+kase-pilot profile-fields --reception 35
+```
+
+Options: required `--reception RECEPTION`; optional `--json`.
+
 `price-alerts` prints configured read-only price alerts, optionally filtered
 by symbol.
 
@@ -167,6 +198,15 @@ kase-pilot orders-history --start 2026-01-01 --end 2026-01-31T18:30:00
 ```
 
 Options: `--start DATETIME`, `--end DATETIME`, `--json`.
+
+`order-files` prints raw file information for an order or draft order.
+
+```console
+kase-pilot order-files --order-id 12345
+```
+
+Options: at least one of `--order-id ID` or `--internal-id ID`; optional
+`--json`.
 
 `trades` prints trade history for a required ISO date range, with optional
 symbol and limit filters.
@@ -213,6 +253,57 @@ kase-pilot search Halyk
 ```
 
 No command-specific options.
+
+`symbols` prints raw completed security lists, optionally limited by exchange.
+
+```console
+kase-pilot symbols --exchange KASE
+```
+
+Options: `--exchange EXCHANGE`, `--json`.
+
+`symbol` prints raw information for one security, optionally in a selected
+language.
+
+```console
+kase-pilot symbol HSBK.KZ --lang en
+```
+
+Options: `--lang LANG`, `--json`.
+
+`export-securities` prints a raw export for one or more symbols and can limit
+the returned fields.
+
+```console
+kase-pilot export-securities HSBK.KZ KZAP.KZ --fields ticker ltp currency
+```
+
+Options: `--fields FIELD [FIELD ...]`, `--json`.
+
+`options` prints raw active-options data for an underlying instrument and
+exchange.
+
+```console
+kase-pilot options AAPL --exchange usa
+```
+
+Options: required `--exchange EXCHANGE`; optional `--json`.
+
+`tariffs` prints the raw list of available tariffs.
+
+```console
+kase-pilot tariffs
+```
+
+Option: `--json`.
+
+`security-sessions` prints raw open security-session data.
+
+```console
+kase-pilot security-sessions
+```
+
+Option: `--json`.
 
 `candles` prints historical candles for a symbol with optional ISO dates and
 timeframe in seconds.
@@ -287,6 +378,8 @@ traceback.
 
 - `news` currently fails inside the external Tradernet SDK; KASE Pilot does not
   fix or work around that SDK failure.
+- `Tradernet.get_all()` is intentionally not exposed: an unfiltered SDK call
+  may download all reference books and require at least 40 GB of memory.
 - KASE Pilot does not place or cancel orders.
 - Read-only behavior depends on Tradernet API availability and account
   permissions.
