@@ -27,6 +27,7 @@ class FakeSdkClient:
         self.symbol_calls: list[tuple[object, ...]] = []
         self.symbols_calls: list[tuple[object, ...]] = []
         self.export_securities_calls: list[tuple[object, ...]] = []
+        self.get_options_calls: list[tuple[object, object]] = []
         self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
@@ -67,6 +68,10 @@ class FakeSdkClient:
 
     def export_securities(self, *args: object) -> Any:
         self.export_securities_calls.append(args)
+        return self.response
+
+    def get_options(self, underlying: object, exchange: object) -> Any:
+        self.get_options_calls.append((underlying, exchange))
         return self.response
 
     def get_news(
@@ -425,6 +430,29 @@ def test_export_securities_rejects_non_list_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-list securities export response"):
         adapter.export_securities(["AAPL"])
+
+
+def test_get_options_forwards_arguments_and_preserves_response_identity() -> None:
+    underlying = " AaPl "
+    exchange = " UsA "
+    response = [{"ticker": "AAPL.US", "strike": 200}]
+    sdk_client = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
+
+    result = adapter.get_options(underlying, exchange)
+
+    assert sdk_client.get_options_calls == [(underlying, exchange)]
+    assert sdk_client.get_options_calls[0][0] is underlying
+    assert sdk_client.get_options_calls[0][1] is exchange
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, {}, (), "not a list", 42])
+def test_get_options_rejects_non_list_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-list options response"):
+        adapter.get_options("AAPL", "usa")
 
 
 def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (

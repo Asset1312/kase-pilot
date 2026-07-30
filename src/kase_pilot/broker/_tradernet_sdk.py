@@ -120,6 +120,19 @@ class TradernetSdkAdapter:
             _require_list(response, "securities export"),
         )
 
+    def get_options(
+        self,
+        underlying: str,
+        exchange: str,
+    ) -> list[dict[str, Any]]:
+        """Return options without transforming the SDK response."""
+        try:
+            response: Any = self._client.get_options(underlying, exchange)
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(list[dict[str, Any]], _require_list(response, "options"))
+
     def get_news(
         self,
         query: str,

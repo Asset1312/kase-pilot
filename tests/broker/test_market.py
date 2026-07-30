@@ -85,6 +85,20 @@ class FakeExportSecuritiesDependency:
         return self.response
 
 
+class FakeOptionsDependency:
+    def __init__(self, response: list[dict[str, Any]]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object]] = []
+
+    def get_options(
+        self,
+        underlying: object,
+        exchange: object,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((underlying, exchange))
+        return self.response
+
+
 class FakeNewsDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -392,6 +406,21 @@ def test_export_securities_delegates_and_preserves_response_identity(
     assert dependency.calls == [(symbols, fields)]
     assert dependency.calls[0][0] is symbols
     assert dependency.calls[0][1] is fields
+    assert result is response
+
+
+def test_get_options_delegates_and_preserves_response_identity() -> None:
+    underlying = " AaPl "
+    exchange = " UsA "
+    response = [{"ticker": "AAPL.US"}]
+    dependency = FakeOptionsDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_options(underlying, exchange)
+
+    assert dependency.calls == [(underlying, exchange)]
+    assert dependency.calls[0][0] is underlying
+    assert dependency.calls[0][1] is exchange
     assert result is response
 
 

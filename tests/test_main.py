@@ -146,6 +146,20 @@ class FakeExportSecurities:
         return self.response
 
 
+class FakeGetOptions:
+    def __init__(self, response: list[dict[str, Any]] | None = None) -> None:
+        self.response = [] if response is None else response
+        self.calls: list[tuple[object, object]] = []
+
+    def execute(
+        self,
+        underlying: object,
+        exchange: object,
+    ) -> list[dict[str, Any]]:
+        self.calls.append((underlying, exchange))
+        return self.response
+
+
 class FakeGetNews:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -571,6 +585,47 @@ def test_run_export_securities_forwards_ordered_values_and_prints_pretty_json(
     assert composition_calls == [("PublicKey", "PrivateKey")]
     assert use_case.calls == [(symbols, expected_arguments)]
     assert use_case.calls[0][0] is symbols
+    assert capsys.readouterr() == (
+        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
+        "",
+    )
+
+
+def test_run_options_forwards_arguments_and_prints_unicode_pretty_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    underlying = " AaPl "
+    exchange = " UsA "
+    response = [{"ticker": "AAPL.US", "name": "Опцион"}]
+    use_case = FakeGetOptions(response)
+    composition_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+
+    def fake_create(public: str, private: str) -> FakeGetOptions:
+        composition_calls.append((public, private))
+        return use_case
+
+    monkeypatch.setattr(main_module, "create_get_options", fake_create)
+
+    assert (
+        main_module.run(
+            "options",
+            underlying,
+            exchange=exchange,
+            environ={},
+        )
+        == 0
+    )
+
+    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert use_case.calls == [(underlying, exchange)]
+    assert use_case.calls[0][0] is underlying
+    assert use_case.calls[0][1] is exchange
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
@@ -3139,6 +3194,36 @@ def test_main_routes_export_securities_options(
 @pytest.mark.parametrize(
     ("arguments", "expected_options"),
     [
+        (
+            ["options", "AAPL", "--exchange", "usa"],
+            {"exchange": "usa"},
+        ),
+        (
+            ["options", "KZAP", "--json", "--exchange", "kse"],
+            {"exchange": "kse", "json_output": True},
+        ),
+    ],
+)
+def test_main_routes_options(
+    arguments: list[str],
+    expected_options: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, underlying: str, **options: object) -> int:
+        calls.append((command, underlying, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("options", arguments[1], expected_options)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_options"),
+    [
         (["market-status"], {}),
         (
             ["market-status", "--market", "KASE"],
@@ -4308,6 +4393,56 @@ def test_main_rejects_invalid_export_securities_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["options"],
+        ["options", "--exchange", "usa"],
+        ["options", "AAPL"],
+        ["options", "AAPL", "--exchange"],
+        ["options", "AAPL", "--exchange", "--json"],
+        ["options", "AAPL", "--unknown"],
+        ["options", "AAPL", "extra", "--exchange", "usa"],
+        ["options", "AAPL", "--json", "--json", "--exchange", "usa"],
+        [
+            "options",
+            "AAPL",
+            "--exchange",
+            "usa",
+            "--exchange",
+            "kse",
+        ],
+    ],
+)
+def test_main_rejects_invalid_options_before_orchestration(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_calls: list[str] = []
+    use_case = FakeGetOptions()
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_options",
+        lambda *args, **kwargs: orchestration_calls.append("factory") or use_case,
+    )
+
+    assert main_module.main(arguments) == 2
+    assert orchestration_calls == []
+    assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
         ["top", "extra"],
         ["top", "--unknown"],
         ["top", "--type"],
@@ -4753,6 +4888,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot search QUERY\n"
         "  kase-pilot export-securities SYMBOL [SYMBOL ...] "
         "[--fields FIELD [FIELD ...]] [--json]\n"
+        "  kase-pilot options UNDERLYING --exchange EXCHANGE [--json]\n"
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "

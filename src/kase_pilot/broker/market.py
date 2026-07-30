@@ -68,6 +68,14 @@ class MarketService:
         """Return a raw broker securities export."""
         return self._adapter.export_securities(symbols, fields)
 
+    def get_options(
+        self,
+        underlying: str,
+        exchange: str,
+    ) -> list[dict[str, Any]]:
+        """Return raw broker options."""
+        return self._adapter.get_options(underlying, exchange)
+
     def get_news(
         self,
         query: str,

@@ -23,6 +23,7 @@ from kase_pilot.app import (
     create_get_market_status,
     create_get_most_traded,
     create_get_news,
+    create_get_options,
     create_get_placed_orders,
     create_get_price_alerts,
     create_get_requests_history,
@@ -43,6 +44,7 @@ _USAGE = (
     "  kase-pilot search QUERY\n"
     "  kase-pilot export-securities SYMBOL [SYMBOL ...] "
     "[--fields FIELD [FIELD ...]] [--json]\n"
+    "  kase-pilot options UNDERLYING --exchange EXCHANGE [--json]\n"
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
@@ -460,6 +462,19 @@ def _run_export_securities(
     return 0
 
 
+def _run_options(
+    public_key: str,
+    private_key: str,
+    underlying: str,
+    *,
+    exchange: str,
+) -> int:
+    use_case = create_get_options(public_key, private_key)
+    result = use_case.execute(underlying, exchange)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _run_symbols(
     public_key: str,
     private_key: str,
@@ -788,6 +803,7 @@ def run(
         "quotes",
         "search",
         "export-securities",
+        "options",
         "symbol",
         "symbols",
         "news",
@@ -830,13 +846,15 @@ def run(
         "requests-history",
         "broker-report",
         "export-securities",
+        "options",
         "symbol",
         "symbols",
     }:
         raise ValueError(
             "JSON output is supported only for portfolio, trades, news, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
-            "requests-history, broker-report, export-securities, symbol, and symbols"
+            "requests-history, broker-report, export-securities, options, symbol, "
+            "and symbols"
         )
     if command == "portfolio" and symbol is not None:
         symbol = symbol.strip()
@@ -887,6 +905,8 @@ def run(
         raise ValueError(f"The {command} command requires an argument")
     if command == "export-securities" and not symbols:
         raise ValueError("The export-securities command requires symbols")
+    if command == "options" and exchange is None:
+        raise ValueError("The options command requires an exchange")
 
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
@@ -904,6 +924,14 @@ def run(
             private_key,
             symbols,
             fields=fields,
+        )
+    if command == "options":
+        assert exchange is not None
+        return _run_options(
+            public_key,
+            private_key,
+            ticker,
+            exchange=exchange,
         )
     if command == "symbol":
         return _run_symbol(
@@ -1039,6 +1067,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     instrument_type = "stocks"
     exchange = "usa"
     symbols_exchange = None
+    options_exchange = None
     export_symbols: list[str] = []
     export_fields: list[str] | None = None
     gainers = True
@@ -1080,6 +1109,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
     ):
         pass
+    elif arguments and arguments[0] == "options":
+        if len(arguments) < 2 or arguments[1].startswith("--"):
+            print(_USAGE, file=sys.stderr)
+            return 2
+
+        seen_flags: set[str] = set()
+        index = 2
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in {"--exchange", "--json"}:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            index += 1
+
+            if flag == "--json":
+                json_output = True
+                continue
+            if index >= len(arguments) or arguments[index].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            options_exchange = arguments[index]
+            index += 1
+
+        if options_exchange is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "export-securities":
         index = 1
         while index < len(arguments) and not arguments[index].startswith("--"):
@@ -1577,6 +1633,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 export_arguments["json_output"] = True
             return run("export-securities", **export_arguments)
+        if arguments[0] == "options":
+            options_arguments: dict[str, object] = {"exchange": options_exchange}
+            if json_output:
+                options_arguments["json_output"] = True
+            return run("options", arguments[1], **options_arguments)
         if arguments[0] == "news":
             news_arguments: dict[str, object] = {
                 "symbol": symbol,
