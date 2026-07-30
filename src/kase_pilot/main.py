@@ -62,7 +62,7 @@ _USAGE = (
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
-    "[--limit LIMIT] [--json]\n"
+    "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
     "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
     "[--losers] [--json]\n"
@@ -89,6 +89,9 @@ _USAGE = (
 _PORTFOLIO_NAME_WIDTH = 28
 _PORTFOLIO_SORT_FIELDS = {"ticker", "value", "pnl", "last"}
 WATCH_REFRESH_SECONDS = 5
+_NEWS_UNSUPPORTED_MESSAGE = (
+    "The news command is unsupported because tradernet-sdk 2.2.0 cannot execute it."
+)
 
 
 def _valid_number(value: object) -> Decimal | None:
@@ -1222,7 +1225,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     start = None
     end = None
     symbol = None
-    story_id = None
     lang = None
     market = "*"
     mode = None
@@ -1502,9 +1504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             value = arguments[index + 1]
             if flag == "--symbol":
                 symbol = value
-            elif flag == "--story-id":
-                story_id = value
-            else:
+            elif flag == "--limit":
                 try:
                     limit = int(value)
                 except ValueError:
@@ -1984,14 +1984,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 profile_field_arguments["json_output"] = True
             return run("profile-fields", **profile_field_arguments)
         if arguments[0] == "news":
-            news_arguments: dict[str, object] = {
-                "symbol": symbol,
-                "story_id": story_id,
-                "limit": 30 if limit is None else limit,
-            }
-            if json_output:
-                news_arguments["json_output"] = True
-            return run("news", arguments[1], **news_arguments)
+            print(_NEWS_UNSUPPORTED_MESSAGE, file=sys.stderr)
+            return 3
         if arguments[0] == "market-status":
             market_status_arguments: dict[str, object] = {
                 "market": market,

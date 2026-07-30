@@ -3364,67 +3364,62 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("arguments", "expected_options"),
+    "arguments",
     [
-        (
-            ["news", "market"],
-            {"symbol": None, "story_id": None, "limit": 30},
-        ),
-        (
-            [
-                "news",
-                "market",
-                "--symbol",
-                "AAPL.US",
-                "--story-id",
-                "story-17",
-                "--limit",
-                "7",
-                "--json",
-            ],
-            {
-                "symbol": "AAPL.US",
-                "story_id": "story-17",
-                "limit": 7,
-                "json_output": True,
-            },
-        ),
-        (
-            [
-                "news",
-                "market",
-                "--json",
-                "--limit",
-                "7",
-                "--story-id",
-                "story-17",
-                "--symbol",
-                "AAPL.US",
-            ],
-            {
-                "symbol": "AAPL.US",
-                "story_id": "story-17",
-                "limit": 7,
-                "json_output": True,
-            },
-        ),
+        ["news", "market"],
+        [
+            "news",
+            "market",
+            "--symbol",
+            "AAPL.US",
+            "--story-id",
+            "story-17",
+            "--limit",
+            "7",
+            "--json",
+        ],
+        [
+            "news",
+            "market",
+            "--json",
+            "--limit",
+            "7",
+            "--story-id",
+            "story-17",
+            "--symbol",
+            "AAPL.US",
+        ],
     ],
 )
-def test_main_routes_news_options_in_any_order(
+def test_main_reports_news_as_unsupported_before_orchestration(
     arguments: list[str],
-    expected_options: dict[str, object],
+    capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, dict[str, object]]] = []
+    orchestration_calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "run",
+        lambda *args, **kwargs: orchestration_calls.append("run"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "load_settings",
+        lambda *args, **kwargs: orchestration_calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_get_news",
+        lambda *args, **kwargs: orchestration_calls.append("factory"),
+    )
 
-    def fake_run(command: str, query: str, **options: object) -> int:
-        calls.append((command, query, options))
-        return 17
+    assert main_module.main(arguments) == 3
 
-    monkeypatch.setattr(main_module, "run", fake_run)
-
-    assert main_module.main(arguments) == 17
-    assert calls == [("news", "market", expected_options)]
+    captured = capsys.readouterr()
+    assert orchestration_calls == []
+    assert captured.out == ""
+    assert captured.err == main_module._NEWS_UNSUPPORTED_MESSAGE + "\n"
+    assert "Traceback" not in captured.err
 
 
 @pytest.mark.parametrize(
@@ -5802,7 +5797,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
-        "[--limit LIMIT] [--json]\n"
+        "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
         "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
         "[--losers] [--json]\n"

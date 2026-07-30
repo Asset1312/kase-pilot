@@ -361,14 +361,18 @@ kase-pilot corporate-actions --reception 35
 
 Options: `--reception DAYS`, `--json`.
 
-`news` requests news for one query, with optional symbol, story identifier,
-and positive result limit. See [Known limitations](#known-limitations).
+## Unsupported command
+
+`news` is retained for future compatibility work but is outside the stable 1.0
+CLI contract. Tradernet SDK 2.2.0 cannot currently execute the operation.
 
 ```console
 kase-pilot news markets --symbol HSBK.KZ --limit 10
 ```
 
-Options: `--symbol SYMBOL`, `--story-id STORY_ID`, `--limit LIMIT`, `--json`.
+After validating the command syntax, KASE Pilot prints a concise explanation to
+stderr and exits with status `3`. It does not load credentials, compose the use
+case, contact Tradernet, or print a traceback.
 
 ## Output
 
@@ -391,14 +395,16 @@ exceptions to the raw JSON output described above.
 - `0`: success
 - `1`: configuration error, including missing credentials
 - `2`: invalid CLI usage
+- `3`: expected broker or API operation failure
 
 Unexpected SDK or application failures may currently produce a Python
 traceback.
 
 ## Known limitations
 
-- `news` currently fails inside the external Tradernet SDK; KASE Pilot does not
-  fix or work around that SDK failure.
+- `news` is explicitly unsupported by the stable 1.0 CLI contract because the
+  operation fails inside the external Tradernet SDK. Invocation is rejected
+  deterministically before credentials or SDK access.
 - `Tradernet.get_all()` is exposed only through the restricted `instruments`
   command. An explicit market filter is mandatory to prevent an unbounded
   download of all reference books.
