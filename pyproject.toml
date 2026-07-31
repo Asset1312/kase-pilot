@@ -22,6 +22,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "cssselect>=1.3.0",
     "tradernet-sdk==2.2.0",
 ]
 
