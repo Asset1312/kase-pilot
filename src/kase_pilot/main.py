@@ -552,12 +552,10 @@ def _run_profile_fields(
 
 
 def _run_symbols(
-    public_key: str,
-    private_key: str,
     *,
     exchange: str | None,
 ) -> int:
-    use_case = create_get_symbols(public_key, private_key)
+    use_case = create_get_symbols()
     if exchange is None:
         result = use_case.execute()
     else:
@@ -567,13 +565,11 @@ def _run_symbols(
 
 
 def _run_instruments(
-    public_key: str,
-    private_key: str,
     *,
     market: str,
     show_expired: bool,
 ) -> int:
-    use_case = create_get_instruments(public_key, private_key)
+    use_case = create_get_instruments()
     result = use_case.execute(market, show_expired=show_expired)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
@@ -1037,6 +1033,15 @@ def run(
     if command == "check-missing-fields" and (step is None or office is None):
         raise ValueError("The check-missing-fields command requires step and office")
 
+    if command == "symbols":
+        return _run_symbols(exchange=exchange)
+    if command == "instruments":
+        assert market is not None
+        return _run_instruments(
+            market=market,
+            show_expired=show_expired,
+        )
+
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
     private_key = settings.tradernet_private_key
@@ -1096,20 +1101,6 @@ def run(
             private_key,
             ticker,
             lang=lang,
-        )
-    if command == "symbols":
-        return _run_symbols(
-            public_key,
-            private_key,
-            exchange=exchange,
-        )
-    if command == "instruments":
-        assert market is not None
-        return _run_instruments(
-            public_key,
-            private_key,
-            market=market,
-            show_expired=show_expired,
         )
     if command == "news":
         return _run_news(

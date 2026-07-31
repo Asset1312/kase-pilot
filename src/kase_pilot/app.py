@@ -35,6 +35,7 @@ from kase_pilot.application import (
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+from kase_pilot.catalog import LocalInstrumentCatalog
 
 
 def create_check_missing_fields(
@@ -147,15 +148,14 @@ def create_get_market_status(
     return GetMarketStatus(market_service)
 
 
-def create_get_instruments(
-    public_key: str,
-    private_key: str,
-) -> GetInstruments:
-    """Build the object graph for the instruments use case."""
-    sdk_client = Tradernet(public_key, private_key)
-    adapter = TradernetSdkAdapter(sdk_client)
-    market_service = MarketService(adapter)
-    return GetInstruments(market_service)
+def create_get_instruments() -> GetInstruments:
+    """Build the object graph for the instruments use case.
+
+    Served entirely from KASE Pilot's local instrument catalog; no broker
+    credentials or network access are involved (see ``kase_pilot.catalog``).
+    """
+    catalog = LocalInstrumentCatalog()
+    return GetInstruments(catalog)
 
 
 def create_get_most_traded(
@@ -268,15 +268,14 @@ def create_list_security_sessions(
     return ListSecuritySessions(market_service)
 
 
-def create_get_symbols(
-    public_key: str,
-    private_key: str,
-) -> GetSymbols:
-    """Build the object graph for the symbols use case."""
-    sdk_client = Tradernet(public_key, private_key)
-    adapter = TradernetSdkAdapter(sdk_client)
-    market_service = MarketService(adapter)
-    return GetSymbols(market_service)
+def create_get_symbols() -> GetSymbols:
+    """Build the object graph for the symbols use case.
+
+    Served entirely from KASE Pilot's local instrument catalog; no broker
+    credentials or network access are involved (see ``kase_pilot.catalog``).
+    """
+    catalog = LocalInstrumentCatalog()
+    return GetSymbols(catalog)
 
 
 def create_get_symbol(

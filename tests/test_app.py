@@ -40,6 +40,7 @@ from kase_pilot.application import (
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+from kase_pilot.catalog import LocalInstrumentCatalog
 
 
 class FakeSdkClient:
@@ -158,32 +159,20 @@ def test_create_get_options_builds_graph_without_sdk_call(
     assert calls == [("public-value", "private-value")]
 
 
-def test_create_get_instruments_builds_graph_without_sdk_call(
+def test_create_get_instruments_builds_local_catalog_graph_without_sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str]] = []
+    def fail_if_constructed(public_key: str, private_key: str) -> None:
+        raise AssertionError(
+            "create_get_instruments must not construct a Tradernet SDK client"
+        )
 
-    class NetworkGuardSdkClient:
-        def get_all(self, *args: object, **kwargs: object) -> Any:
-            raise AssertionError("SDK operation must not run during composition")
+    monkeypatch.setattr(app, "Tradernet", fail_if_constructed)
 
-    sdk_client = NetworkGuardSdkClient()
-
-    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
-        calls.append((public_key, private_key))
-        return sdk_client
-
-    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
-
-    use_case = app.create_get_instruments("public-value", "private-value")
+    use_case = app.create_get_instruments()
 
     assert isinstance(use_case, GetInstruments)
-    market_service = use_case._market_service
-    assert isinstance(market_service, MarketService)
-    adapter = market_service._adapter
-    assert isinstance(adapter, TradernetSdkAdapter)
-    assert adapter._client is sdk_client
-    assert calls == [("public-value", "private-value")]
+    assert isinstance(use_case._catalog, LocalInstrumentCatalog)
 
 
 def test_create_get_tariffs_builds_graph_without_sdk_call(
@@ -669,32 +658,20 @@ def test_create_get_historical_builds_expected_graph_without_sdk_call(
     assert calls == [("public-value", "private-value")]
 
 
-def test_create_get_symbols_builds_graph_without_sdk_call(
+def test_create_get_symbols_builds_local_catalog_graph_without_sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str]] = []
+    def fail_if_constructed(public: str, private: str) -> None:
+        raise AssertionError(
+            "create_get_symbols must not construct a Tradernet SDK client"
+        )
 
-    class NetworkGuardSdkClient:
-        def symbols(self, *args: object, **kwargs: object) -> Any:
-            raise AssertionError("SDK operation must not run during composition")
+    monkeypatch.setattr(app, "Tradernet", fail_if_constructed)
 
-    sdk_client = NetworkGuardSdkClient()
-
-    def create_sdk_client(public: str, private: str) -> NetworkGuardSdkClient:
-        calls.append((public, private))
-        return sdk_client
-
-    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
-
-    use_case = app.create_get_symbols("public-value", "private-value")
+    use_case = app.create_get_symbols()
 
     assert isinstance(use_case, GetSymbols)
-    market_service = use_case._market_service
-    assert isinstance(market_service, MarketService)
-    adapter = market_service._adapter
-    assert isinstance(adapter, TradernetSdkAdapter)
-    assert adapter._client is sdk_client
-    assert calls == [("public-value", "private-value")]
+    assert isinstance(use_case._catalog, LocalInstrumentCatalog)
 
 
 def test_create_get_symbol_builds_graph_without_sdk_call(

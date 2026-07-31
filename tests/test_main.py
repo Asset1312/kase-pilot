@@ -572,18 +572,18 @@ def test_run_symbols_forwards_exchange_and_prints_raw_pretty_json(
     )
     response = {"result": {"symbols": [{"ticker": "HSBK.KZ", "name": "Халық"}]}}
     use_case = FakeGetSymbols(response)
-    composition_calls: list[tuple[str, str]] = []
+    composition_calls: list[None] = []
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
 
-    def fake_create(public: str, private: str) -> FakeGetSymbols:
-        composition_calls.append((public, private))
+    def fake_create() -> FakeGetSymbols:
+        composition_calls.append(None)
         return use_case
 
     monkeypatch.setattr(main_module, "create_get_symbols", fake_create)
 
     assert main_module.run("symbols", exchange=exchange, environ={}) == 0
 
-    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert composition_calls == [None]
     assert use_case.calls == [expected_arguments]
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
@@ -604,11 +604,11 @@ def test_run_instruments_forwards_market_and_prints_raw_pretty_json(
     market = " KASE "
     response = [{"ticker": "HSBK.KZ", "name": "Халық"}]
     use_case = FakeGetInstruments(response)
-    composition_calls: list[tuple[str, str]] = []
+    composition_calls: list[None] = []
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
 
-    def fake_create(public: str, private: str) -> FakeGetInstruments:
-        composition_calls.append((public, private))
+    def fake_create() -> FakeGetInstruments:
+        composition_calls.append(None)
         return use_case
 
     monkeypatch.setattr(main_module, "create_get_instruments", fake_create)
@@ -624,7 +624,7 @@ def test_run_instruments_forwards_market_and_prints_raw_pretty_json(
         == 0
     )
 
-    assert composition_calls == [("PublicKey", "PrivateKey")]
+    assert composition_calls == [None]
     assert use_case.calls == [(market, {"show_expired": show_expired})]
     assert capsys.readouterr() == (
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",

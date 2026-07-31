@@ -7,6 +7,7 @@ from inspect import signature
 from typing import Any
 
 import pytest
+from lxml.cssselect import CSSSelector
 
 from kase_pilot import broker
 from kase_pilot.broker._tradernet_sdk import (
@@ -15,6 +16,12 @@ from kase_pilot.broker._tradernet_sdk import (
     _require_mapping,
 )
 from kase_pilot.core.exceptions import ApiRequestError, ValidationError
+
+
+def test_tradernet_get_all_css_selector_dependency_is_available() -> None:
+    selector = CSSSelector("a")
+
+    assert selector.path
 
 
 class FakeSdkClient:

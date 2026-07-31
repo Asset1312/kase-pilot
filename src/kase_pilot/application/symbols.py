@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from kase_pilot.broker import MarketService
+from kase_pilot.catalog import LocalInstrumentCatalog
 
 
 class GetSymbols:
-    """Retrieve raw broker symbol lists."""
+    """Retrieve symbol lists from KASE Pilot's local instrument catalog."""
 
-    def __init__(self, market_service: MarketService) -> None:
-        self._market_service = market_service
+    def __init__(self, catalog: LocalInstrumentCatalog) -> None:
+        self._catalog = catalog
 
     def execute(
         self,
         exchange: str | None = None,
     ) -> dict[str, Any]:
         """Execute the symbols use case."""
-        return self._market_service.get_symbols(exchange)
+        return self._catalog.get_symbols(exchange)

@@ -291,7 +291,9 @@ kase-pilot search Halyk
 
 No command-specific options.
 
-`symbols` prints raw completed security lists, optionally limited by exchange.
+`symbols` prints instruments from KASE Pilot's local instrument catalog,
+optionally limited by exchange. No broker credentials or network access are
+required; see `src/kase_pilot/catalog/data/README.md`.
 
 ```console
 kase-pilot symbols --exchange KASE
@@ -299,14 +301,14 @@ kase-pilot symbols --exchange KASE
 
 Options: `--exchange EXCHANGE`, `--json`.
 
-`instruments` prints raw reference-book instruments for one required market.
-The explicit market filter is mandatory because an unfiltered
-`Tradernet.get_all()` call may download every reference book and require
-extreme memory.
+`instruments` prints instruments from KASE Pilot's local instrument catalog
+for one required market (a refbook-style code, e.g. `KASE_STOCK` — distinct
+from the broader `symbols --exchange` code). No broker credentials or
+network access are required; see `src/kase_pilot/catalog/data/README.md`.
 
 ```console
-kase-pilot instruments --market KASE
-kase-pilot instruments --market KASE --show-expired --json
+kase-pilot instruments --market KASE_STOCK
+kase-pilot instruments --market KASE_STOCK --show-expired --json
 ```
 
 Options: required `--market MARKET`; optional `--show-expired`, `--json`.
@@ -433,9 +435,10 @@ traceback. Unexpected programming errors continue to propagate normally.
 - `news` is explicitly unsupported by the stable 1.0 CLI contract because the
   operation fails inside the external Tradernet SDK. Invocation is rejected
   deterministically before credentials or SDK access.
-- `Tradernet.get_all()` is exposed only through the restricted `instruments`
-  command. An explicit market filter is mandatory to prevent an unbounded
-  download of all reference books.
+- `symbols` and `instruments` are served entirely from KASE Pilot's local,
+  bundled instrument catalog (see `src/kase_pilot/catalog/data/README.md`)
+  and do not depend on the Tradernet API or credentials. The catalog is
+  currently a small, manually curated seed, not a complete instrument list.
 - KASE Pilot does not place or cancel orders.
 - Read-only behavior depends on Tradernet API availability and account
   permissions.

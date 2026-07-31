@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "generated": "2026-07-30",
+  "source": "Manually curated by the KASE Pilot maintainer from public, well-known reference information. Not sourced from the Tradernet/Freedom API: the previous symbols/get_all endpoints are confirmed unavailable (HTTP 404) with no known replacement, see docs/API_NOTES.md. The KASE_STOCK market code reflects the refbook filename pattern observed in that dead-endpoint research (/refbooks/<date>/KASE_STOCK.json.zip); no equivalent refbook code is confirmed for the US entry, so its market is null.",
+  "instruments": [
+    {
+      "ticker": "HSBK.KZ",
+      "exchange": "KASE",
+      "market": "KASE_STOCK",
+      "name": "Halyk Bank",
+      "currency": "KZT",
+      "expired": false
+    },
+    {
+      "ticker": "AAPL.US",
+      "exchange": "usa",
+      "market": null,
+      "name": "Apple Inc.",
+      "currency": "USD",
+      "expired": false
+    }
+  ]
+}
