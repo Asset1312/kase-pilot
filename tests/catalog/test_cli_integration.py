@@ -91,3 +91,39 @@ def test_instruments_requires_no_broker_credentials(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert main_module.run("instruments", market="KASE_STOCK", environ={}) == 0
+
+
+def test_instrument_lookup_returns_halyk_bank(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instrument", "HSBK.KZ", environ={})
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Ticker:   HSBK.KZ" in out
+    assert "Name:     Halyk Bank" in out
+
+
+def test_instrument_lookup_is_case_insensitive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instrument", "hsbk.kz", environ={})
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Ticker:   HSBK.KZ" in out
+
+
+def test_instrument_lookup_missing_ticker_reports_not_found(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instrument", "NOSUCH.US", environ={})
+
+    assert exit_code != 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "NOSUCH.US" in captured.err
+
+
+def test_instrument_lookup_requires_no_broker_credentials() -> None:
+    assert main_module.run("instrument", "HSBK.KZ", environ={}) == 0

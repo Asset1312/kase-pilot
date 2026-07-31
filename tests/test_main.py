@@ -144,6 +144,16 @@ class FakeGetInstruments:
         return self.response
 
 
+class FakeGetInstrument:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def execute(self, ticker: object) -> dict[str, Any] | None:
+        self.calls.append(ticker)
+        return self.response
+
+
 class FakeGetSymbol:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -630,6 +640,136 @@ def test_run_instruments_forwards_market_and_prints_raw_pretty_json(
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
     )
+
+
+def test_run_instrument_found_prints_human_readable_summary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = {
+        "ticker": "HSBK.KZ",
+        "exchange": "KASE",
+        "market": "KASE_STOCK",
+        "name": "Halyk Bank",
+        "currency": "KZT",
+        "expired": False,
+    }
+    use_case = FakeGetInstrument(response)
+    composition_calls: list[None] = []
+
+    def fake_create() -> FakeGetInstrument:
+        composition_calls.append(None)
+        return use_case
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_get_instrument", fake_create)
+        exit_code = main_module.run("instrument", "HSBK.KZ", environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [None]
+    assert use_case.calls == ["HSBK.KZ"]
+    assert capsys.readouterr() == (
+        (
+            "Ticker:   HSBK.KZ\n"
+            "Name:     Halyk Bank\n"
+            "Exchange: KASE\n"
+            "Market:   KASE_STOCK\n"
+            "Currency: KZT\n"
+            "Expired:  No\n"
+        ),
+        "",
+    )
+
+
+def test_run_instrument_found_reports_expired_instrument(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = {
+        "ticker": "OLD.KZ",
+        "exchange": "KASE",
+        "market": None,
+        "name": None,
+        "currency": None,
+        "expired": True,
+    }
+    use_case = FakeGetInstrument(response)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_get_instrument", lambda: use_case)
+        exit_code = main_module.run("instrument", "OLD.KZ", environ={})
+
+    assert exit_code == 0
+    assert capsys.readouterr() == (
+        (
+            "Ticker:   OLD.KZ\n"
+            "Name:     -\n"
+            "Exchange: KASE\n"
+            "Market:   -\n"
+            "Currency: -\n"
+            "Expired:  Yes\n"
+        ),
+        "",
+    )
+
+
+def test_run_instrument_not_found_prints_message_and_uses_operation_failed_exit_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_case = FakeGetInstrument(None)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_get_instrument", lambda: use_case)
+        exit_code = main_module.run("instrument", "NOSUCH.US", environ={})
+
+    assert exit_code == 3
+    assert use_case.calls == ["NOSUCH.US"]
+    assert capsys.readouterr() == (
+        "",
+        "Instrument not found in the local catalog: NOSUCH.US\n",
+    )
+
+
+def test_run_instrument_requires_no_broker_credentials() -> None:
+    use_case = FakeGetInstrument({"ticker": "HSBK.KZ", "exchange": "KASE"})
+
+    def fail_load_settings(*args: object, **kwargs: object) -> None:
+        raise AssertionError("instrument must not load broker settings")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_get_instrument", lambda: use_case)
+        monkeypatch.setattr(main_module, "load_settings", fail_load_settings)
+        exit_code = main_module.run("instrument", "HSBK.KZ", environ={})
+
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["instrument"],
+        ["instrument", "HSBK.KZ", "extra"],
+    ],
+)
+def test_main_instrument_rejects_invalid_argument_count(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.main(arguments)
+
+    assert exit_code == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+def test_main_instrument_forwards_ticker(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_case = FakeGetInstrument({"ticker": "HSBK.KZ", "exchange": "KASE"})
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_get_instrument", lambda: use_case)
+        exit_code = main_module.main(["instrument", "hsbk.kz"])
+
+    assert exit_code == 0
+    assert use_case.calls == ["hsbk.kz"]
 
 
 @pytest.mark.parametrize(
@@ -5825,6 +5965,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
+        "  kase-pilot instrument TICKER\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"

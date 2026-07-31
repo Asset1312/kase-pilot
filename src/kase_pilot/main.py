@@ -21,6 +21,7 @@ from kase_pilot.app import (
     create_get_current_quotes,
     create_get_historical,
     create_get_historical_candles,
+    create_get_instrument,
     create_get_instruments,
     create_get_market_status,
     create_get_most_traded,
@@ -61,6 +62,7 @@ _USAGE = (
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
+    "  kase-pilot instrument TICKER\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
@@ -92,6 +94,7 @@ WATCH_REFRESH_SECONDS = 5
 _NEWS_UNSUPPORTED_MESSAGE = (
     "The news command is unsupported because tradernet-sdk 2.2.0 cannot execute it."
 )
+_INSTRUMENT_NOT_FOUND_TEMPLATE = "Instrument not found in the local catalog: {ticker}"
 
 
 def _valid_number(value: object) -> Decimal | None:
@@ -575,6 +578,21 @@ def _run_instruments(
     return 0
 
 
+def _run_instrument(ticker: str) -> int:
+    use_case = create_get_instrument()
+    instrument = use_case.execute(ticker)
+    if instrument is None:
+        print(_INSTRUMENT_NOT_FOUND_TEMPLATE.format(ticker=ticker), file=sys.stderr)
+        return 3
+    print(f"Ticker:   {_format_text(instrument.get('ticker'))}")
+    print(f"Name:     {_format_text(instrument.get('name'))}")
+    print(f"Exchange: {_format_text(instrument.get('exchange'))}")
+    print(f"Market:   {_format_text(instrument.get('market'))}")
+    print(f"Currency: {_format_text(instrument.get('currency'))}")
+    print(f"Expired:  {'Yes' if instrument.get('expired') else 'No'}")
+    return 0
+
+
 def _run_symbol(
     public_key: str,
     private_key: str,
@@ -903,6 +921,7 @@ def run(
         "symbol",
         "symbols",
         "instruments",
+        "instrument",
         "news",
         "market-status",
         "top",
@@ -1041,6 +1060,9 @@ def run(
             market=market,
             show_expired=show_expired,
         )
+    if command == "instrument":
+        assert ticker is not None
+        return _run_instrument(ticker)
 
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
@@ -1271,6 +1293,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "search",
             "symbol",
             "candles",
+            "instrument",
         }
     ):
         pass
