@@ -7,6 +7,7 @@ from kase_pilot.application.current_quotes import GetCurrentQuotes
 from kase_pilot.application.export_securities import ExportSecurities
 from kase_pilot.application.historical import GetHistorical
 from kase_pilot.application.historical_candles import GetHistoricalCandles
+from kase_pilot.application.instrument import GetInstrument
 from kase_pilot.application.instrument_search import FindInstrument
 from kase_pilot.application.instruments import GetInstruments
 from kase_pilot.application.market_status import GetMarketStatus
@@ -38,6 +39,7 @@ __all__ = [
     "GetCurrentQuotes",
     "GetHistorical",
     "GetHistoricalCandles",
+    "GetInstrument",
     "GetInstruments",
     "GetMarketStatus",
     "GetMostTraded",

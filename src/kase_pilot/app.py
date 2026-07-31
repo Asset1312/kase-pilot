@@ -14,6 +14,7 @@ from kase_pilot.application import (
     GetCurrentQuotes,
     GetHistorical,
     GetHistoricalCandles,
+    GetInstrument,
     GetInstruments,
     GetMarketStatus,
     GetMostTraded,
@@ -156,6 +157,16 @@ def create_get_instruments() -> GetInstruments:
     """
     catalog = LocalInstrumentCatalog()
     return GetInstruments(catalog)
+
+
+def create_get_instrument() -> GetInstrument:
+    """Build the object graph for the single-instrument lookup use case.
+
+    Served entirely from KASE Pilot's local instrument catalog; no broker
+    credentials or network access are involved (see ``kase_pilot.catalog``).
+    """
+    catalog = LocalInstrumentCatalog()
+    return GetInstrument(catalog)
 
 
 def create_get_most_traded(
