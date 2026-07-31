@@ -11,7 +11,7 @@ docs/BROKER_ARCHITECTURE.md §3.9). Neither imports the other.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
 from tradernet import Tradernet, TradernetWebsocket
@@ -38,12 +38,39 @@ class TradernetWebsocketAdapter:
         ValidationError
             If a yielded message is not a mapping.
         """
+        async for message in self._consume(
+            lambda websocket: websocket.quotes(symbols),
+            "quote",
+        ):
+            yield message
+
+    async def market_depth(self, symbol: str) -> AsyncIterator[dict[str, Any]]:
+        """Yield live order-book updates for the given symbol.
+
+        Raises
+        ------
+        ApiRequestError
+            If the WebSocket connection or the underlying SDK call fails.
+        ValidationError
+            If a yielded message is not a mapping.
+        """
+        async for message in self._consume(
+            lambda websocket: websocket.market_depth(symbol),
+            "order-book",
+        ):
+            yield message
+
+    async def _consume(
+        self,
+        make_stream: Callable[[TradernetWebsocket], AsyncIterator[Any]],
+        message_name: str,
+    ) -> AsyncIterator[dict[str, Any]]:
         try:
             async with TradernetWebsocket(self._client) as websocket:
-                stream = websocket.quotes(symbols)
+                stream = make_stream(websocket)
                 while True:
                     try:
-                        quote = await stream.__anext__()
+                        message = await stream.__anext__()
                     except StopAsyncIteration:
                         return
                     except Exception as exc:
@@ -51,12 +78,13 @@ class TradernetWebsocketAdapter:
                             "Tradernet WebSocket request failed"
                         ) from exc
 
-                    if not isinstance(quote, Mapping):
+                    if not isinstance(message, Mapping):
                         raise ValidationError(
-                            "Tradernet WebSocket returned a non-mapping quote message"
+                            f"Tradernet WebSocket returned a non-mapping "
+                            f"{message_name} message"
                         )
 
-                    yield quote
+                    yield message
         except ApiRequestError, ValidationError:
             raise
         except Exception as exc:

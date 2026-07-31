@@ -6107,6 +6107,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
         "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
+        "  kase-pilot stream-orderbook SYMBOL\n"
     )
 
 

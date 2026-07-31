@@ -34,6 +34,7 @@ from kase_pilot.application import (
     GetUserInfo,
     ListSecuritySessions,
     SearchInstruments,
+    StreamOrderBook,
     StreamQuotes,
 )
 from kase_pilot.broker import AccountService, MarketService
@@ -369,3 +370,17 @@ def create_stream_quotes(
     sdk_client = Tradernet(public_key, private_key)
     adapter = TradernetWebsocketAdapter(sdk_client)
     return StreamQuotes(adapter)
+
+
+def create_stream_order_book(
+    public_key: str,
+    private_key: str,
+) -> StreamOrderBook:
+    """Build the object graph for the order-book-streaming use case.
+
+    Uses the WebSocket transport confirmed in docs/API_NOTES.md
+    (F-23/F-25/F-26), kept separate from the REST ``MarketService`` path.
+    """
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetWebsocketAdapter(sdk_client)
+    return StreamOrderBook(adapter)

@@ -134,6 +134,7 @@ def test_get_security_info_is_public_application_export() -> None:
         "GetUserInfo",
         "ListSecuritySessions",
         "SearchInstruments",
+        "StreamOrderBook",
         "StreamQuotes",
     ]
     assert application.GetSecurityInfo is GetSecurityInfo

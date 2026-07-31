@@ -42,9 +42,10 @@ from kase_pilot.app import (
     create_get_user_info,
     create_list_security_sessions,
     create_search_instruments,
+    create_stream_order_book,
     create_stream_quotes,
 )
-from kase_pilot.application import StreamQuotes
+from kase_pilot.application import StreamOrderBook, StreamQuotes
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
@@ -91,7 +92,8 @@ _USAGE = (
     "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]\n"
-    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]"
+    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
+    "  kase-pilot stream-orderbook SYMBOL"
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
@@ -917,6 +919,24 @@ def _run_stream_quotes(
     return 0
 
 
+async def _stream_order_book(use_case: StreamOrderBook, symbol: str) -> None:
+    async for update in use_case.execute(symbol):
+        print(json.dumps(update, indent=2, ensure_ascii=False))
+
+
+def _run_stream_order_book(
+    public_key: str,
+    private_key: str,
+    symbol: str,
+) -> int:
+    use_case = create_stream_order_book(public_key, private_key)
+    try:
+        asyncio.run(_stream_order_book(use_case, symbol))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def run(
     command: str,
     ticker: str | None = None,
@@ -988,6 +1008,7 @@ def run(
         "trades",
         "candles",
         "stream-quotes",
+        "stream-orderbook",
     }:
         raise ValueError(f"Unknown command: {command}")
     if command == "trades" and (ticker is not None or start is None or end is None):
@@ -1282,6 +1303,8 @@ def run(
     if command == "stream-quotes":
         assert symbols is not None
         return _run_stream_quotes(public_key, private_key, symbols)
+    if command == "stream-orderbook":
+        return _run_stream_order_book(public_key, private_key, ticker)
     raise ValueError(f"Unknown command: {command}")
 
 
@@ -1356,6 +1379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "symbol",
             "candles",
             "instrument",
+            "stream-orderbook",
         }
     ):
         pass

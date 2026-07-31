@@ -38,6 +38,7 @@ from kase_pilot.application import (
     GetUserInfo,
     ListSecuritySessions,
     SearchInstruments,
+    StreamOrderBook,
     StreamQuotes,
 )
 from kase_pilot.broker import AccountService, MarketService
@@ -325,6 +326,31 @@ def test_create_stream_quotes_builds_graph_without_sdk_call(
     use_case = app.create_stream_quotes("public-value", "private-value")
 
     assert isinstance(use_case, StreamQuotes)
+    adapter = use_case._adapter
+    assert isinstance(adapter, TradernetWebsocketAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_stream_order_book_builds_graph_without_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class NetworkGuardSdkClient:
+        pass
+
+    sdk_client = NetworkGuardSdkClient()
+
+    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
+        calls.append((public_key, private_key))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_stream_order_book("public-value", "private-value")
+
+    assert isinstance(use_case, StreamOrderBook)
     adapter = use_case._adapter
     assert isinstance(adapter, TradernetWebsocketAdapter)
     assert adapter._client is sdk_client
