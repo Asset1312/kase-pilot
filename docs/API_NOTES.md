@@ -1668,3 +1668,59 @@ remains open is entirely downstream of this: persistence/storage design
 (explicitly deferred, per the architecture discussion preceding this
 implementation) and coverage of the remaining "core" streams (order book,
 trades, news) not yet implemented in this project.
+
+---
+
+### 2026-07-31 (continued) — `kase-pilot stream-orderbook` Live End-to-End Confirmation
+
+**Date:** 2026-07-31
+**Source:** Project owner ran `kase-pilot stream-orderbook HSBK.KZ`
+against a real account and supplied the output directly.
+
+#### F-28 — Live order-book stream confirmed for a real KASE instrument | Confirmed observed
+
+Two messages received for `HSBK.KZ`:
+
+```json
+{
+  "n": 0, "i": "HSBK.KZ", "min_step": null, "step_price": null,
+  "del": [],
+  "ins": [
+    {"p": 383.96, "s": "S", "q": 249, "k": 0},
+    {"p": 383.8, "s": "B", "q": 21, "k": 1}
+  ],
+  "upd": [], "cnt": 2, "x": 1
+}
+{
+  "n": 1, "i": "HSBK.KZ",
+  "del": [{"p": 383.8, "k": 1}, {"p": 383.96, "k": 0}],
+  "ins": [
+    {"p": 383.98, "s": "S", "q": 974, "k": 0},
+    {"p": 383.97, "s": "B", "q": 94, "k": 1}
+  ],
+  "upd": [], "cnt": 2, "x": 1
+}
+```
+
+**Message shape (recorded as observed, field meanings inferred from
+context only, not officially confirmed):** `n` — sequence number
+(increments per message); `i` — ticker; `min_step`/`step_price` — present
+only on the first message, `null`, absent afterward; `del`/`ins`/`upd` —
+arrays of order-book level changes; each level has `p` (price), `s` (side,
+`"B"`/`"S"`), `q` (quantity), `k` (an index/key used to correlate `ins`
+and later `del` entries — the second message deletes exactly the two `k`
+values inserted by the first); `cnt` — count (meaning of what, not
+confirmed); `x` — unexplained integer flag.
+
+**This confirms the order book stream is an incremental diff feed, not a
+full-snapshot feed** — same pattern already seen for `quotes` (F-27:
+partial updates), but here explicit: the protocol has dedicated
+insert/delete/update arrays rather than sparse full-record fields. **Any
+future consumer must maintain order-book state per ticker by applying
+`del`/`ins`/`upd` to prior state, keyed by `k`** — a single message is not
+a usable order book on its own after the first one.
+
+**Readiness impact:** WebSocket order-book streaming for KASE is now
+confirmed end-to-end through this project's own implementation
+(`TradernetWebsocketAdapter.market_depth` → `StreamOrderBook` →
+`kase-pilot stream-orderbook`), mirroring F-27's confirmation for quotes.
