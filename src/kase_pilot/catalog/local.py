@@ -53,6 +53,37 @@ class LocalInstrumentCatalog:
     def __init__(self) -> None:
         self._instruments = _load_instruments()
 
+        self._by_ticker = {
+            instrument["ticker"].casefold(): instrument
+            for instrument in self._instruments
+        }
+
+    def get(self, ticker: str) -> dict[str, Any] | None:
+        """Return one instrument by ticker.
+
+        Matching is case-insensitive. Returns ``None`` if the ticker is not
+        present in the catalog.
+        """
+        return self._by_ticker.get(ticker.casefold())
+
+    def find(self, query: str) -> list[dict[str, Any]]:
+        """Return catalog instruments matching a search query.
+
+        Search is case-insensitive and matches ticker, instrument name,
+        and ISIN by substring. A ``null`` field never matches.
+        """
+        query = query.casefold()
+
+        return [
+            instrument
+            for instrument in self._instruments
+            if (
+                query in instrument["ticker"].casefold()
+                or query in (instrument.get("name") or "").casefold()
+                or query in (instrument.get("isin") or "").casefold()
+            )
+        ]
+
     def get_symbols(self, exchange: str | None = None) -> dict[str, Any]:
         """Return catalog symbols, optionally filtered by exchange.
 

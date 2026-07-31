@@ -10,6 +10,9 @@ from kase_pilot.catalog import LocalInstrumentCatalog
 def _catalog_with(instruments: list[dict[str, Any]]) -> LocalInstrumentCatalog:
     catalog = LocalInstrumentCatalog()
     catalog._instruments = instruments
+    catalog._by_ticker = {
+        instrument["ticker"].casefold(): instrument for instrument in instruments
+    }
     return catalog
 
 
@@ -34,6 +37,75 @@ def test_bundled_seed_entries_have_required_fields() -> None:
     for instrument in catalog._instruments:
         assert isinstance(instrument["ticker"], str) and instrument["ticker"]
         assert isinstance(instrument["exchange"], str) and instrument["exchange"]
+
+
+def test_get_returns_instrument_by_exact_ticker() -> None:
+    entry = {"ticker": "HSBK.KZ", "exchange": "KASE"}
+    catalog = _catalog_with([entry])
+
+    assert catalog.get("HSBK.KZ") is entry
+
+
+def test_get_ticker_lookup_is_case_insensitive() -> None:
+    entry = {"ticker": "HSBK.KZ", "exchange": "KASE"}
+    catalog = _catalog_with([entry])
+
+    assert catalog.get("hsbk.kz") is entry
+    assert catalog.get("Hsbk.Kz") is entry
+
+
+def test_get_unknown_ticker_returns_none() -> None:
+    catalog = _catalog_with([{"ticker": "HSBK.KZ", "exchange": "KASE"}])
+
+    assert catalog.get("AAPL.US") is None
+
+
+def test_find_matches_ticker_substring_case_insensitively() -> None:
+    entry = {"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"}
+    catalog = _catalog_with([entry])
+
+    assert catalog.find("hsbk") == [entry]
+    assert catalog.find("HSBK") == [entry]
+
+
+def test_find_matches_name_substring_case_insensitively() -> None:
+    entry = {"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"}
+    catalog = _catalog_with([entry])
+
+    assert catalog.find("halyk") == [entry]
+
+
+def test_find_matches_isin_substring() -> None:
+    entry = {
+        "ticker": "HSBK.KZ",
+        "exchange": "KASE",
+        "name": "Halyk Bank",
+        "isin": "KZ1C00003546",
+    }
+    catalog = _catalog_with([entry])
+
+    assert catalog.find("kz1c00003546") == [entry]
+
+
+def test_find_does_not_raise_when_name_or_isin_is_null() -> None:
+    entry = {
+        "ticker": "AAPL.US",
+        "exchange": "usa",
+        "name": None,
+        "isin": None,
+    }
+    catalog = _catalog_with([entry])
+
+    assert catalog.find("aapl") == [entry]
+    assert catalog.find("nonexistent") == []
+
+
+def test_find_no_match_returns_empty_list() -> None:
+    catalog = _catalog_with(
+        [{"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"}]
+    )
+
+    assert catalog.find("nonexistent") == []
 
 
 def test_get_symbols_without_exchange_returns_all_entries() -> None:
