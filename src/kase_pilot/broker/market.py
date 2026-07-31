@@ -49,7 +49,13 @@ class MarketService:
         self,
         exchange: str | None = None,
     ) -> dict[str, Any]:
-        """Return raw broker symbol lists."""
+        """Deprecated: delegates to a Tradernet endpoint confirmed unavailable.
+
+        The ``symbols``/``instruments`` CLI commands no longer use this
+        method; they are served by ``kase_pilot.catalog.LocalInstrumentCatalog``
+        instead. Kept only for backward compatibility of the internal
+        adapter boundary. Raises ``ApiRequestError`` via the adapter.
+        """
         return self._adapter.get_symbols(exchange)
 
     def get_all(
@@ -57,7 +63,13 @@ class MarketService:
         market: str,
         show_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return raw broker instruments for one market."""
+        """Deprecated: delegates to a Tradernet endpoint confirmed unavailable.
+
+        The ``symbols``/``instruments`` CLI commands no longer use this
+        method; they are served by ``kase_pilot.catalog.LocalInstrumentCatalog``
+        instead. Kept only for backward compatibility of the internal
+        adapter boundary. Raises ``ApiRequestError`` via the adapter.
+        """
         return self._adapter.get_all(market, show_expired)
 
     def get_symbol(

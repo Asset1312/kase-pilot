@@ -84,33 +84,52 @@ class TradernetSdkAdapter:
         self,
         exchange: str | None = None,
     ) -> dict[str, Any]:
-        """Return symbol lists without transforming the SDK response."""
-        try:
-            if exchange is None:
-                response: Any = self._client.symbols()
-            else:
-                response = self._client.symbols(exchange)
-        except Exception as exc:
-            raise ApiRequestError("Tradernet SDK request failed") from exc
+        """Deprecated: the underlying Tradernet endpoint is confirmed broken.
 
-        return cast(dict[str, Any], _require_mapping(response, "symbols"))
+        ``client.symbols()`` calls ``authorized_request("getReadyList")``,
+        which returns HTTP 404 with no known replacement (see
+        ``docs/API_NOTES.md``). Symbol data is now served exclusively by
+        ``kase_pilot.catalog.LocalInstrumentCatalog``. This method is kept,
+        without calling the SDK, only so any stray caller fails loudly
+        instead of silently hitting a dead endpoint.
+
+        Raises
+        ------
+        ApiRequestError
+            Always.
+        """
+        raise ApiRequestError(
+            "TradernetSdkAdapter.get_symbols is deprecated: the underlying "
+            "Tradernet endpoint (getReadyList) is confirmed unavailable "
+            "(HTTP 404) with no known replacement. Use "
+            "kase_pilot.catalog.LocalInstrumentCatalog instead."
+        )
 
     def get_all(
         self,
         market: str,
         show_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return instruments for one market without transforming the response."""
-        filters = {"mkt_short_code": market}
-        try:
-            response: Any = self._client.get_all(
-                filters,
-                show_expired=show_expired,
-            )
-        except Exception as exc:
-            raise ApiRequestError("Tradernet SDK request failed") from exc
+        """Deprecated: the underlying Tradernet endpoint is confirmed broken.
 
-        return cast(list[dict[str, Any]], _require_list(response, "instruments"))
+        ``client.get_all()`` fetches ``/refbooks/<date>/<market>.json.zip``,
+        which returns HTTP 404 with no known replacement (see
+        ``docs/API_NOTES.md``). Instrument data is now served exclusively by
+        ``kase_pilot.catalog.LocalInstrumentCatalog``. This method is kept,
+        without calling the SDK, only so any stray caller fails loudly
+        instead of silently hitting a dead endpoint.
+
+        Raises
+        ------
+        ApiRequestError
+            Always.
+        """
+        raise ApiRequestError(
+            "TradernetSdkAdapter.get_all is deprecated: the underlying "
+            "Tradernet refbooks endpoint is confirmed unavailable (HTTP 404) "
+            "with no known replacement. Use "
+            "kase_pilot.catalog.LocalInstrumentCatalog instead."
+        )
 
     def get_symbol(
         self,

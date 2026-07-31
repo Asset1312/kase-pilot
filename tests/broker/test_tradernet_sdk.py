@@ -394,89 +394,30 @@ def test_find_symbol_rejects_non_mapping_response(response: object) -> None:
         adapter.find_symbol("Apple")
 
 
-def test_get_symbols_omits_exchange_and_preserves_response_identity() -> None:
-    response = {"result": {"symbols": [{"ticker": "HSBK.KZ"}]}}
-    sdk_client = FakeSdkClient(response)
+@pytest.mark.parametrize("exchange", [None, " KASE "])
+def test_get_symbols_is_deprecated_and_never_calls_sdk(
+    exchange: str | None,
+) -> None:
+    sdk_client = FakeSdkClient({"result": {"symbols": []}})
     adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
 
-    result = adapter.get_symbols()
+    with pytest.raises(ApiRequestError, match="deprecated"):
+        adapter.get_symbols(exchange)
 
-    assert sdk_client.symbols_calls == [()]
-    assert result is response
-
-
-def test_get_symbols_forwards_explicit_exchange_unchanged() -> None:
-    exchange = " KASE "
-    sdk_client = FakeSdkClient({})
-    adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
-
-    adapter.get_symbols(exchange)
-
-    assert sdk_client.symbols_calls == [(exchange,)]
-    assert sdk_client.symbols_calls[0][0] is exchange
-
-
-@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
-def test_get_symbols_rejects_non_mapping_response(response: object) -> None:
-    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
-
-    with pytest.raises(ValidationError, match="non-mapping symbols response"):
-        adapter.get_symbols()
+    assert sdk_client.symbols_calls == []
 
 
 @pytest.mark.parametrize("show_expired", [False, True])
-def test_get_all_creates_fresh_market_filter_and_forwards_expiry(
+def test_get_all_is_deprecated_and_never_calls_sdk(
     show_expired: bool,
 ) -> None:
-    market = " KASE "
     sdk_client = FakeSdkClient([])
     adapter = TradernetSdkAdapter(sdk_client)  # type: ignore[arg-type]
 
-    adapter.get_all(market, show_expired)
-    adapter.get_all(market, show_expired)
+    with pytest.raises(ApiRequestError, match="deprecated"):
+        adapter.get_all(" KASE ", show_expired)
 
-    first_filters, first_expiry = sdk_client.get_all_calls[0]
-    second_filters, second_expiry = sdk_client.get_all_calls[1]
-    assert first_filters == {"mkt_short_code": market}
-    assert second_filters == {"mkt_short_code": market}
-    assert first_filters is not second_filters
-    assert "istrade" not in first_filters  # type: ignore[operator]
-    assert (first_expiry, second_expiry) == (show_expired, show_expired)
-
-
-def test_get_all_preserves_exact_list_identity() -> None:
-    response = [{"ticker": "HSBK.KZ"}]
-    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
-
-    assert adapter.get_all("KASE") is response
-
-
-@pytest.mark.parametrize("response", [None, {}, (), "not a list", 42])
-def test_get_all_rejects_non_list_response(response: object) -> None:
-    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
-
-    with pytest.raises(ValidationError, match="non-list instruments response"):
-        adapter.get_all("KASE")
-
-
-def test_get_all_sdk_exception_becomes_api_request_error_with_cause() -> None:
-    original = RuntimeError("SDK failure")
-
-    class FailingSdkClient:
-        def get_all(
-            self,
-            filters: object,
-            *,
-            show_expired: object = False,
-        ) -> Any:
-            raise original
-
-    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
-
-    with pytest.raises(ApiRequestError) as exc_info:
-        adapter.get_all("KASE")
-
-    assert exc_info.value.__cause__ is original
+    assert sdk_client.get_all_calls == []
 
 
 def test_get_symbol_omits_lang_and_preserves_response_identity() -> None:
