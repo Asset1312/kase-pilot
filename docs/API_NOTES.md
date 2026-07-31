@@ -1724,3 +1724,213 @@ a usable order book on its own after the first one.
 confirmed end-to-end through this project's own implementation
 (`TradernetWebsocketAdapter.market_depth` → `StreamOrderBook` →
 `kase-pilot stream-orderbook`), mirroring F-27's confirmation for quotes.
+
+---
+
+### 2026-07-31 (continued) — `getHloc` Returns HTTP 403 for This Account (Both Candles and Trades)
+
+**Date:** 2026-07-31
+**Source:** Project owner ran `kase-pilot ticks HSBK.KZ` and, as a
+diagnostic, `kase-pilot candles HSBK.KZ` against a real account, and
+supplied both tracebacks directly.
+
+#### F-29 — `getHloc` forbidden (HTTP 403) regardless of `timeframe` | Confirmed observed
+
+Both requests reached the server (request was correctly authenticated —
+otherwise the broker would return its own JSON error envelope, not an
+HTTP-level failure) and were rejected with:
+
+```
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url:
+https://freedom24.com/api/getHloc
+```
+
+This happened for:
+- `kase-pilot ticks HSBK.KZ` (`timeframe: -1`, the trades variant added
+  this session per the `get-trades` manual page)
+- `kase-pilot candles HSBK.KZ` (default `timeframe`, the aggregated-candle
+  variant that has existed in this project since earlier sessions)
+
+**This rules out the new trades-specific code as the cause.** Both
+variants of the same `getHloc` command fail identically, which means
+`kase-pilot candles` was **never actually live-tested end-to-end in this
+project before now** — its implementation was based on the SDK's
+documented contract and confirmed only via source reading (the original
+"historical candles" research task), never a real call with real
+credentials. This 403 is the first live signal that `getHloc` may not be
+usable at all for this account/key pair as currently authenticated,
+independent of the `timeframe` value.
+
+**Not yet known — do not guess:**
+- Whether this is an account/API-key permission restriction (e.g.
+  historical market data requires a paid tier or explicit enablement) —
+  **currently the leading hypothesis**, argued below.
+- Whether the "Для API V2" note on the `get-trades` manual page (POST,
+  API V2) matters here — though since plain `candles` (no special API
+  version implied) fails identically, this looks less likely to be the
+  root cause than an account-level restriction.
+
+**Security session requirement considered and de-prioritized (2026-07-31,
+project owner + this project):** an elevated security session on top of
+key-pair auth (§9) was considered and is judged unlikely to be the cause.
+Reasoning: several other operations already work live, over the same
+key-pair auth, with no security session involved — `getSecurityInfo`
+(F-17), and `markets()`/`quotes()`/`market_depth()` over WebSocket
+(F-25–F-28). Historical price/trade data (`getHloc`) is not obviously more
+sensitive than those already-working operations (e.g. live personal
+quotes), so it would be an unusual asymmetry for `getHloc` specifically to
+require a security session while those do not. This is reasoning, not a
+confirmed fact — it has not been disproven by directly testing
+`getHloc` with an opened security session, only judged less likely than
+the account/API-key permission-tier explanation.
+
+**This is not a code defect in this project.** `TradernetSdkAdapter.get_trades`
+and `get_candles` both correctly reach the broker and correctly surface the
+broker's rejection as `ApiRequestError` (the CLI's generic "Broker/API
+operation failed." message, per existing exception-mapping design) — that
+part of the implementation is working exactly as intended. What's missing
+is broker-side access to `getHloc`, which is outside this project's
+control until diagnosed further (e.g. checking API-key permissions in the
+Tradernet member area, or confirming whether a security session is
+required).
+
+---
+
+### 2026-07-31 (continued) — Official Manual Pages for the Current News API (API V3)
+
+**Date:** 2026-07-31
+**Source:** Official manual pages supplied directly by the project owner.
+
+#### F-30 — `tradernet-sdk`'s `get_news` uses a superseded contract; the current API is three separate API V3 commands | Confirmed as officially documented
+
+The SDK's `Tradernet.get_news(query, symbol, story_id, limit)` sends
+`cmd: getNews` with `{searchFor, ticker, storyId, limit}` — this is very
+likely the reason `news` was blocked in this project's CLI as unsupported
+(see CHANGELOG.md's "Известные ограничения" entry, which recorded the
+failure but not its cause). The officially documented current news API is
+**three separate commands**, none of which match the SDK's shape:
+
+1. **`getNewsProvidersList`** — `POST https://tradernet.com/api/getNewsProvidersList`,
+   body `{"lang": "en"}` (or `null`/omitted for current app language).
+   Returns `{"list": [{"alias", "name", "newsLanguage"}, ...]}`. Known
+   provider aliases: `fbrokerkz`, `Oninvest`, `OninvestCompanyNews`.
+2. **`getNewsList`** — `POST https://tradernet.com/api/getNewsList`, body
+   `{"ticker", "provider", "lang", "take", "skip"}` (all optional except
+   `take`/`skip`; `take` range 1–100). Returns
+   `{"list": [NewsItem...], "total", "take", "skip"}`, where `NewsItem`
+   has `id`, `title`, `provider`, `providerAlias`, `lang`, `date`, `url`,
+   `sentiment` (`negative`/`positive`/`neutral`/`null`; `mixed` is
+   normalized to `neutral` server-side), `tickers` (array), `images`
+   (array of URLs).
+3. **`getNewsDetail`** — `POST https://tradernet.com/api/getNewsDetail`,
+   body `{"id": <int>}`. Returns a single `NewsItem`-shaped object plus
+   `text` (formatted HTML) and `timeZone`.
+
+All three follow the same per-command-URL, JSON-body POST shape already
+confirmed for the live REST contract (F-17/F-24) — labelled "API V3" on
+these pages, consistent with `Core.authorized_request`'s default
+`version=3`. None of the three are implemented by the SDK — they must be
+called via the generic `authorized_request(cmd, params)`, same pattern
+already used for `getAllSecurities` (F-24) and `getTrades`/`getHloc`
+(this session).
+
+**Error shape differs from the previously-documented common envelope:**
+these three commands return `{"error": "...", "code": <int>}` — e.g.
+`{"error": "Validation failed", "code": 400}` or
+`{"error": "Новость не найдена", "code": 404}` — using an `error` key,
+not the `errMsg` key seen in older documentation (§17, F-08). Whether
+`code` here maps to HTTP status directly (400, 404) or is a
+broker-specific application code that happens to reuse HTTP-like numbers
+is not confirmed.
+
+**Not yet live-tested.** Per this project's own rule, these should be
+called live with real credentials before being relied upon, the same way
+`getSecurityInfo` was in F-17.
+
+---
+
+### 2026-07-31 (continued) — All Three News Commands Also Return HTTP 403
+
+**Date:** 2026-07-31
+**Source:** Project owner ran `kase-pilot news-providers`, `news-list`,
+and `news-detail` against a real account and supplied all three
+tracebacks directly.
+
+#### F-31 — `getNewsProvidersList`, `getNewsList`, `getNewsDetail` all return HTTP 403, same pattern as `getHloc` (F-29) | Confirmed observed
+
+All three commands failed identically to F-29's `getHloc` finding:
+
+```
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url:
+https://freedom24.com/api/getNewsProvidersList
+https://freedom24.com/api/getNewsList
+https://freedom24.com/api/getNewsDetail
+```
+
+**This rules out an implementation or protocol issue conclusively.**
+Source inspection confirms `Tradernet.security_info()` (F-17, confirmed
+**working**) and the generic `authorized_request()` used by
+`get_trades`/`get_news_providers`/`list_news`/`get_news_detail` (all
+**failing** with 403) go through the exact same code path — same
+signing, same header scheme, same default `version=3`. The only variable
+between the working and failing calls is the `cmd` value itself.
+
+**This is now a clear pattern, not an isolated failure:** of the REST
+commands exercised so far, `getSecurityInfo` succeeds; `getHloc`,
+`getNewsProvidersList`, `getNewsList`, `getNewsDetail` all fail with 403.
+Meanwhile every WebSocket stream tried (`markets`, `quotes`,
+`market_depth`) succeeds. This strengthens the account/API-key
+permission-tier hypothesis from F-29 (over the security-session
+hypothesis, already de-prioritized there) — it now looks like this
+specific API key has access to basic instrument/market data (REST
+`getSecurityInfo`, all tried WebSocket streams) but not to a broader set
+of REST commands (historical data, news), which is consistent with a
+tiered/gated API-key permission model rather than a single all-or-nothing
+switch.
+
+**No further code investigation is productive here.** The next step is
+account-side: checking API-key permissions/scopes in the Tradernet member
+area, or contacting their support, to find out which commands this key is
+actually entitled to call. This project's implementations of `get_trades`,
+`get_news_providers`, `list_news`, and `get_news_detail` are considered
+correct and complete pending that account-side resolution — no code
+change is expected to fix this.
+
+---
+
+### 2026-07-31 (continued) — Security Session Opened; `getHloc` Still Returns 403
+
+**Date:** 2026-07-31
+**Source:** Project owner opened a security session on the account (exact
+method not specified — presumably via the broker's own UI, not this
+project's code, since `SecuritySession`/`security.py` remains an
+unimplemented skeleton) and re-ran `kase-pilot candles HSBK.KZ`.
+
+#### F-32 — Security session does not resolve the `getHloc` 403 | Confirmed observed, hypothesis disproven
+
+Same failure as F-29, after a security session was opened:
+
+```
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url:
+https://freedom24.com/api/getHloc
+```
+
+**This empirically disproves the security-session hypothesis** that was
+already de-prioritized by reasoning in F-29 — now it is disproven by a
+direct test, not just judged unlikely. Opening a security session had no
+effect on this 403.
+
+**This leaves the account/API-key permission-tier hypothesis as the only
+remaining explanation** consistent with all evidence so far (F-29, F-31,
+F-32): `getSecurityInfo` and all tried WebSocket streams work regardless
+of session state; `getHloc` and all three news commands fail regardless
+of session state. The distinguishing factor is which command is being
+called, not the authentication/session state — strongly suggesting a
+per-command permission scope tied to the API key itself (e.g. a paid-tier
+gate on historical/news data), not anything this project's code or the
+account's session state can influence.
+
+**Next step remains account-side, unchanged from F-29/F-31:** check
+API-key permissions/scopes or tariff in the Tradernet member area, or
+contact their support, to confirm which commands this key is entitled to
+call.
