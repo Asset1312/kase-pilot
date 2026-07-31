@@ -33,9 +33,12 @@ from kase_pilot.application import (
     GetUserData,
     GetUserInfo,
     ListSecuritySessions,
+    SearchInstruments,
+    StreamQuotes,
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+from kase_pilot.broker._tradernet_ws import TradernetWebsocketAdapter
 from kase_pilot.catalog import LocalInstrumentCatalog
 
 
@@ -167,6 +170,16 @@ def create_get_instrument() -> GetInstrument:
     """
     catalog = LocalInstrumentCatalog()
     return GetInstrument(catalog)
+
+
+def create_search_instruments() -> SearchInstruments:
+    """Build the object graph for the instrument-search use case.
+
+    Served entirely from KASE Pilot's local instrument catalog; no broker
+    credentials or network access are involved (see ``kase_pilot.catalog``).
+    """
+    catalog = LocalInstrumentCatalog()
+    return SearchInstruments(catalog)
 
 
 def create_get_most_traded(
@@ -342,3 +355,17 @@ def create_get_user_data(
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
     return GetUserData(market_service)
+
+
+def create_stream_quotes(
+    public_key: str,
+    private_key: str,
+) -> StreamQuotes:
+    """Build the object graph for the quote-streaming use case.
+
+    Uses the WebSocket transport confirmed in docs/API_NOTES.md
+    (F-23/F-25/F-26), kept separate from the REST ``MarketService`` path.
+    """
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetWebsocketAdapter(sdk_client)
+    return StreamQuotes(adapter)

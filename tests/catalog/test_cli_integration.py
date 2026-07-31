@@ -127,3 +127,46 @@ def test_instrument_lookup_missing_ticker_reports_not_found(
 
 def test_instrument_lookup_requires_no_broker_credentials() -> None:
     assert main_module.run("instrument", "HSBK.KZ", environ={}) == 0
+
+
+def test_instruments_search_by_name_returns_halyk_bank(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instruments", search="Halyk", environ={})
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "HSBK.KZ" in out
+    assert "Halyk Bank" in out
+
+
+def test_instruments_search_is_case_insensitive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instruments", search="halyk bank", environ={})
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "HSBK.KZ" in out
+
+
+def test_instruments_search_no_matches_reports_not_found(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.run("instruments", search="nonexistent", environ={})
+
+    assert exit_code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "nonexistent" in captured.err
+
+
+def test_instruments_search_requires_no_broker_credentials() -> None:
+    assert main_module.run("instruments", search="Halyk", environ={}) == 0
+
+
+def test_instruments_market_and_search_together_is_rejected() -> None:
+    with pytest.raises(
+        ValueError, match="requires exactly one of --market or --search"
+    ):
+        main_module.run("instruments", market="KASE_STOCK", search="Halyk")

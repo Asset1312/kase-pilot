@@ -1,5 +1,6 @@
 """Application entry point."""
 
+import asyncio
 import json
 import math
 import os
@@ -40,7 +41,10 @@ from kase_pilot.app import (
     create_get_user_data,
     create_get_user_info,
     create_list_security_sessions,
+    create_search_instruments,
+    create_stream_quotes,
 )
+from kase_pilot.application import StreamQuotes
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
@@ -62,6 +66,7 @@ _USAGE = (
     "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
     "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
     "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
+    "  kase-pilot instruments --search QUERY\n"
     "  kase-pilot instrument TICKER\n"
     "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
     "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
@@ -85,7 +90,8 @@ _USAGE = (
     "  kase-pilot trades --from YYYY-MM-DD --to YYYY-MM-DD "
     "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
-    "[--timeframe SECONDS]"
+    "[--timeframe SECONDS]\n"
+    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]"
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
@@ -95,6 +101,9 @@ _NEWS_UNSUPPORTED_MESSAGE = (
     "The news command is unsupported because tradernet-sdk 2.2.0 cannot execute it."
 )
 _INSTRUMENT_NOT_FOUND_TEMPLATE = "Instrument not found in the local catalog: {ticker}"
+_NO_INSTRUMENTS_FOUND_TEMPLATE = (
+    "No instruments found in the local catalog for query: {query}"
+)
 
 
 def _valid_number(value: object) -> Decimal | None:
@@ -567,11 +576,33 @@ def _run_symbols(
     return 0
 
 
+def _print_instrument_table(instruments: list[Mapping[object, object]]) -> None:
+    header = f"{'Ticker':<14} {'Exchange':<10} {'Name'}"
+    print(header)
+    print("-" * len(header))
+    for instrument in instruments:
+        ticker = _format_text(instrument.get("ticker"))
+        exchange = _format_text(instrument.get("exchange"))
+        name = _format_text(instrument.get("name"))
+        print(f"{ticker:<14} {exchange:<10} {name}")
+
+
 def _run_instruments(
     *,
-    market: str,
+    market: str | None,
+    search: str | None,
     show_expired: bool,
 ) -> int:
+    if search is not None:
+        search_use_case = create_search_instruments()
+        results = search_use_case.execute(search)
+        if not results:
+            print(_NO_INSTRUMENTS_FOUND_TEMPLATE.format(query=search), file=sys.stderr)
+            return 3
+        _print_instrument_table(results)
+        return 0
+
+    assert market is not None
     use_case = create_get_instruments()
     result = use_case.execute(market, show_expired=show_expired)
     print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -868,6 +899,24 @@ def _run_candles(
     return 0
 
 
+async def _stream_quotes(use_case: StreamQuotes, symbols: Sequence[str]) -> None:
+    async for quote in use_case.execute(symbols):
+        print(json.dumps(quote, indent=2, ensure_ascii=False))
+
+
+def _run_stream_quotes(
+    public_key: str,
+    private_key: str,
+    symbols: Sequence[str],
+) -> int:
+    use_case = create_stream_quotes(public_key, private_key)
+    try:
+        asyncio.run(_stream_quotes(use_case, symbols))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def run(
     command: str,
     ticker: str | None = None,
@@ -882,6 +931,7 @@ def run(
     story_id: str | None = None,
     lang: str | None = None,
     market: str | None = None,
+    search: str | None = None,
     mode: str | None = None,
     instrument_type: str = "stocks",
     exchange: str | None = None,
@@ -937,6 +987,7 @@ def run(
         "orders",
         "trades",
         "candles",
+        "stream-quotes",
     }:
         raise ValueError(f"Unknown command: {command}")
     if command == "trades" and (ticker is not None or start is None or end is None):
@@ -1008,6 +1059,7 @@ def run(
             "user-data",
             "check-missing-fields",
             "profile-fields",
+            "stream-quotes",
         }
         and ticker is not None
     ):
@@ -1037,16 +1089,21 @@ def run(
             "user-data",
             "check-missing-fields",
             "profile-fields",
+            "stream-quotes",
         }
         and ticker is None
     ):
         raise ValueError(f"The {command} command requires an argument")
     if command == "export-securities" and not symbols:
         raise ValueError("The export-securities command requires symbols")
+    if command == "stream-quotes" and not symbols:
+        raise ValueError("The stream-quotes command requires symbols")
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
-    if command == "instruments" and market is None:
-        raise ValueError("The instruments command requires a market")
+    if command == "instruments" and (market is None) == (search is None):
+        raise ValueError(
+            "The instruments command requires exactly one of --market or --search"
+        )
     if command == "order-files" and order_id is None and internal_id is None:
         raise ValueError("The order-files command requires an identifier")
     if command == "check-missing-fields" and (step is None or office is None):
@@ -1055,9 +1112,9 @@ def run(
     if command == "symbols":
         return _run_symbols(exchange=exchange)
     if command == "instruments":
-        assert market is not None
         return _run_instruments(
             market=market,
+            search=search,
             show_expired=show_expired,
         )
     if command == "instrument":
@@ -1222,6 +1279,9 @@ def run(
             end=end,
             timeframe=timeframe,
         )
+    if command == "stream-quotes":
+        assert symbols is not None
+        return _run_stream_quotes(public_key, private_key, symbols)
     raise ValueError(f"Unknown command: {command}")
 
 
@@ -1245,9 +1305,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     exchange = "usa"
     symbols_exchange = None
     instruments_market = None
+    instruments_search = None
     options_exchange = None
     export_symbols: list[str] = []
     export_fields: list[str] | None = None
+    stream_quotes_symbols: list[str] = []
     gainers = True
     reception = 35
     profile_reception = None
@@ -1464,6 +1526,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_USAGE, file=sys.stderr)
                 return 2
             export_fields = values
+    elif arguments and arguments[0] == "stream-quotes":
+        stream_quotes_symbols = list(arguments[1:])
+        if not stream_quotes_symbols or any(
+            symbol.startswith("--") for symbol in stream_quotes_symbols
+        ):
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "portfolio":
         seen_flags: set[str] = set()
         index = 1
@@ -1573,7 +1642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             symbols_exchange = arguments[index + 1]
             index += 2
     elif arguments and arguments[0] == "instruments":
-        instruments_flags = {"--market", "--show-expired", "--json"}
+        instruments_flags = {"--market", "--search", "--show-expired", "--json"}
         seen_flags: set[str] = set()
         index = 1
         while index < len(arguments):
@@ -1594,13 +1663,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
                 print(_USAGE, file=sys.stderr)
                 return 2
-            instruments_market = arguments[index + 1]
-            if not instruments_market.strip():
+            value = arguments[index + 1]
+            if not value.strip():
                 print(_USAGE, file=sys.stderr)
                 return 2
+            if flag == "--market":
+                instruments_market = value
+            else:
+                instruments_search = value
             index += 2
 
-        if instruments_market is None:
+        if (instruments_market is None) == (instruments_search is None):
             print(_USAGE, file=sys.stderr)
             return 2
     elif arguments and arguments[0] == "symbol":
@@ -1963,6 +2036,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 export_arguments["json_output"] = True
             return run("export-securities", **export_arguments)
+        if arguments[0] == "stream-quotes":
+            return run("stream-quotes", symbols=stream_quotes_symbols)
         if arguments[0] == "options":
             options_arguments: dict[str, object] = {"exchange": options_exchange}
             if json_output:
@@ -2018,6 +2093,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments[0] == "instruments":
             instruments_arguments: dict[str, object] = {
                 "market": instruments_market,
+                "search": instruments_search,
                 "show_expired": show_expired,
             }
             if json_output:

@@ -154,6 +154,16 @@ class FakeGetInstrument:
         return self.response
 
 
+class FakeSearchInstruments:
+    def __init__(self, response: list[dict[str, Any]] | None = None) -> None:
+        self.response = [] if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, query: object) -> list[dict[str, Any]]:
+        self.calls.append(query)
+        return self.response
+
+
 class FakeGetSymbol:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
@@ -640,6 +650,109 @@ def test_run_instruments_forwards_market_and_prints_raw_pretty_json(
         json.dumps(response, indent=2, ensure_ascii=False) + "\n",
         "",
     )
+
+
+def test_run_instruments_search_prints_human_readable_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = [
+        {"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"},
+        {"ticker": "AAPL.US", "exchange": "usa", "name": None},
+    ]
+    use_case = FakeSearchInstruments(response)
+    composition_calls: list[None] = []
+
+    def fake_create() -> FakeSearchInstruments:
+        composition_calls.append(None)
+        return use_case
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_search_instruments", fake_create)
+        exit_code = main_module.run("instruments", search="halyk", environ={})
+
+    assert exit_code == 0
+    assert composition_calls == [None]
+    assert use_case.calls == ["halyk"]
+    assert capsys.readouterr() == (
+        (
+            "Ticker         Exchange   Name\n"
+            "------------------------------\n"
+            "HSBK.KZ        KASE       Halyk Bank\n"
+            "AAPL.US        usa        -\n"
+        ),
+        "",
+    )
+
+
+def test_run_instruments_search_no_matches_reports_error_exit_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_case = FakeSearchInstruments([])
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_search_instruments", lambda: use_case)
+        exit_code = main_module.run("instruments", search="nonexistent", environ={})
+
+    assert exit_code == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "nonexistent" in captured.err
+
+
+def test_run_instruments_search_requires_no_broker_credentials() -> None:
+    use_case = FakeSearchInstruments(
+        [{"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"}]
+    )
+
+    def fail_load_settings(*args: object, **kwargs: object) -> None:
+        raise AssertionError("instruments --search must not load broker settings")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_search_instruments", lambda: use_case)
+        monkeypatch.setattr(main_module, "load_settings", fail_load_settings)
+        exit_code = main_module.run("instruments", search="halyk", environ={})
+
+    assert exit_code == 0
+
+
+def test_run_instruments_rejects_market_and_search_together() -> None:
+    with pytest.raises(
+        ValueError, match="requires exactly one of --market or --search"
+    ):
+        main_module.run("instruments", market="KASE", search="halyk")
+
+
+def test_run_instruments_rejects_neither_market_nor_search() -> None:
+    with pytest.raises(
+        ValueError, match="requires exactly one of --market or --search"
+    ):
+        main_module.run("instruments")
+
+
+def test_main_instruments_rejects_market_and_search_together(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main_module.main(
+        ["instruments", "--market", "KASE", "--search", "halyk"]
+    )
+
+    assert exit_code == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+def test_main_instruments_search_forwards_query(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_case = FakeSearchInstruments(
+        [{"ticker": "HSBK.KZ", "exchange": "KASE", "name": "Halyk Bank"}]
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(main_module, "create_search_instruments", lambda: use_case)
+        exit_code = main_module.main(["instruments", "--search", "halyk"])
+
+    assert exit_code == 0
+    assert use_case.calls == ["halyk"]
 
 
 def test_run_instrument_found_prints_human_readable_summary(
@@ -3599,19 +3712,20 @@ def test_main_routes_symbols_options(
     [
         (
             ["instruments", "--market", "KASE"],
-            {"market": "KASE", "show_expired": False},
+            {"market": "KASE", "search": None, "show_expired": False},
         ),
         (
             ["instruments", "--json", "--market", "KASE", "--show-expired"],
             {
                 "market": "KASE",
+                "search": None,
                 "show_expired": True,
                 "json_output": True,
             },
         ),
         (
             ["instruments", "--show-expired", "--market", "KASE"],
-            {"market": "KASE", "show_expired": True},
+            {"market": "KASE", "search": None, "show_expired": True},
         ),
     ],
 )
@@ -5088,7 +5202,9 @@ def test_run_instruments_requires_market_before_settings(
         lambda *args, **kwargs: calls.append("settings"),
     )
 
-    with pytest.raises(ValueError, match="requires a market"):
+    with pytest.raises(
+        ValueError, match="requires exactly one of --market or --search"
+    ):
         main_module.run("instruments")
 
     assert calls == []
@@ -5965,6 +6081,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot symbol SYMBOL [--lang LANG] [--json]\n"
         "  kase-pilot symbols [--exchange EXCHANGE] [--json]\n"
         "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
+        "  kase-pilot instruments --search QUERY\n"
         "  kase-pilot instrument TICKER\n"
         "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
         "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
@@ -5989,6 +6106,7 @@ def test_main_rejects_invalid_argument_count(
         "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
+        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
     )
 
 

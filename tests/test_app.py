@@ -37,9 +37,12 @@ from kase_pilot.application import (
     GetUserData,
     GetUserInfo,
     ListSecuritySessions,
+    SearchInstruments,
+    StreamQuotes,
 )
 from kase_pilot.broker import AccountService, MarketService
 from kase_pilot.broker._tradernet_sdk import TradernetSdkAdapter
+from kase_pilot.broker._tradernet_ws import TradernetWebsocketAdapter
 from kase_pilot.catalog import LocalInstrumentCatalog
 
 
@@ -175,6 +178,22 @@ def test_create_get_instruments_builds_local_catalog_graph_without_sdk(
     assert isinstance(use_case._catalog, LocalInstrumentCatalog)
 
 
+def test_create_search_instruments_builds_local_catalog_graph_without_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_constructed(public_key: str, private_key: str) -> None:
+        raise AssertionError(
+            "create_search_instruments must not construct a Tradernet SDK client"
+        )
+
+    monkeypatch.setattr(app, "Tradernet", fail_if_constructed)
+
+    use_case = app.create_search_instruments()
+
+    assert isinstance(use_case, SearchInstruments)
+    assert isinstance(use_case._catalog, LocalInstrumentCatalog)
+
+
 def test_create_get_tariffs_builds_graph_without_sdk_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +302,31 @@ def test_create_get_user_data_builds_graph_without_sdk_call(
     assert isinstance(market_service, MarketService)
     adapter = market_service._adapter
     assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_stream_quotes_builds_graph_without_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class NetworkGuardSdkClient:
+        pass
+
+    sdk_client = NetworkGuardSdkClient()
+
+    def create_sdk_client(public_key: str, private_key: str) -> NetworkGuardSdkClient:
+        calls.append((public_key, private_key))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_stream_quotes("public-value", "private-value")
+
+    assert isinstance(use_case, StreamQuotes)
+    adapter = use_case._adapter
+    assert isinstance(adapter, TradernetWebsocketAdapter)
     assert adapter._client is sdk_client
     assert calls == [("public-value", "private-value")]
 
