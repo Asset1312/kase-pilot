@@ -22,7 +22,8 @@ from kase_pilot.application import (
     GetInstruments,
     GetMarketStatus,
     GetMostTraded,
-    GetNews,
+    GetNewsDetail,
+    GetNewsProviders,
     GetOptions,
     GetOrderFiles,
     GetPlacedOrders,
@@ -33,9 +34,11 @@ from kase_pilot.application import (
     GetSymbol,
     GetSymbols,
     GetTariffs,
+    GetTicks,
     GetTradesHistory,
     GetUserData,
     GetUserInfo,
+    ListNews,
     ListSecuritySessions,
     SearchInstruments,
     StreamOrderBook,
@@ -654,7 +657,7 @@ def test_create_get_historical_candles_builds_expected_graph(
     assert calls == [("public-value", "private-value")]
 
 
-def test_create_get_news_builds_expected_graph(
+def test_create_get_ticks_builds_expected_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -666,9 +669,78 @@ def test_create_get_news_builds_expected_graph(
 
     monkeypatch.setattr(app, "Tradernet", create_sdk_client)
 
-    use_case = app.create_get_news("public-value", "private-value")
+    use_case = app.create_get_ticks("public-value", "private-value")
 
-    assert isinstance(use_case, GetNews)
+    assert isinstance(use_case, GetTicks)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_get_news_providers_builds_expected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    sdk_client = FakeSdkClient()
+
+    def create_sdk_client(public: str, private: str) -> FakeSdkClient:
+        calls.append((public, private))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_get_news_providers("public-value", "private-value")
+
+    assert isinstance(use_case, GetNewsProviders)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_list_news_builds_expected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    sdk_client = FakeSdkClient()
+
+    def create_sdk_client(public: str, private: str) -> FakeSdkClient:
+        calls.append((public, private))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_list_news("public-value", "private-value")
+
+    assert isinstance(use_case, ListNews)
+    market_service = use_case._market_service
+    assert isinstance(market_service, MarketService)
+    adapter = market_service._adapter
+    assert isinstance(adapter, TradernetSdkAdapter)
+    assert adapter._client is sdk_client
+    assert calls == [("public-value", "private-value")]
+
+
+def test_create_get_news_detail_builds_expected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    sdk_client = FakeSdkClient()
+
+    def create_sdk_client(public: str, private: str) -> FakeSdkClient:
+        calls.append((public, private))
+        return sdk_client
+
+    monkeypatch.setattr(app, "Tradernet", create_sdk_client)
+
+    use_case = app.create_get_news_detail("public-value", "private-value")
+
+    assert isinstance(use_case, GetNewsDetail)
     market_service = use_case._market_service
     assert isinstance(market_service, MarketService)
     adapter = market_service._adapter
@@ -855,21 +927,21 @@ def test_market_status_composition_error_propagates_unchanged(
     assert exc_info.value is original
 
 
-def test_news_composition_does_not_execute_sdk_operation(
+def test_news_providers_composition_does_not_execute_sdk_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NetworkGuardSdkClient:
-        def get_news(self, *args: object, **kwargs: object) -> Any:
+        def authorized_request(self, *args: object, **kwargs: object) -> Any:
             raise AssertionError("SDK operation must not run during composition")
 
     monkeypatch.setattr(
         app, "Tradernet", lambda public, private: NetworkGuardSdkClient()
     )
 
-    app.create_get_news("public-value", "private-value")
+    app.create_get_news_providers("public-value", "private-value")
 
 
-def test_news_composition_error_propagates_unchanged(
+def test_news_providers_composition_error_propagates_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = RuntimeError("SDK client construction failed")
@@ -880,9 +952,37 @@ def test_news_composition_error_propagates_unchanged(
     monkeypatch.setattr(app, "Tradernet", fail_sdk_client)
 
     with pytest.raises(RuntimeError) as exc_info:
-        app.create_get_news("public-value", "private-value")
+        app.create_get_news_providers("public-value", "private-value")
 
     assert exc_info.value is original
+
+
+def test_list_news_composition_does_not_execute_sdk_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkGuardSdkClient:
+        def authorized_request(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    monkeypatch.setattr(
+        app, "Tradernet", lambda public, private: NetworkGuardSdkClient()
+    )
+
+    app.create_list_news("public-value", "private-value")
+
+
+def test_get_news_detail_composition_does_not_execute_sdk_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkGuardSdkClient:
+        def authorized_request(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("SDK operation must not run during composition")
+
+    monkeypatch.setattr(
+        app, "Tradernet", lambda public, private: NetworkGuardSdkClient()
+    )
+
+    app.create_get_news_detail("public-value", "private-value")
 
 
 def test_historical_candles_composition_does_not_execute_sdk_operation(

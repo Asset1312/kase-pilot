@@ -26,7 +26,8 @@ from kase_pilot.app import (
     create_get_instruments,
     create_get_market_status,
     create_get_most_traded,
-    create_get_news,
+    create_get_news_detail,
+    create_get_news_providers,
     create_get_options,
     create_get_order_files,
     create_get_placed_orders,
@@ -37,9 +38,11 @@ from kase_pilot.app import (
     create_get_symbol,
     create_get_symbols,
     create_get_tariffs,
+    create_get_ticks,
     create_get_trades_history,
     create_get_user_data,
     create_get_user_info,
+    create_list_news,
     create_list_security_sessions,
     create_search_instruments,
     create_stream_order_book,
@@ -69,8 +72,10 @@ _USAGE = (
     "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
     "  kase-pilot instruments --search QUERY\n"
     "  kase-pilot instrument TICKER\n"
-    "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
-    "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
+    "  kase-pilot news-providers [--lang LANG]\n"
+    "  kase-pilot news-list [--ticker TICKER] [--provider PROVIDER] "
+    "[--lang LANG] [--take N] [--skip N]\n"
+    "  kase-pilot news-detail ID\n"
     "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
     "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
     "[--losers] [--json]\n"
@@ -92,6 +97,7 @@ _USAGE = (
     "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]\n"
+    "  kase-pilot ticks SYMBOL\n"
     "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
     "  kase-pilot stream-orderbook SYMBOL"
 )
@@ -99,9 +105,6 @@ _USAGE = (
 _PORTFOLIO_NAME_WIDTH = 28
 _PORTFOLIO_SORT_FIELDS = {"ticker", "value", "pnl", "last"}
 WATCH_REFRESH_SECONDS = 5
-_NEWS_UNSUPPORTED_MESSAGE = (
-    "The news command is unsupported because tradernet-sdk 2.2.0 cannot execute it."
-)
 _INSTRUMENT_NOT_FOUND_TEMPLATE = "Instrument not found in the local catalog: {ticker}"
 _NO_INSTRUMENTS_FOUND_TEMPLATE = (
     "No instruments found in the local catalog for query: {query}"
@@ -642,22 +645,47 @@ def _run_symbol(
     return 0
 
 
-def _run_news(
+def _run_news_providers(
     public_key: str,
     private_key: str,
-    query: str,
     *,
-    symbol: str | None,
-    story_id: str | None,
-    limit: int,
+    lang: str | None,
 ) -> int:
-    use_case = create_get_news(public_key, private_key)
+    use_case = create_get_news_providers(public_key, private_key)
+    result = use_case.execute(lang)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_news_list(
+    public_key: str,
+    private_key: str,
+    *,
+    ticker: str | None,
+    provider: str | None,
+    lang: str | None,
+    take: int,
+    skip: int,
+) -> int:
+    use_case = create_list_news(public_key, private_key)
     result = use_case.execute(
-        query,
-        symbol=symbol,
-        story_id=story_id,
-        limit=limit,
+        ticker,
+        provider,
+        lang,
+        take,
+        skip,
     )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_news_detail(
+    public_key: str,
+    private_key: str,
+    news_id: int,
+) -> int:
+    use_case = create_get_news_detail(public_key, private_key)
+    result = use_case.execute(news_id)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
@@ -901,6 +929,13 @@ def _run_candles(
     return 0
 
 
+def _run_ticks(public_key: str, private_key: str, symbol: str) -> int:
+    use_case = create_get_ticks(public_key, private_key)
+    result = use_case.execute(symbol)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 async def _stream_quotes(use_case: StreamQuotes, symbols: Sequence[str]) -> None:
     async for quote in use_case.execute(symbols):
         print(json.dumps(quote, indent=2, ensure_ascii=False))
@@ -948,10 +983,13 @@ def run(
     json_output: bool = False,
     sort_field: str | None = None,
     symbol: str | None = None,
-    story_id: str | None = None,
     lang: str | None = None,
     market: str | None = None,
     search: str | None = None,
+    provider: str | None = None,
+    take: int | None = None,
+    skip: int | None = None,
+    news_id: int | None = None,
     mode: str | None = None,
     instrument_type: str = "stocks",
     exchange: str | None = None,
@@ -992,7 +1030,9 @@ def run(
         "symbols",
         "instruments",
         "instrument",
-        "news",
+        "news-providers",
+        "news-list",
+        "news-detail",
         "market-status",
         "top",
         "orders-history",
@@ -1007,6 +1047,7 @@ def run(
         "orders",
         "trades",
         "candles",
+        "ticks",
         "stream-quotes",
         "stream-orderbook",
     }:
@@ -1025,7 +1066,6 @@ def run(
     if json_output and command not in {
         "portfolio",
         "trades",
-        "news",
         "market-status",
         "top",
         "orders-history",
@@ -1046,7 +1086,7 @@ def run(
         "instruments",
     }:
         raise ValueError(
-            "JSON output is supported only for portfolio, trades, news, "
+            "JSON output is supported only for portfolio, trades, "
             "market-status, top, orders-history, corporate-actions, price-alerts, "
             "requests-history, broker-report, export-securities, options, symbol, "
             "symbols, tariffs, security-sessions, order-files, user-data, and "
@@ -1081,6 +1121,9 @@ def run(
             "check-missing-fields",
             "profile-fields",
             "stream-quotes",
+            "news-providers",
+            "news-list",
+            "news-detail",
         }
         and ticker is not None
     ):
@@ -1111,12 +1154,17 @@ def run(
             "check-missing-fields",
             "profile-fields",
             "stream-quotes",
+            "news-providers",
+            "news-list",
+            "news-detail",
         }
         and ticker is None
     ):
         raise ValueError(f"The {command} command requires an argument")
     if command == "export-securities" and not symbols:
         raise ValueError("The export-securities command requires symbols")
+    if command == "news-detail" and news_id is None:
+        raise ValueError("The news-detail command requires a news id")
     if command == "stream-quotes" and not symbols:
         raise ValueError("The stream-quotes command requires symbols")
     if command == "options" and exchange is None:
@@ -1202,15 +1250,21 @@ def run(
             ticker,
             lang=lang,
         )
-    if command == "news":
-        return _run_news(
+    if command == "news-providers":
+        return _run_news_providers(public_key, private_key, lang=lang)
+    if command == "news-list":
+        return _run_news_list(
             public_key,
             private_key,
-            ticker,
-            symbol=symbol,
-            story_id=story_id,
-            limit=30 if limit is None else limit,
+            ticker=symbol,
+            provider=provider,
+            lang=lang,
+            take=20 if take is None else take,
+            skip=0 if skip is None else skip,
         )
+    if command == "news-detail":
+        assert news_id is not None
+        return _run_news_detail(public_key, private_key, news_id)
     if command == "market-status":
         return _run_market_status(
             public_key,
@@ -1300,6 +1354,8 @@ def run(
             end=end,
             timeframe=timeframe,
         )
+    if command == "ticks":
+        return _run_ticks(public_key, private_key, ticker)
     if command == "stream-quotes":
         assert symbols is not None
         return _run_stream_quotes(public_key, private_key, symbols)
@@ -1333,6 +1389,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_symbols: list[str] = []
     export_fields: list[str] | None = None
     stream_quotes_symbols: list[str] = []
+    news_provider = None
+    news_take = None
+    news_skip = None
+    news_detail_id = None
     gainers = True
     reception = 35
     profile_reception = None
@@ -1379,6 +1439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "symbol",
             "candles",
             "instrument",
+            "ticks",
             "stream-orderbook",
         }
     ):
@@ -1586,41 +1647,62 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(_USAGE, file=sys.stderr)
                     return 2
             index += 2
-    elif arguments and arguments[0] == "news":
-        news_flags = {"--symbol", "--story-id", "--limit", "--json"}
-        if len(arguments) < 2 or arguments[1].startswith("--"):
-            print(_USAGE, file=sys.stderr)
-            return 2
-
+    elif arguments and arguments[0] == "news-providers":
         seen_flags: set[str] = set()
-        index = 2
+        index = 1
         while index < len(arguments):
             flag = arguments[index]
-            if flag in seen_flags or flag not in news_flags:
+            if flag in seen_flags or flag != "--lang":
                 print(_USAGE, file=sys.stderr)
                 return 2
             seen_flags.add(flag)
-
-            if flag == "--json":
-                json_output = True
-                index += 1
-                continue
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+                print(_USAGE, file=sys.stderr)
+                return 2
+            lang = arguments[index + 1]
+            index += 2
+    elif arguments and arguments[0] == "news-list":
+        news_list_flags = {"--ticker", "--provider", "--lang", "--take", "--skip"}
+        seen_flags: set[str] = set()
+        index = 1
+        while index < len(arguments):
+            flag = arguments[index]
+            if flag in seen_flags or flag not in news_list_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
             if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
                 print(_USAGE, file=sys.stderr)
                 return 2
             value = arguments[index + 1]
-            if flag == "--symbol":
+            if flag == "--ticker":
                 symbol = value
-            elif flag == "--limit":
+            elif flag == "--provider":
+                news_provider = value
+            elif flag == "--lang":
+                lang = value
+            elif flag == "--take":
                 try:
-                    limit = int(value)
+                    news_take = int(value)
                 except ValueError:
                     print(_USAGE, file=sys.stderr)
                     return 2
-                if limit <= 0:
+            else:
+                try:
+                    news_skip = int(value)
+                except ValueError:
                     print(_USAGE, file=sys.stderr)
                     return 2
             index += 2
+    elif arguments and arguments[0] == "news-detail":
+        if len(arguments) != 2:
+            print(_USAGE, file=sys.stderr)
+            return 2
+        try:
+            news_detail_id = int(arguments[1])
+        except ValueError:
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "market-status":
         market_status_flags = {"--market", "--mode", "--json"}
         seen_flags: set[str] = set()
@@ -2096,9 +2178,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 profile_field_arguments["json_output"] = True
             return run("profile-fields", **profile_field_arguments)
-        if arguments[0] == "news":
-            print(_NEWS_UNSUPPORTED_MESSAGE, file=sys.stderr)
-            return 3
+        if arguments[0] == "news-providers":
+            return run("news-providers", lang=lang)
+        if arguments[0] == "news-list":
+            news_list_arguments: dict[str, object] = {
+                "symbol": symbol,
+                "provider": news_provider,
+                "lang": lang,
+                "take": news_take,
+                "skip": news_skip,
+            }
+            return run("news-list", **news_list_arguments)
+        if arguments[0] == "news-detail":
+            return run("news-detail", news_id=news_detail_id)
         if arguments[0] == "market-status":
             market_status_arguments: dict[str, object] = {
                 "market": market,

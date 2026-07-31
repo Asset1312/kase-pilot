@@ -391,18 +391,35 @@ kase-pilot corporate-actions --reception 35
 
 Options: `--reception DAYS`, `--json`.
 
-## Unsupported command
+### News
 
-`news` is retained for future compatibility work but is outside the stable 1.0
-CLI contract. Tradernet SDK 2.2.0 cannot currently execute the operation.
+`news-providers` lists available news providers for a language.
 
 ```console
-kase-pilot news markets --symbol HSBK.KZ --limit 10
+kase-pilot news-providers --lang en
 ```
 
-After validating the command syntax, KASE Pilot prints a concise explanation to
-stderr and exits with status `3`. It does not load credentials, compose the use
-case, contact Tradernet, or print a traceback.
+Options: `--lang LANG`.
+
+`news-list` prints a page of news, optionally filtered by ticker and/or
+provider.
+
+```console
+kase-pilot news-list --ticker AAPL.US --provider Oninvest --lang en --take 10 --skip 0
+```
+
+Options: `--ticker TICKER`, `--provider PROVIDER`, `--lang LANG`,
+`--take N` (default 20), `--skip N` (default 0).
+
+`news-detail` prints the full detail of one news item by its internal id.
+
+```console
+kase-pilot news-detail 123456
+```
+
+These three commands replaced an earlier `news` command that queried a
+different, superseded Tradernet contract and was disabled; see
+`docs/API_NOTES.md` (F-30) for the evidence trail.
 
 ## Output
 
@@ -432,9 +449,6 @@ traceback. Unexpected programming errors continue to propagate normally.
 
 ## Known limitations
 
-- `news` is explicitly unsupported by the stable 1.0 CLI contract because the
-  operation fails inside the external Tradernet SDK. Invocation is rejected
-  deterministically before credentials or SDK access.
 - `symbols` and `instruments` are served entirely from KASE Pilot's local,
   bundled instrument catalog (see `src/kase_pilot/catalog/data/README.md`)
   and do not depend on the Tradernet API or credentials. The catalog is

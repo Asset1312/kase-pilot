@@ -181,20 +181,40 @@ class FakeProfileFieldsDependency:
         return self.response
 
 
-class FakeNewsDependency:
+class FakeNewsProvidersDependency:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
-        self.calls: list[tuple[object, object, object, object]] = []
+        self.calls: list[object] = []
 
-    def get_news(
+    def get_news_providers(self, lang: object = None) -> dict[str, Any]:
+        self.calls.append(lang)
+        return self.response
+
+
+class FakeNewsListDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[tuple[object, object, object, object, object]] = []
+
+    def list_news(
         self,
-        query: object,
-        *,
-        symbol: object = None,
-        story_id: object = None,
-        limit: object = 30,
+        ticker: object = None,
+        provider: object = None,
+        lang: object = None,
+        take: object = 20,
+        skip: object = 0,
     ) -> dict[str, Any]:
-        self.calls.append((query, symbol, story_id, limit))
+        self.calls.append((ticker, provider, lang, take, skip))
+        return self.response
+
+
+class FakeNewsDetailDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def get_news_detail(self, news_id: object) -> dict[str, Any]:
+        self.calls.append(news_id)
         return self.response
 
 
@@ -294,6 +314,16 @@ class FakeBrokerReportDependency:
         period: object,
     ) -> dict[str, Any]:
         self.calls.append((start, end, period))
+        return self.response
+
+
+class FakeTradesDependency:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[object] = []
+
+    def get_trades(self, symbol: object) -> dict[str, Any]:
+        self.calls.append(symbol)
         return self.response
 
 
@@ -599,57 +629,87 @@ def test_get_profile_fields_delegates_and_preserves_response_identity() -> None:
     assert result is response
 
 
-def test_get_news_delegates_defaults_without_transforming_response() -> None:
-    query = "Казахстан"
-    response = {"result": {"items": [{"unknown": {"nested": [True, None]}}]}}
-    dependency = FakeNewsDependency(response)
+def test_get_news_providers_delegates_and_preserves_response_identity() -> None:
+    response = {"list": [{"alias": "Oninvest", "name": "Oninvest"}]}
+    dependency = FakeNewsProvidersDependency(response)
     service = MarketService(dependency)  # type: ignore[arg-type]
 
-    result = service.get_news(query)
+    result = service.get_news_providers("en")
 
-    assert dependency.calls == [(query, None, None, 30)]
-    assert dependency.calls[0][0] is query
+    assert dependency.calls == ["en"]
     assert result is response
 
 
-def test_get_news_delegates_explicit_arguments() -> None:
-    query = "ignored"
-    symbol = "AAPL.US"
-    story_id = "story-17"
-    limit = 7
-    response = {"result": {"items": []}}
-    dependency = FakeNewsDependency(response)
-    service = MarketService(dependency)  # type: ignore[arg-type]
-
-    result = service.get_news(
-        query,
-        symbol=symbol,
-        story_id=story_id,
-        limit=limit,
-    )
-
-    assert dependency.calls == [(query, symbol, story_id, limit)]
-    assert result is response
-
-
-def test_get_news_dependency_exception_propagates_unchanged() -> None:
+def test_get_news_providers_dependency_exception_propagates_unchanged() -> None:
     original = RuntimeError("dependency failed")
 
     class FailingDependency:
-        def get_news(
+        def get_news_providers(self, lang: str | None = None) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_news_providers()
+
+    assert exc_info.value is original
+
+
+def test_list_news_delegates_and_preserves_response_identity() -> None:
+    response = {"list": [], "total": 0, "take": 20, "skip": 0}
+    dependency = FakeNewsListDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.list_news("AAPL.US", "Oninvest", "en", 10, 5)
+
+    assert dependency.calls == [("AAPL.US", "Oninvest", "en", 10, 5)]
+    assert result is response
+
+
+def test_list_news_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def list_news(
             self,
-            query: str,
-            *,
-            symbol: str | None = None,
-            story_id: str | None = None,
-            limit: int = 30,
+            ticker: str | None = None,
+            provider: str | None = None,
+            lang: str | None = None,
+            take: int = 20,
+            skip: int = 0,
         ) -> dict[str, Any]:
             raise original
 
     service = MarketService(FailingDependency())  # type: ignore[arg-type]
 
     with pytest.raises(RuntimeError) as exc_info:
-        service.get_news("query")
+        service.list_news()
+
+    assert exc_info.value is original
+
+
+def test_get_news_detail_delegates_and_preserves_response_identity() -> None:
+    response = {"id": 123456, "title": "Apple reports new product updates"}
+    dependency = FakeNewsDetailDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_news_detail(123456)
+
+    assert dependency.calls == [123456]
+    assert result is response
+
+
+def test_get_news_detail_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_news_detail(self, news_id: int) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_news_detail(1)
 
     assert exc_info.value is original
 
@@ -1064,6 +1124,33 @@ def test_get_candles_dependency_exception_propagates_unchanged() -> None:
             datetime(2024, 1, 2, tzinfo=UTC),
             3600,
         )
+
+    assert exc_info.value is original
+
+
+def test_get_trades_delegates_and_preserves_response_identity() -> None:
+    symbol = "AAPL.US"
+    response = {"AAPL.US": {"series": [], "info": {"id": "AAPL.US"}}, "took": 1.2}
+    dependency = FakeTradesDependency(response)
+    service = MarketService(dependency)  # type: ignore[arg-type]
+
+    result = service.get_trades(symbol)
+
+    assert dependency.calls == [symbol]
+    assert result is response
+
+
+def test_get_trades_dependency_exception_propagates_unchanged() -> None:
+    original = RuntimeError("dependency failed")
+
+    class FailingDependency:
+        def get_trades(self, symbol: object) -> dict[str, Any]:
+            raise original
+
+    service = MarketService(FailingDependency())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_trades("AAPL.US")
 
     assert exc_info.value is original
 

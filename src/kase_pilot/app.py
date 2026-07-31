@@ -18,7 +18,8 @@ from kase_pilot.application import (
     GetInstruments,
     GetMarketStatus,
     GetMostTraded,
-    GetNews,
+    GetNewsDetail,
+    GetNewsProviders,
     GetOptions,
     GetOrderFiles,
     GetPlacedOrders,
@@ -29,9 +30,11 @@ from kase_pilot.application import (
     GetSymbol,
     GetSymbols,
     GetTariffs,
+    GetTicks,
     GetTradesHistory,
     GetUserData,
     GetUserInfo,
+    ListNews,
     ListSecuritySessions,
     SearchInstruments,
     StreamOrderBook,
@@ -142,6 +145,17 @@ def create_get_historical_candles(
     return GetHistoricalCandles(market_service)
 
 
+def create_get_ticks(
+    public_key: str,
+    private_key: str,
+) -> GetTicks:
+    """Build the object graph for the trade-ticks use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetTicks(market_service)
+
+
 def create_get_market_status(
     public_key: str,
     private_key: str,
@@ -194,15 +208,37 @@ def create_get_most_traded(
     return GetMostTraded(market_service)
 
 
-def create_get_news(
+def create_get_news_providers(
     public_key: str,
     private_key: str,
-) -> GetNews:
-    """Build the object graph for the news use case."""
+) -> GetNewsProviders:
+    """Build the object graph for the news-providers use case."""
     sdk_client = Tradernet(public_key, private_key)
     adapter = TradernetSdkAdapter(sdk_client)
     market_service = MarketService(adapter)
-    return GetNews(market_service)
+    return GetNewsProviders(market_service)
+
+
+def create_list_news(
+    public_key: str,
+    private_key: str,
+) -> ListNews:
+    """Build the object graph for the news-list use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return ListNews(market_service)
+
+
+def create_get_news_detail(
+    public_key: str,
+    private_key: str,
+) -> GetNewsDetail:
+    """Build the object graph for the news-detail use case."""
+    sdk_client = Tradernet(public_key, private_key)
+    adapter = TradernetSdkAdapter(sdk_client)
+    market_service = MarketService(adapter)
+    return GetNewsDetail(market_service)
 
 
 def create_get_options(

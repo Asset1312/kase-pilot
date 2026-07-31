@@ -13,7 +13,9 @@ from kase_pilot.application.instruments import GetInstruments
 from kase_pilot.application.market_status import GetMarketStatus
 from kase_pilot.application.missing_fields import CheckMissingFields
 from kase_pilot.application.most_traded import GetMostTraded
-from kase_pilot.application.news import GetNews
+from kase_pilot.application.news_detail import GetNewsDetail
+from kase_pilot.application.news_list import ListNews
+from kase_pilot.application.news_providers import GetNewsProviders
 from kase_pilot.application.options import GetOptions
 from kase_pilot.application.order_files import GetOrderFiles
 from kase_pilot.application.placed_orders import GetPlacedOrders
@@ -28,6 +30,7 @@ from kase_pilot.application.stream_quotes import StreamQuotes
 from kase_pilot.application.symbol import GetSymbol
 from kase_pilot.application.symbols import GetSymbols
 from kase_pilot.application.tariffs import GetTariffs
+from kase_pilot.application.ticks import GetTicks
 from kase_pilot.application.trades_history import GetTradesHistory
 from kase_pilot.application.user_data import GetUserData
 from kase_pilot.application.user_info import GetUserInfo
@@ -46,7 +49,8 @@ __all__ = [
     "GetInstruments",
     "GetMarketStatus",
     "GetMostTraded",
-    "GetNews",
+    "GetNewsDetail",
+    "GetNewsProviders",
     "GetOptions",
     "GetOrderFiles",
     "GetPlacedOrders",
@@ -57,9 +61,11 @@ __all__ = [
     "GetSymbol",
     "GetSymbols",
     "GetTariffs",
+    "GetTicks",
     "GetTradesHistory",
     "GetUserData",
     "GetUserInfo",
+    "ListNews",
     "ListSecuritySessions",
     "SearchInstruments",
     "StreamOrderBook",

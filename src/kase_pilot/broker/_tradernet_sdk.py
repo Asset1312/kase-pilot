@@ -247,25 +247,54 @@ class TradernetSdkAdapter:
 
         return cast(dict[str, Any], _require_mapping(response, "profile fields"))
 
-    def get_news(
-        self,
-        query: str,
-        symbol: str | None = None,
-        story_id: str | None = None,
-        limit: int = 30,
-    ) -> dict[str, Any]:
-        """Return news without transforming the SDK response."""
+    def get_news_providers(self, lang: str | None = None) -> dict[str, Any]:
+        """Return available news providers via the confirmed API V3 contract."""
         try:
-            response: Any = self._client.get_news(
-                query,
-                symbol=symbol,
-                story_id=story_id,
-                limit=limit,
+            response: Any = self._client.authorized_request(
+                "getNewsProvidersList",
+                {"lang": lang},
             )
         except Exception as exc:
             raise ApiRequestError("Tradernet SDK request failed") from exc
 
-        return cast(dict[str, Any], _require_mapping(response, "news"))
+        return cast(dict[str, Any], _require_mapping(response, "news providers"))
+
+    def list_news(
+        self,
+        ticker: str | None = None,
+        provider: str | None = None,
+        lang: str | None = None,
+        take: int = 20,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        """Return a page of news via the confirmed API V3 contract."""
+        try:
+            response: Any = self._client.authorized_request(
+                "getNewsList",
+                {
+                    "ticker": ticker,
+                    "provider": provider,
+                    "lang": lang,
+                    "take": take,
+                    "skip": skip,
+                },
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "news list"))
+
+    def get_news_detail(self, news_id: int) -> dict[str, Any]:
+        """Return one news item's full detail via the confirmed API V3 contract."""
+        try:
+            response: Any = self._client.authorized_request(
+                "getNewsDetail",
+                {"id": news_id},
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(dict[str, Any], _require_mapping(response, "news detail"))
 
     def get_market_status(
         self,
@@ -403,6 +432,29 @@ class TradernetSdkAdapter:
         return cast(
             dict[str, JsonValue],
             _require_mapping(response, "candles"),
+        )
+
+    def get_trades(self, symbol: str) -> dict[str, JsonValue]:
+        """Return raw trade ticks for a symbol via the confirmed getHloc contract.
+
+        This is the same ``getHloc`` command used by ``get_candles``, with
+        ``timeframe: -1`` requesting trades instead of aggregated candles
+        (see docs/API_NOTES.md). Calls the generic
+        ``authorized_request`` directly rather than ``Tradernet.get_candles``,
+        because that convenience method converts ``timeframe`` to minutes via
+        integer division and would silently turn ``-1`` into ``0``.
+        """
+        try:
+            response: Any = self._client.authorized_request(
+                "getHloc",
+                {"id": symbol, "timeframe": -1},
+            )
+        except Exception as exc:
+            raise ApiRequestError("Tradernet SDK request failed") from exc
+
+        return cast(
+            dict[str, JsonValue],
+            _require_mapping(response, "trades"),
         )
 
     def user_info(self) -> dict[str, JsonValue]:

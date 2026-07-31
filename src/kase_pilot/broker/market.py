@@ -128,20 +128,24 @@ class MarketService:
         """Return raw broker profile fields."""
         return self._adapter.get_profile_fields(reception)
 
-    def get_news(
+    def get_news_providers(self, lang: str | None = None) -> dict[str, Any]:
+        """Return available broker news providers."""
+        return self._adapter.get_news_providers(lang)
+
+    def list_news(
         self,
-        query: str,
-        symbol: str | None = None,
-        story_id: str | None = None,
-        limit: int = 30,
+        ticker: str | None = None,
+        provider: str | None = None,
+        lang: str | None = None,
+        take: int = 20,
+        skip: int = 0,
     ) -> dict[str, Any]:
-        """Return raw broker news."""
-        return self._adapter.get_news(
-            query,
-            symbol=symbol,
-            story_id=story_id,
-            limit=limit,
-        )
+        """Return a page of broker news."""
+        return self._adapter.list_news(ticker, provider, lang, take, skip)
+
+    def get_news_detail(self, news_id: int) -> dict[str, Any]:
+        """Return full detail for one broker news item."""
+        return self._adapter.get_news_detail(news_id)
 
     def get_market_status(
         self,
@@ -231,6 +235,10 @@ class MarketService:
     ) -> dict[str, JsonValue]:
         """Return historical candles for a broker instrument."""
         return self._adapter.get_candles(symbol, start, end, timeframe)
+
+    def get_trades(self, symbol: str) -> dict[str, JsonValue]:
+        """Return raw trade ticks for a broker instrument."""
+        return self._adapter.get_trades(symbol)
 
     def get_current_quotes(self) -> object:
         """Return current quotes.

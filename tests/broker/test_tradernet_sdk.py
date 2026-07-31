@@ -41,7 +41,6 @@ class FakeSdkClient:
         self.get_user_data_calls = 0
         self.check_missing_fields_calls: list[tuple[object, object]] = []
         self.get_profile_fields_calls: list[object] = []
-        self.get_news_calls: list[tuple[object, object, object, object]] = []
         self.get_market_status_calls: list[tuple[object, object]] = []
         self.get_most_traded_calls: list[tuple[object, object, object, object]] = []
         self.get_historical_calls: list[tuple[object, object]] = []
@@ -58,6 +57,11 @@ class FakeSdkClient:
         self.get_trades_history_calls: list[
             tuple[object, object, dict[str, object]]
         ] = []
+        self.authorized_request_calls: list[tuple[object, object]] = []
+
+    def authorized_request(self, cmd: object, params: object) -> Any:
+        self.authorized_request_calls.append((cmd, params))
+        return self.response
 
     def security_info(self, ticker: str, *, sup: bool = True) -> Any:
         self.calls.append((ticker, sup))
@@ -118,17 +122,6 @@ class FakeSdkClient:
 
     def get_profile_fields(self, reception: object) -> Any:
         self.get_profile_fields_calls.append(reception)
-        return self.response
-
-    def get_news(
-        self,
-        query: object,
-        *,
-        symbol: object = None,
-        story_id: object = None,
-        limit: object = 30,
-    ) -> Any:
-        self.get_news_calls.append((query, symbol, story_id, limit))
         return self.response
 
     def get_market_status(
@@ -644,73 +637,119 @@ def test_get_profile_fields_rejects_non_mapping_response(response: object) -> No
         adapter.get_profile_fields(17)
 
 
-def test_get_news_forwards_query_and_sdk_defaults_without_transforming_response() -> (
-    None
-):
-    query = "Казахстан"
-    response = {"result": {"items": [{"unknown_field": {"nested": [True, None]}}]}}
+def test_get_news_providers_calls_get_news_providers_list() -> None:
+    response = {"list": [{"alias": "Oninvest", "name": "Oninvest"}]}
     sdk = FakeSdkClient(response)
     adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
 
-    result = adapter.get_news(query)
+    result = adapter.get_news_providers("en")
 
-    assert sdk.get_news_calls == [(query, None, None, 30)]
-    assert sdk.get_news_calls[0][0] is query
-    assert result is response
-
-
-def test_get_news_forwards_explicit_optional_arguments() -> None:
-    query = "ignored query"
-    symbol = "AAPL.US"
-    story_id = "story-17"
-    limit = 7
-    response = {"result": {"items": []}}
-    sdk = FakeSdkClient(response)
-    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
-
-    result = adapter.get_news(
-        query,
-        symbol=symbol,
-        story_id=story_id,
-        limit=limit,
-    )
-
-    assert sdk.get_news_calls == [(query, symbol, story_id, limit)]
-    assert sdk.get_news_calls[0][1] is symbol
-    assert sdk.get_news_calls[0][2] is story_id
-    assert sdk.get_news_calls[0][3] is limit
+    assert sdk.authorized_request_calls == [("getNewsProvidersList", {"lang": "en"})]
     assert result is response
 
 
 @pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
-def test_get_news_non_mapping_response_raises_validation_error(response: Any) -> None:
+def test_get_news_providers_rejects_non_mapping_response(response: Any) -> None:
     adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
 
-    with pytest.raises(ValidationError, match="non-mapping news response"):
-        adapter.get_news("query")
+    with pytest.raises(ValidationError, match="non-mapping news providers response"):
+        adapter.get_news_providers()
 
 
-def test_get_news_sdk_exception_becomes_api_request_error_with_cause() -> None:
+def test_get_news_providers_sdk_exception_becomes_api_request_error_with_cause() -> (
+    None
+):
     original = RuntimeError("SDK failure")
 
     class FailingSdkClient:
-        def get_news(
-            self,
-            query: str,
-            *,
-            symbol: str | None = None,
-            story_id: str | None = None,
-            limit: int = 30,
-        ) -> Any:
+        def authorized_request(self, cmd: object, params: object) -> Any:
             raise original
 
     adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
 
     with pytest.raises(ApiRequestError) as exc_info:
-        adapter.get_news("query")
+        adapter.get_news_providers()
 
     assert exc_info.value.__cause__ is original
-    assert "SDK failure" not in str(exc_info.value)
+
+
+def test_list_news_calls_get_news_list_with_all_parameters() -> None:
+    response = {"list": [], "total": 0, "take": 20, "skip": 0}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.list_news("AAPL.US", "Oninvest", "en", 10, 5)
+
+    assert sdk.authorized_request_calls == [
+        (
+            "getNewsList",
+            {
+                "ticker": "AAPL.US",
+                "provider": "Oninvest",
+                "lang": "en",
+                "take": 10,
+                "skip": 5,
+            },
+        )
+    ]
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_list_news_rejects_non_mapping_response(response: Any) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping news list response"):
+        adapter.list_news()
+
+
+def test_list_news_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def authorized_request(self, cmd: object, params: object) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.list_news()
+
+    assert exc_info.value.__cause__ is original
+
+
+def test_get_news_detail_calls_get_news_detail_with_id() -> None:
+    response = {"id": 123456, "title": "Apple reports new product updates"}
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_news_detail(123456)
+
+    assert sdk.authorized_request_calls == [("getNewsDetail", {"id": 123456})]
+    assert result is response
+
+
+@pytest.mark.parametrize("response", [None, [], "not a mapping", 42])
+def test_get_news_detail_rejects_non_mapping_response(response: Any) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping news detail response"):
+        adapter.get_news_detail(1)
+
+
+def test_get_news_detail_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def authorized_request(self, cmd: object, params: object) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_news_detail(1)
+
+    assert exc_info.value.__cause__ is original
 
 
 def test_get_market_status_forwards_defaults_and_preserves_response_identity() -> None:
@@ -1269,6 +1308,61 @@ def test_get_candles_rejects_non_mapping_response(response: object) -> None:
 
     with pytest.raises(ValidationError, match="non-mapping candles response"):
         adapter.get_candles("AAPL.US")
+
+
+def test_get_trades_calls_get_hloc_with_timeframe_negative_one() -> None:
+    response = {
+        "AAPL.US": {
+            "series": [],
+            "info": {"id": "AAPL.US", "nt_ticker": "AAPL.US"},
+        },
+        "took": 2.759,
+    }
+    sdk = FakeSdkClient(response)
+    adapter = TradernetSdkAdapter(sdk)  # type: ignore[arg-type]
+
+    result = adapter.get_trades("AAPL.US")
+
+    assert sdk.authorized_request_calls == [
+        ("getHloc", {"id": "AAPL.US", "timeframe": -1})
+    ]
+    assert result is response
+
+
+def test_get_trades_does_not_call_get_candles() -> None:
+    class FailingIfCandlesCalled:
+        def get_candles(self, *args: object, **kwargs: object) -> Any:
+            raise AssertionError("get_trades must not go through Tradernet.get_candles")
+
+        def authorized_request(self, cmd: object, params: object) -> Any:
+            return {"AAPL.US": {"series": [], "info": {}}}
+
+    adapter = TradernetSdkAdapter(FailingIfCandlesCalled())  # type: ignore[arg-type]
+
+    adapter.get_trades("AAPL.US")
+
+
+def test_get_trades_sdk_exception_becomes_api_request_error_with_cause() -> None:
+    original = RuntimeError("SDK failure")
+
+    class FailingSdkClient:
+        def authorized_request(self, cmd: object, params: object) -> Any:
+            raise original
+
+    adapter = TradernetSdkAdapter(FailingSdkClient())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError) as exc_info:
+        adapter.get_trades("AAPL.US")
+
+    assert exc_info.value.__cause__ is original
+
+
+@pytest.mark.parametrize("response", [None, [], (), "not a mapping", 42])
+def test_get_trades_rejects_non_mapping_response(response: object) -> None:
+    adapter = TradernetSdkAdapter(FakeSdkClient(response))  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="non-mapping trades response"):
+        adapter.get_trades("AAPL.US")
 
 
 def test_user_info_delegates_without_transforming_response() -> None:

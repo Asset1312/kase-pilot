@@ -262,20 +262,40 @@ class FakeGetProfileFields:
         return self.response
 
 
-class FakeGetNews:
+class FakeGetNewsProviders:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = {} if response is None else response
-        self.calls: list[tuple[object, object, object, object]] = []
+        self.calls: list[object] = []
+
+    def execute(self, lang: object = None) -> dict[str, Any]:
+        self.calls.append(lang)
+        return self.response
+
+
+class FakeListNews:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[tuple[object, object, object, object, object]] = []
 
     def execute(
         self,
-        query: object,
-        *,
-        symbol: object = None,
-        story_id: object = None,
-        limit: object = 30,
+        ticker: object = None,
+        provider: object = None,
+        lang: object = None,
+        take: object = 20,
+        skip: object = 0,
     ) -> dict[str, Any]:
-        self.calls.append((query, symbol, story_id, limit))
+        self.calls.append((ticker, provider, lang, take, skip))
+        return self.response
+
+
+class FakeGetNewsDetail:
+    def __init__(self, response: dict[str, Any] | None = None) -> None:
+        self.response = {} if response is None else response
+        self.calls: list[object] = []
+
+    def execute(self, news_id: object) -> dict[str, Any]:
+        self.calls.append(news_id)
         return self.response
 
 
@@ -1238,7 +1258,7 @@ def test_run_profile_fields_forwards_reception_and_prints_unicode_pretty_json(
     )
 
 
-def test_run_routes_news_with_defaults_and_prints_raw_pretty_json(
+def test_run_news_providers_forwards_lang_and_prints_raw_pretty_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1246,73 +1266,76 @@ def test_run_routes_news_with_defaults_and_prints_raw_pretty_json(
         tradernet_public_key="PublicKey",
         tradernet_private_key="PrivateKey",
     )
-    query = "Казахстан"
-    response = {
-        "result": {
-            "items": [
-                {
-                    "title": "Новости рынка",
-                    "unknown": {"nested": [True, None]},
-                }
-            ]
-        }
-    }
-    use_case = FakeGetNews(response)
+    response = {"list": [{"alias": "Oninvest", "name": "Oninvest"}]}
+    use_case = FakeGetNewsProviders(response)
     composition_calls: list[tuple[str, str]] = []
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
 
-    def fake_create(public: str, private: str) -> FakeGetNews:
+    def fake_create(public: str, private: str) -> FakeGetNewsProviders:
         composition_calls.append((public, private))
         return use_case
 
-    monkeypatch.setattr(main_module, "create_get_news", fake_create)
+    monkeypatch.setattr(main_module, "create_get_news_providers", fake_create)
 
-    exit_code = main_module.run("news", query, environ={})
+    exit_code = main_module.run("news-providers", lang="en", environ={})
 
     captured = capsys.readouterr()
     assert exit_code == 0
     assert composition_calls == [("PublicKey", "PrivateKey")]
-    assert use_case.calls == [(query, None, None, 30)]
-    assert use_case.calls[0][0] is query
+    assert use_case.calls == ["en"]
     assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
-    assert json.loads(captured.out) == response
-    assert "Новости рынка" in captured.out
-    assert "\\u" not in captured.out
     assert captured.err == ""
 
 
-def test_run_news_forwards_explicit_options_once(
+def test_run_news_list_forwards_all_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = SimpleNamespace(
         tradernet_public_key="PublicKey",
         tradernet_private_key="PrivateKey",
     )
-    query = "ignored"
-    symbol = "AAPL.US"
-    story_id = "story-17"
-    limit = 7
-    use_case = FakeGetNews()
+    use_case = FakeListNews()
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
     monkeypatch.setattr(
         main_module,
-        "create_get_news",
+        "create_list_news",
         lambda public, private: use_case,
     )
 
     main_module.run(
-        "news",
-        query,
-        symbol=symbol,
-        story_id=story_id,
-        limit=limit,
+        "news-list",
+        symbol="AAPL.US",
+        provider="Oninvest",
+        lang="en",
+        take=10,
+        skip=5,
         environ={},
     )
 
-    assert use_case.calls == [(query, symbol, story_id, limit)]
+    assert use_case.calls == [("AAPL.US", "Oninvest", "en", 10, 5)]
 
 
-def test_run_news_explicit_json_output_matches_plain_output(
+def test_run_news_list_uses_default_take_and_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+    )
+    use_case = FakeListNews()
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_list_news",
+        lambda public, private: use_case,
+    )
+
+    main_module.run("news-list", environ={})
+
+    assert use_case.calls == [(None, None, None, 20, 0)]
+
+
+def test_run_news_detail_forwards_id_and_prints_raw_pretty_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1320,29 +1343,26 @@ def test_run_news_explicit_json_output_matches_plain_output(
         tradernet_public_key="PublicKey",
         tradernet_private_key="PrivateKey",
     )
-    response = {"raw": {"nested": ["данные", 17, None]}}
-    use_case = FakeGetNews(response)
+    response = {"id": 123456, "title": "Apple reports new product updates"}
+    use_case = FakeGetNewsDetail(response)
     monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
     monkeypatch.setattr(
         main_module,
-        "create_get_news",
+        "create_get_news_detail",
         lambda public, private: use_case,
     )
 
-    main_module.run("news", "query", environ={})
-    plain_output = capsys.readouterr()
-    main_module.run("news", "query", json_output=True, environ={})
-    json_output = capsys.readouterr()
+    exit_code = main_module.run("news-detail", news_id=123456, environ={})
 
-    assert use_case.calls == [
-        ("query", None, None, 30),
-        ("query", None, None, 30),
-    ]
-    assert plain_output == json_output
-    assert plain_output == (
-        json.dumps(response, indent=2, ensure_ascii=False) + "\n",
-        "",
-    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert use_case.calls == [123456]
+    assert captured.out == json.dumps(response, indent=2, ensure_ascii=False) + "\n"
+
+
+def test_run_news_detail_requires_news_id() -> None:
+    with pytest.raises(ValueError, match="requires a news id"):
+        main_module.run("news-detail")
 
 
 def test_run_market_status_uses_defaults_and_prints_raw_pretty_json(
@@ -3620,63 +3640,82 @@ def test_main_uses_process_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("quotes", "AAPL.US")]
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["news", "market"],
-        [
-            "news",
-            "market",
-            "--symbol",
-            "AAPL.US",
-            "--story-id",
-            "story-17",
-            "--limit",
-            "7",
-            "--json",
-        ],
-        [
-            "news",
-            "market",
-            "--json",
-            "--limit",
-            "7",
-            "--story-id",
-            "story-17",
-            "--symbol",
-            "AAPL.US",
-        ],
-    ],
-)
-def test_main_reports_news_as_unsupported_before_orchestration(
-    arguments: list[str],
-    capsys: pytest.CaptureFixture[str],
+def test_main_routes_news_providers_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    orchestration_calls: list[str] = []
-    monkeypatch.setattr(
-        main_module,
-        "run",
-        lambda *args, **kwargs: orchestration_calls.append("run"),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "load_settings",
-        lambda *args, **kwargs: orchestration_calls.append("settings"),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "create_get_news",
-        lambda *args, **kwargs: orchestration_calls.append("factory"),
-    )
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    assert main_module.main(arguments) == 3
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
 
-    captured = capsys.readouterr()
-    assert orchestration_calls == []
-    assert captured.out == ""
-    assert captured.err == main_module._NEWS_UNSUPPORTED_MESSAGE + "\n"
-    assert "Traceback" not in captured.err
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["news-providers", "--lang", "en"]) == 17
+    assert calls == [("news-providers", {"lang": "en"})]
+
+
+def test_main_routes_news_list_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert (
+        main_module.main(
+            [
+                "news-list",
+                "--ticker",
+                "AAPL.US",
+                "--provider",
+                "Oninvest",
+                "--lang",
+                "en",
+                "--take",
+                "10",
+                "--skip",
+                "5",
+            ]
+        )
+        == 17
+    )
+    assert calls == [
+        (
+            "news-list",
+            {
+                "symbol": "AAPL.US",
+                "provider": "Oninvest",
+                "lang": "en",
+                "take": 10,
+                "skip": 5,
+            },
+        )
+    ]
+
+
+def test_main_routes_news_detail_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["news-detail", "123456"]) == 17
+    assert calls == [("news-detail", {"news_id": 123456})]
+
+
+def test_main_news_detail_rejects_non_integer_id(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(["news-detail", "not-a-number"]) == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
 
 
 @pytest.mark.parametrize(
@@ -5016,25 +5055,19 @@ def test_main_rejects_invalid_portfolio_before_orchestration(
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["news"],
-        ["news", "--json"],
-        ["news", "--unknown"],
-        ["news", "query", "extra"],
-        ["news", "query", "--unknown"],
-        ["news", "query", "--symbol"],
-        ["news", "query", "--story-id"],
-        ["news", "query", "--limit"],
-        ["news", "query", "--symbol", "--json"],
-        ["news", "query", "--symbol", "--unknown"],
-        ["news", "query", "--story-id", "--limit"],
-        ["news", "query", "--limit", "invalid"],
-        ["news", "query", "--limit", "1.5"],
-        ["news", "query", "--limit", "0"],
-        ["news", "query", "--limit", "-1"],
-        ["news", "query", "--json", "--json"],
-        ["news", "query", "--symbol", "AAPL.US", "--symbol", "MSFT.US"],
-        ["news", "query", "--story-id", "one", "--story-id", "two"],
-        ["news", "query", "--limit", "7", "--limit", "8"],
+        ["news-providers", "market"],
+        ["news-providers", "--unknown"],
+        ["news-providers", "--lang"],
+        ["news-providers", "--lang", "en", "--lang", "ru"],
+        ["news-list", "extra"],
+        ["news-list", "--unknown"],
+        ["news-list", "--ticker"],
+        ["news-list", "--take", "invalid"],
+        ["news-list", "--skip", "invalid"],
+        ["news-list", "--ticker", "AAPL.US", "--ticker", "MSFT.US"],
+        ["news-detail"],
+        ["news-detail", "not-a-number"],
+        ["news-detail", "1", "extra"],
     ],
 )
 def test_main_rejects_invalid_news_before_orchestration(
@@ -5052,11 +5085,6 @@ def test_main_rejects_invalid_news_before_orchestration(
         main_module,
         "load_settings",
         lambda *args, **kwargs: orchestration_calls.append("settings"),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "create_get_news",
-        lambda *args, **kwargs: orchestration_calls.append("factory"),
     )
 
     assert main_module.main(arguments) == 2
@@ -6083,8 +6111,10 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot instruments --market MARKET [--show-expired] [--json]\n"
         "  kase-pilot instruments --search QUERY\n"
         "  kase-pilot instrument TICKER\n"
-        "  kase-pilot news QUERY [--symbol SYMBOL] [--story-id STORY_ID] "
-        "[--limit LIMIT] [--json] [UNSUPPORTED]\n"
+        "  kase-pilot news-providers [--lang LANG]\n"
+        "  kase-pilot news-list [--ticker TICKER] [--provider PROVIDER] "
+        "[--lang LANG] [--take N] [--skip N]\n"
+        "  kase-pilot news-detail ID\n"
         "  kase-pilot market-status [--market MARKET] [--mode MODE] [--json]\n"
         "  kase-pilot top [--type TYPE] [--exchange EXCHANGE] [--limit LIMIT] "
         "[--losers] [--json]\n"
@@ -6106,6 +6136,7 @@ def test_main_rejects_invalid_argument_count(
         "[--symbol SYMBOL] [--limit NUMBER] [--json]\n"
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
+        "  kase-pilot ticks SYMBOL\n"
         "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
         "  kase-pilot stream-orderbook SYMBOL\n"
     )
