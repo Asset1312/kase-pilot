@@ -349,10 +349,20 @@ available:
 > REST integration is completed first. WebSocket work begins only after the REST
 > layer is stable.
 
-### Protocol (Partially Confirmed)
+### Protocol (Partially Confirmed — Conflicting Sources, see F-18)
 
 The WebSocket layer uses **Socket.IO**, not a raw WebSocket protocol.
 Source: https://github.com/tradernet/tn.api README
+
+> ⚠️ **Conflicting source found 2026-07-31 (F-18):** the official portal
+> page for `getSecuritySessions`
+> (https://tradernet.global/tradernet-api/security-get-list) documents a
+> plain `WebSocket` connection authenticated via a login-issued `SID`
+> (cookie or request parameter), explicitly labelled "API V1" — not
+> Socket.IO, not HMAC-signed. The two sources describe structurally
+> different protocols. Do not implement WebSocket support against either
+> description until this is resolved by a live, observed handshake. See
+> Research Log F-18/F-19.
 
 ### WebSocket Servers (Partially Confirmed)
 
@@ -383,17 +393,25 @@ TBD — heartbeat interval and expected behaviour are not yet confirmed.
 
 ### Available Streams
 
-The official portal confirms the subscription categories below. Exact event
-names remain Partially Confirmed from external implementation evidence.
+The official portal previously confirmed only the subscription categories
+below with event names as Partially Confirmed from external implementation
+evidence. A live capture on 2026-07-31 (F-21) upgraded several of these and
+found additional channels not previously recorded.
 
 | Stream | Observed event name | Evidence status |
 |---|---|---|
-| Stock quotes | `notifyQuotes` / `q` | Category Confirmed; event names Partially Confirmed |
-| Market depth | `notifyOrderBook` / `b` | Category Confirmed; event names Partially Confirmed |
-| Market status | `notifyMarkets` / `markets` | Category Confirmed; event names Partially Confirmed |
-| Security sessions | `notifySessions` / `sessions` | Category Confirmed; event names Partially Confirmed |
-| Portfolio updates | `notifyPortfolio` / `portfolio` | Category Confirmed; event names Partially Confirmed |
-| Orders updates | `notifyOrders` / `orders` | Category Confirmed; event names Partially Confirmed |
+| Stock quotes (subscribe request) | `quotes` | **Confirmed** — live capture, F-21 |
+| Stock quotes (push update) | `q` | **Confirmed** — live capture, F-20 |
+| Market depth | `notifyOrderBook` / `b` | Category Confirmed; event names Partially Confirmed (not seen in F-20/F-21 capture) |
+| Market status | `markets` | **Confirmed** — live capture, F-21 (previously recorded as `notifyMarkets`/`markets`) |
+| Security sessions | `notifySessions` / `sessions` | Category Confirmed; event names Partially Confirmed (still not directly captured — see F-18/F-19 unresolved questions) |
+| Portfolio updates | `portfolio` | **Confirmed** — live capture, F-21 |
+| Calculated portfolio | `calculatedPortfolio` | **Confirmed, newly discovered** — live capture, F-21; not previously documented anywhere in this file |
+| Orders updates | `orders` | **Confirmed** — live capture, F-21 |
+| Counters (likely account/badge counters) | `counters` | **Confirmed, newly discovered** — live capture, F-21; payload was `[1901279]`, a numeric ID matching the account/session ID seen elsewhere in this session |
+| Admin messages | `adminMessage` | **Confirmed, newly discovered** — live capture, F-21 |
+| Price alerts | `alerts` | **Confirmed, newly discovered** — live capture, F-21 |
+| SMS | `sms` | **Confirmed, newly discovered** — live capture, F-21 |
 
 ### Reconnection Policy
 
@@ -1095,3 +1113,558 @@ existing `READY` criteria are not fully met. Still missing:
 - a confirmed complete response schema and schema-stability expectations;
 - confirmed operation-specific errors or proof of an applicable common error
   contract.
+
+---
+
+### 2026-07-31 — WebSocket Protocol Discrepancy (Two Conflicting Sources)
+
+**Date:** 2026-07-31
+**Sources consulted:**
+- https://github.com/tradernet/tn.api README and `examples/*.js` (previously
+  recorded — see F-07, F-12, F-13, F-16)
+- https://tradernet.global/tradernet-api/security-get-list (official portal
+  page, supplied directly by the project owner in this session)
+- Live browser session on `tradernet.global` under a real account (console
+  output supplied directly by the project owner)
+
+#### F-18 — Two incompatible documented WebSocket protocols | Confirmed discrepancy, not yet resolved
+
+The previously recorded WebSocket protocol (F-07/F-12/F-13/F-16, from the
+`tn.api` GitHub repository) and the official portal page for
+`getSecuritySessions` describe **two different connection and authentication
+models**:
+
+| Aspect | `tn.api` GitHub repo (previously recorded) | `tradernet.global/tradernet-api/security-get-list` (this session) |
+|---|---|---|
+| Transport | Socket.IO client | Plain `new WebSocket(url)`, no Socket.IO |
+| Auth mechanism | `auth` event: `{apiKey, cmd, nonce}` + HMAC-SHA256 signature | `SID` (session ID from a prior HTTP login), sent via cookie header or as a request parameter |
+| Command framing | Socket.IO named events (`emit`/`on`) | Plain JSON array over `ws.send`, e.g. `["sessions"]`; responses framed as `[event, data]` |
+| API generation label | Not stated | Explicitly labelled **"API V1"** in the parameter table |
+
+This is not a case of one source being more detailed than the other — the
+two describe structurally different protocols (event-based RPC over
+Socket.IO with cryptographic signing, vs. a raw WebSocket with a
+cookie-style session token). Possible explanations, none yet confirmed:
+
+1. Two live API generations coexist (a legacy "V1" SID-cookie protocol and a
+   newer Socket.IO+HMAC protocol), and a client must pick one.
+2. The portal page is stale documentation for a retired protocol version.
+3. The `tn.api` GitHub repository documents a variant not actually used by
+   the production frontend at `tradernet.global`.
+
+**No code should be written against either protocol until this is resolved
+by a live, observed WebSocket handshake** — consistent with this project's
+existing rule (§8, `AUTHENTICATION_READINESS.md`) against coding against
+unconfirmed authentication contracts.
+
+#### F-19 — Real production WebSocket hosts observed via live browser session | Confirmed observed
+
+Source: browser Content-Security-Policy violation report captured from the
+project owner's own real, authenticated session on `tradernet.global`
+(`connect-src` directive, listing every WebSocket origin the production
+frontend is permitted to reach).
+
+The following broker-operated WebSocket hosts are confirmed to exist in the
+live CSP allow-list (subset relevant to this project; full list is broader
+and includes unrelated third-party regions/brands):
+
+- `wss://wss.tradernet.global`
+- `wss://wss.freedombroker.global`
+- `wss://wss.tradernet.kz`
+- `wss://wss.freedombroker.kz`
+- `wss://wss.tradernet.com` (wildcard `wss://*.tradernet.com`)
+- `wss://wss.freedom24.com`
+- `wss://wss.tradernet.ru`, `wss://wss2.tradernet.ru`
+
+This confirms multiple regional/brand-specific WebSocket hosts exist
+side by side. It does **not** confirm which host or protocol variant (see
+F-18) is the correct one for a KZT/KASE-scoped account, nor does it capture
+any actual WebSocket frame content — the supplied console output was the
+browser's Console tab (dominated by unrelated third-party analytics/CSP
+noise: Yandex Metrica, Sentry, marketing pixels) and did not include the
+Network tab's WebSocket "Messages" view, which is what would show the real
+handshake and command/response frames.
+
+**Impact:** Confirms host reachability only. The actual authentication
+handshake and command framing for a KASE/KZT account remain unconfirmed.
+
+#### Project scope note
+
+The project owner has confirmed the trading-bot scope is restricted to the
+**KASE market, KZT-denominated instruments only** — no multi-exchange,
+multi-currency, or options support is in scope. This does not by itself
+resolve F-18, but it does mean the relevant host is very likely
+`wss://wss.tradernet.kz` or `wss://wss.freedombroker.kz` rather than the
+`.com`/`.ru`/`.global` variants, once F-18 is resolved.
+
+#### F-20 — Live WebSocket capture from `wss.tradernet.global`, real account | Confirmed observed
+
+Source: browser DevTools Network tab, WS filter, live authenticated session
+on `tradernet.global` under the project owner's real account. Supplied
+directly in this session.
+
+**Connection:**
+
+```
+GET wss://wss.tradernet.global/?clientLogin=<url-encoded-email>&ctsi=725726
+Status: 101 Switching Protocols
+```
+
+This is a **fourth distinct auth shape**, matching neither previously
+recorded variant exactly:
+
+- Not Socket.IO: the URL has no `/socket.io/` path segment and no
+  Engine.IO query parameters (`EIO=`, `transport=`) — the characteristic
+  shape of a Socket.IO client connection is absent. This is evidence
+  *against* F-07/F-12's Socket.IO claim for this connection, though the
+  response headers were not captured and a Socket.IO-over-plain-WebSocket
+  configuration cannot be fully excluded from this evidence alone.
+- Not the SID-cookie "API V1" shape either: no `SID` parameter or cookie
+  was shown; instead the query string carries `clientLogin` (the account's
+  plain email address, URL-encoded) and `ctsi` (an opaque numeric value —
+  meaning not confirmed; possibly a per-connection or per-session token).
+- No HMAC signature, nonce, or `apiKey` field appears anywhere in the
+  connection URL.
+
+**No outgoing (client → server) frame was captured in the evidence
+supplied** — only inbound server → client messages were shown. Whether the
+client sends anything after the connection opens (a subscribe/filter
+command, an explicit login confirmation, etc.) is still unobserved.
+
+**Inbound message shape (repeated, unsolicited, immediately after connect):**
+
+Every captured frame is a 3-element JSON array:
+```
+["q", { ...fields... }, "wstm=2026-07-31T07%3A27%3A20.380Z"]
+```
+
+- First element: event name. Only `"q"` observed. This matches the
+  previously recorded (external-source) "Available Streams" table entry
+  for stock quotes (`notifyQuotes` / `q`) — now **Confirmed by live
+  capture**, upgraded from "Category Confirmed; event name Partially
+  Confirmed."
+- Second element: a data object. Fields observed across samples (not all
+  present on every message): `bas`, `bbp`, `bbs`, `baf`, `bbf`, `bap`,
+  `ltp`, `ltt`, `c` (instrument code, e.g. `"EUR/USD"`, `"RUBKZT_TOD.KZ"`,
+  `"MBG.EU"`), `init`, `n`, `rev`, `type` (integer; `1`, `5`, `6`, `7`
+  observed, meaning not confirmed), `vlt`, `vol`, `acc_srv_tm` (server
+  timestamp string, e.g. `"2026-07-31 10:27:20.379"`). Field names are
+  recorded verbatim, not decoded or guessed.
+- Third element: a literal string `"wstm=<url-encoded ISO-8601 timestamp
+  with milliseconds>"` — not a clean value, an embedded query-string-style
+  fragment inside a JSON array slot. Recorded exactly as observed; the
+  reason for this shape is not explained by anything seen so far.
+
+**Instruments observed in this unsolicited burst:** a broad mix of FX pairs
+(`EUR/PLN`, `EUR/RUR`, `EUR/SEK`, `EUR/USD`, `GLD/RUR`, `JPY/RUR`,
+`MXN/RUR`, `PLN/EUR`, `RUR/AED`, `RUR/AMD`, `RUR/CNY`, `RUR/EUR`), two
+KZT/KASE-relevant FX instruments (`EURUSD_TOM.KZ`, `RUBKZT_TOD.KZ` —
+`.KZ`-suffixed, `TOD`/`TOM` likely settlement-day markers, meaning not
+confirmed), two indices (`FTSE.IDX`, `RTS.MCX`), and one equity
+(`MBG.EU`). This looks like a broad default quote firehose pushed
+immediately on connect, not scoped to the connecting account or to
+KASE/KZT — no subscription/filter command was seen being sent to narrow
+it, but none was captured at all, so this cannot be fully explained yet.
+
+**Impact:**
+
+- The `getSecuritySessions`/`sessions` question (F-18) is still
+  unresolved — this capture happened to show quote traffic, not a security
+  sessions request/response, and showed no outgoing frames at all.
+- The Socket.IO+HMAC protocol (F-07/F-12) looks less likely for this
+  specific connection based on URL shape, but is not conclusively ruled
+  out.
+- The SID-cookie "API V1" shape (F-18, from the portal doc) does not match
+  either — no `SID` appears.
+- A real, working, unsolicited quote stream now exists as evidence,
+  independent of the auth-mechanism question: this at least confirms that
+  *some* quote data reaches the client without any confirmed explicit
+  subscribe step in the visible evidence.
+
+**Unresolved questions after this session:**
+
+- What does the client send, if anything, right after the connection
+  opens? (No outgoing frame was captured — need the green "▲" rows in
+  DevTools Messages, not just inbound.)
+- What is `ctsi`, and how is it obtained? (Likely from a prior HTTP login
+  response — not yet traced.)
+- Is the quote firehose the default behaviour for every connection, or is
+  it already scoped somehow (e.g. by a prior subscription made earlier in
+  the session, before this capture started)?
+- How is a subscription scoped to KASE/KZT instruments specifically —
+  is there a filter/subscribe command, or does the client filter
+  client-side from the full firehose?
+- Does `getSecuritySessions`/`sessions` (the original F-18 topic) use this
+  same connection/auth shape, or a different one? Not yet captured.
+- Is this `clientLogin`+`ctsi` shape stable/documented anywhere officially,
+  or reverse-engineered purely from this one observed session?
+
+---
+
+#### F-21 — Live-captured subscription burst answers the "how is the firehose scoped" question | Confirmed observed, with new open question
+
+Source: same browser DevTools WS capture session as F-20, same connection
+(`wss://wss.tradernet.global/?clientLogin=<email>&ctsi=725726`). Supplied
+directly in this session, timestamped ~2 minutes before the F-20 quote
+frames.
+
+A burst of nine messages was sent, all at the same timestamp
+(`12:25:22.289`), each shaped as a 2-element JSON array
+`[channel_name, payload]`:
+
+```
+["markets", null]
+["portfolio", null]
+["calculatedPortfolio", null]
+["orders", null]
+["counters", [1901279]]
+["adminMessage", null]
+["alerts", null]
+["sms", null]
+["quotes", ["AED/USD915015212", "CHF/USD915094478", ... ~370 entries ...]]
+```
+
+**Direction:** inferred, not yet explicitly confirmed by the project owner,
+to be **outgoing (client → server)** subscription requests — the shape
+matches the officially documented `ws.send(JSON.stringify(['sessions']))`
+pattern from `tradernet.global/tradernet-api/security-get-list` (a bare
+`[command, ...args]` array), and the timing (~2 minutes before the F-20
+quote push burst) is consistent with "subscribe once at connect time, then
+receive pushes." **This direction should be explicitly confirmed** (e.g.
+by checking the arrow/color DevTools shows for these specific rows) before
+relying on it.
+
+**This resolves the earlier open question from F-20** ("is the quote
+firehose scoped, or a default broadcast?"): it is **not** an unscoped
+broadcast — the client explicitly subscribes to a specific list of several
+hundred instruments via one `quotes` message immediately after connecting.
+Every entry in that list has the shape `"<ticker><internal_id>"` —
+ticker and an opaque numeric ID joined by an ASCII ETX (0x03) control
+character, e.g. `"HSBK.KZ915092193"`, `"KSPI.KZ915081690"`,
+`"EURUSD_TOM.KZ915094727"`.
+
+**New confirmed channels** (not previously recorded anywhere in this file):
+`calculatedPortfolio`, `counters`, `adminMessage`, `alerts`, `sms`. The
+`counters` channel's payload, `[1901279]`, is a numeric ID — plausibly an
+account or session identifier, not yet traced to a confirmed source.
+
+**KASE relevance:** the subscribed list includes numerous `.KZ`-suffixed
+tickers confirming KASE instruments are addressed identically through this
+same channel — e.g. `HSBK.KZ`, `KSPI.KZ`, `CCBN.KZ`, `KZTK.KZ`, `KZTO.KZ`,
+`KEGC.KZ`, `KMGD.KZ`, `ASBN.KZ`, `AIRA.KZ`, `KASE.IDX`, plus several
+`*_TOD.KZ`/`*_TOM.KZ` FX pairs (settlement-day markers, meaning not
+confirmed).
+
+**Critical new open question — the internal numeric ID:** every subscribed
+ticker is paired with a numeric ID (e.g. `915092193` for `HSBK.KZ`) that
+does not match anything seen in any REST response captured so far
+(`getSecurityInfo`'s `id` field, per F-17, is the ticker string itself,
+`"AAPL.US"`, not a numeric ID in this range). **It is not yet known:**
+
+- Whether this numeric ID is required to subscribe (i.e. can a client send
+  `"HSBK.KZ"` alone, without the ID, and still get pushes?), or whether
+  the ID must be looked up first.
+- Where this ID would come from for an instrument not already in the
+  client's default watchlist — no confirmed REST or WS response captured
+  in this project exposes it yet.
+- Whether this ID is stable across sessions/accounts or per-session.
+
+This is now the single most important unresolved blocker for building a
+real quote-subscription client: without knowing how to obtain this ID for
+an arbitrary ticker, only the ~370 instruments already seen in this one
+capture could be subscribed to with confidence.
+
+**Unresolved questions after this session (supersedes the F-20 list):**
+
+- Confirm the direction (outgoing vs incoming) of the nine-message burst
+  above using DevTools' own direction indicator, not inferred from shape.
+- Where does the ``-joined numeric ID come from for a ticker not
+  already in this captured list? Is there a lookup endpoint?
+- Can `quotes` be subscribed with just the ticker (no numeric ID), e.g.
+  `["quotes", ["HSBK.KZ"]]`?
+- What is `counters`' payload `[1901279]` — account ID, session ID, user
+  ID? Where else does this number appear (e.g. compare against any REST
+  `user-data`/`user_info` response fields)?
+- Still open from F-20: what is `ctsi`, and does `getSecuritySessions`
+  share this connection/auth shape?
+
+---
+
+### 2026-07-31 (continued) — Official Manual Pages, Supplied Directly by Project Owner
+
+**Sourcing note:** from this point on, the project owner is browsing the
+official Tradernet manual/documentation site directly and pasting the
+relevant pages into this session on request, instead of this project
+searching or guessing at endpoint behaviour. This is the preferred
+evidence path going forward — treat any manual page supplied this way as
+**Confirmed as an official documented contract**, distinct from the
+`tn.api` GitHub repository (external, ownership never proven — see F-01)
+and distinct from live-captured evidence (which confirms actual runtime
+behaviour but not official intent).
+
+#### F-22 — `getOPQ` documented REST contract is a *third* incompatible REST shape | Confirmed discrepancy, not yet resolved
+
+Source: official manual page for `getOPQ` ("Начальный объект со всеми
+данными по пользователю"), supplied directly by the project owner.
+
+**Documented request shape:**
+```js
+$.getJSON('https://tradernet.com/api/', {q: JSON.stringify(exampleParams)}, callback);
+// exampleParams = {"cmd": "getOPQ", "SID": "<SID from prior authorization>", "params": {}}
+```
+GET request to a single shared endpoint (`https://tradernet.com/api/`),
+command and parameters wrapped in one JSON object, passed as the value of
+a single query-string parameter `q`. Authentication is via `SID` (a
+session identifier obtained from a prior, separately-documented login
+step), not a cryptographic signature.
+
+**This is incompatible with two other REST shapes already on record in
+this file:**
+
+| Shape | Transport | Auth | Endpoint | Evidence status |
+|---|---|---|---|---|
+| `tn.api` GitHub README (F-04) | POST, `cmd`/`params`/`sig` in body | MD5(sorted params + secret) | shared `/api/` | Partially Confirmed, no code implementation found (F-14) |
+| **Live-confirmed** `getSecurityInfo` (F-17) | POST | Headers: `X-NtApi-PublicKey`/`X-NtApi-Timestamp`/`X-NtApi-Sig` | **per-command URL** (`/api/getSecurityInfo`) | **Confirmed observed**, real live call via the officially-linked SDK |
+| `getOPQ` manual page (F-22, this entry) | **GET** | `SID` in the request payload | shared `/api/` | Confirmed as officially documented, **not yet live-tested** |
+
+This is the same pattern already found on the WebSocket side (F-18): the
+official documentation site describes multiple, non-overlapping API
+generations. **Do not assume `getOPQ`'s documented shape works as written
+without a live test** — the same caution that applies to F-18 applies
+here. The one shape in this project that is actually trustworthy without
+further verification is the live-confirmed `getSecurityInfo` shape
+(F-17), precisely because it was tested, not because it is the most
+recently documented.
+
+**Does not resolve:** the F-21 open question about the WS `quotes`
+subscription's numeric per-ticker ID. The `getOPQ` response's quote
+objects (`quotes.q[]`) were reviewed field-by-field
+(`acd`, `bap`, `bas`, `c`, `codesub_nm`, `min_step`, `name`, `rev`, ...) —
+none matches the 9-digit ID format seen in the F-21 WS subscription
+payload (e.g. `915092193` for `HSBK.KZ`). This connection was checked for
+and not found; it is not assumed to not exist elsewhere, only that this
+particular response does not contain it.
+
+**Other content confirmed by this manual page** (for future reference,
+not yet used):
+
+- `codesub_nm` in the quote object carries a human-readable exchange name
+  (e.g. `"NASDAQ"`) — a candidate normative source for `exchange`-type
+  metadata, distinct from KASE Pilot's own local-catalog `exchange` field.
+- `userLists.userStockLists.default` / `stocksArray` — the account's
+  saved ticker watchlist(s), as plain ticker strings, no numeric IDs.
+- Full account/user profile object (`userInfo`), including PII
+  (name, birthday, tax ID equivalents, phone, etc.) — a strong reminder
+  that any future caching/logging of this endpoint's response must follow
+  the existing secrets/PII logging policy (§19) strictly.
+
+**Unresolved questions after this session:**
+
+- Is `getOPQ`'s documented GET+`SID`+shared-endpoint shape actually live
+  today, or is it — like the WebSocket "API V1" SID shape (F-18) — a
+  legacy/retired generation?
+- Where is `SID` obtained from? (A separate documented login endpoint,
+  not yet supplied to this project.)
+- Still fully open: the F-21 numeric per-ticker ID for WS `quotes`
+  subscriptions.
+
+---
+
+### 2026-07-31 (continued) — Official Manual Pages Confirm REST Auth; SDK Source Resolves WebSocket
+
+**Sources:**
+- Official manual pages supplied directly by the project owner: `getSecuritySessions` (with NodeJS and Browser JS examples), `getAllSecurities` ("Справочник бумаг"), and the master "Как работает API" ("How the API works") page.
+- Direct source inspection of the installed `tradernet-sdk==2.2.0` package (already a project dependency): `tradernet/tradernet_websocket.py`, `tradernet/common/ws_utils.py`, `tradernet/core.py`.
+
+#### F-23 — `tradernet-sdk`'s `TradernetWebsocket` class resolves the WebSocket protocol question | Confirmed via source code
+
+The SDK already implements a WebSocket client (`TradernetWebsocket`, exported from the package's top-level `__init__.py`, i.e. public API). Reading its implementation directly settles F-18/F-20/F-21 far more reliably than either documentation source, because it is executable, already-depended-upon code, not a claim:
+
+- **Transport:** plain WebSocket via `aiohttp.ClientSession.ws_connect` (`tradernet/common/ws_utils.py::WSUtils.get_stream`). **Not Socket.IO.** This matches the "Browser JS" example on the official manual page (raw `new WebSocket(...)`, plain JSON array commands), not the "NodeJS" example on the same page (which uses `socket.io-client`). The two examples on one official manual page describe different transports; the SDK's choice is the one to trust, since it is maintained by Tradernet and already used successfully for this project's live-confirmed REST calls (F-17).
+- **Auth:** the same three fields already confirmed for REST in F-17 — `X-NtApi-PublicKey`, `X-NtApi-Timestamp`, `X-NtApi-Sig` (HMAC-SHA256) — via `Core.websocket_auth()`. **Not SID, not `clientLogin`+`ctsi`, not a Socket.IO `auth` event.** Sent as **query-string parameters** on the WS connection URL (`ws_connect(url, params=self.core.websocket_auth())` — `aiohttp`'s `params` argument controls the query string, not headers).
+- **Host:** `wss://wss.{Core.DOMAIN}`, default `DOMAIN = 'freedom24.com'` → `wss://wss.freedom24.com`. `DOMAIN` is a class variable, not a constructor parameter; overriding it requires subclassing. Matches one of the hosts already confirmed reachable in F-19.
+- **Command framing:** `self.stringify([command, args...])` sent once via `websocket.send_str(...)` immediately after connecting — e.g. `['quotes', ['FRHC.US']]`, `['markets']`, `['portfolio']`, `['orders']`. This matches the *shape* of the live capture in F-21 exactly (`["markets", null]`, `["quotes", [...]]`, etc.).
+- **Response framing:** `event, data, _ = json_loads(message)` — a 3-element array, third element discarded by the SDK. Matches the `["q", {...}, "wstm=..."]` shape observed live in F-20 exactly, including the previously-unexplained third element (the SDK doesn't explain it either — it just ignores it).
+- **The F-21 numeric per-ticker ID is resolved: it is not required.** The SDK subscribes with plain ticker strings only (`['quotes', ['FRHC.US']]`), never a ticker+ID pair. The `TICKER<9-digit-id>` shape seen in the live browser capture (F-21) is very likely a web-frontend-internal optimization (e.g. a cache key), not a protocol requirement.
+
+**Methods currently implemented by the SDK:** `quotes(symbols)`, `market_depth(symbol)` (order book — event `b`), `portfolio()`, `orders()`, `markets()`. **Not implemented by the SDK:** `sessions` (security sessions — the original F-18 topic), `news`, `counters`, `alerts`, `sms`, `calculatedPortfolio`. These would need to be added by this project if needed, but now against a confirmed protocol rather than a guessed one — same auth, same host, same framing, just a different first array element.
+
+**Readiness impact:** WebSocket quotes/order-book/portfolio/orders/market-status subscriptions can now be considered `PARTIAL`→ trending toward `READY`: protocol, auth, host, and framing are all confirmed by source code already in this project's dependency tree. What remains before implementation: a live end-to-end test (connect, subscribe, receive at least one real message) using this project's own credentials, and a decision on whether to use `TradernetWebsocket` directly (like `TradernetSdkAdapter` already does for REST) or reimplement the same protocol independently.
+
+#### F-24 — Official master auth page confirms F-17's REST mechanism; `getAllSecurities` is a real documented securities directory
+
+**"How the API works" (master page):**
+
+- Confirms, in official prose (not just observed behaviour), exactly the mechanism already live-confirmed in F-17: endpoint `https://tradernet.com/api/{command}` (per-command URL — "any of domain zones can be used as API endpoint"), authentication via `X-NtApi-PublicKey`/`X-NtApi-Sig`/`X-NtApi-Timestamp` headers, HMAC-SHA256 signature.
+- **New detail, not previously recorded:** signing rules differ by HTTP method. For POST/PUT, the signature covers the JSON request body plus the timestamp. For GET, the signature covers **only the timestamp** (request parameters are not included in the GET signature). This was not observable from the single POST-only live sample in F-17.
+- States explicitly: "each request is authenticated via signature, so a separate authorization step is not required" — i.e. this mechanism is presented as self-sufficient, not requiring a prior SID/login step. This directly conflicts with the SID-based flows described in the `getSecuritySessions` and `getOPQ` manual pages (F-18, F-22) on the same documentation site. **Resolution for this project:** the header+HMAC mechanism is the one to build against — it is the one independently confirmed by (a) a live test (F-17), (b) this official master page, and (c) the officially-maintained SDK's source code (F-23). The SID-based pages should be treated as documentation for a different, likely legacy, generation unless a live test proves otherwise.
+- This resolves Open Question §21 Q3 ("What is the live REST signature algorithm?") — upgrade from Open to **Resolved**.
+- This substantially narrows Open Question §21 Q2 (relationship between `public_key` and `uid`): the officially documented and SDK-implemented mechanism has **no `uid` field at all** — only `X-NtApi-PublicKey`. The `uid`/`public_key` ambiguity from the original `tn.api` GitHub README (F-05/F-15) appears to belong to a different, likely-superseded API description. Treat `uid` as not part of the current live contract unless separately proven otherwise.
+
+**`getAllSecurities` ("Справочник бумаг"):**
+
+- A real, documented securities-directory endpoint: `cmd: getAllSecurities`, supports `take`/`skip` pagination, `sort`, and `filter` (operators: `eq`, `neq`, `eqormore`, `eqorless`, `isempty`, `contains`, `doesnotcontain`, `startswith`, `endswith`, `in`, `isnull`, `notnull`). Filterable/sortable fields include `ticker`, `instr_type`, `instr_kind`, `mkt_id`, `mkt_name`, `mkt_short_code`, `face_curr_c`, `fv`, `step_price`, `x_short`.
+- **Documented rate limit: 10 requests per minute.** This is the first concrete rate-limit figure recorded anywhere in this file (§18 was entirely TBD).
+- Response includes `mkt_short_code` (e.g. `"FIX"` for `AAPL.US`) — this is the same field name already independently chosen for KASE Pilot's own local catalog schema (`catalog/data/instruments.json`'s `market` field concept), though the two are not the same data source and should not be conflated without a live test confirming the value shapes match for KASE instruments specifically.
+- **Does not resolve F-21's numeric ID question** (now moot per F-23 — the ID isn't needed). Reviewed field-by-field for completeness: `instr_id` (e.g. `"40000001"`), `id` (e.g. `113`), `mkt_id` (e.g. `"30000000001"`) are all present but none match the 9-digit range seen in the F-21 browser capture; this is recorded for completeness, not because it matters now.
+- **Not yet live-tested.** Per this project's own rule (no code without a live-confirmed contract where feasible), this should be tested with real credentials before being relied upon, the same way `getSecurityInfo` was in F-17 — especially since the example `curl` snippet on the same manual page mixes `Cookie: SID=...` with the `q=` POST body style, which is inconsistent with both the master auth page and the SDK.
+
+**Unresolved questions after this session:**
+
+- Live-test `TradernetWebsocket.quotes(["some KASE ticker"])` (or `markets()`, as the simplest possible smoke test) with real credentials — this is now a code/credentials task, not a research task.
+- Live-test `getAllSecurities` (ideally via the SDK, if it exposes this command — not yet checked) to confirm it actually returns data for KASE/KZT instruments, unlike `getReadyList`/refbooks.
+- The SDK does **not** expose `getAllSecurities` under any dedicated method
+  (confirmed by a full-text search of the installed package — no match for
+  `getAllSecurities`/`get_all_securities`/`AllSecurities`). It would have
+  to be called via the generic `Tradernet.authorized_request('getAllSecurities', {...})`
+  method (public, already used internally by every other typed method in
+  the SDK), not a purpose-built wrapper.
+- `sessions`/`getSecuritySessions` over WebSocket: still not implemented by the SDK and still not live-captured directly (F-20/F-21 captured `quotes`/`markets`/etc., not `sessions`). Protocol is now known by extension (same auth/framing as F-23), but the specific command has not been observed working.
+
+---
+
+### 2026-07-31 (continued) — Live Smoke Test of `TradernetWebsocket.markets()`
+
+**Date:** 2026-07-31
+**Source:** Project owner ran the one-off smoke test proposed at the end of
+F-23/F-24, using real account credentials, and supplied the result
+directly.
+
+#### F-25 — `TradernetWebsocket` confirmed working end-to-end with real credentials | Confirmed observed
+
+```python
+core = Tradernet(public_key, private_key)
+async with TradernetWebsocket(core) as ws:
+    async for quote in ws.markets():
+        print(quote)
+        break
+```
+
+Connected successfully; `markets()` yielded one `dict` message with
+top-level keys `t` (snapshot time, e.g. `"2026-07-31T10:30:00"`) and `m`
+(a list of market status entries). Market codes seen in the sample
+included `AIX`, `AMX`, `ATHEX`, `BIST`, `FIX`, `SPBEX`, `US_OPT`, `WSE`,
+"and others" (the full list was not supplied verbatim).
+
+**This is the first fully live, end-to-end confirmation of F-23**: the
+SDK's WebSocket implementation (transport, `X-NtApi-*` query-param auth,
+`[command, args]` framing, `[event, data, _]` response framing) works
+against a real account, not just against SDK source code.
+
+**Open concern — KASE was not seen in the reported sample.** The market
+codes reported (`AIX`, `AMX`, `ATHEX`, `BIST`, `FIX`, `SPBEX`, `US_OPT`,
+`WSE`) do not include a code that unambiguously reads as `KASE`. Note in
+particular: **`AIX` is Astana International Exchange, a distinct legal
+entity from KASE (Kazakhstan Stock Exchange)** — they must not be
+conflated even though both are Kazakhstani. Since the reported list was
+described as truncated ("and others"), this is not evidence that KASE is
+absent from `markets()` — only that it wasn't visible in what was reported
+here. Given this project's explicit KASE-only scope, this must be checked
+with the untruncated `m` list before assuming market-status coverage
+includes KASE.
+
+**Unresolved questions after this session:**
+
+- Get the full, untruncated `m` list from the same `markets()` call and
+  check specifically for a `KASE` (or similarly-named) entry.
+- If KASE is absent from `markets()`, is it absent from the WebSocket
+  layer entirely, or just from this particular stream (market status),
+  while `quotes()`/instrument-level data still covers KASE tickers (as
+  already suggested by the KASE-suffixed tickers seen in the F-21 browser
+  capture)?
+
+---
+
+#### F-26 — KASE confirmed present in the full `markets()` payload | Confirmed observed
+
+**Date:** 2026-07-31
+**Source:** Project owner supplied the complete, untruncated `m` list from
+the same live `markets()` call as F-25.
+
+`KASE` is present and was `OPEN` at capture time:
+
+```
+{'mkt_id': 30000000010, 'p': '09:20:00', 'n': 'KASE', 'o': '09:30:00',
+ 'c': '20:00:00', 'dt': -120, 'tz': 'Asia/Yekaterinburg', 'n2': 'KASE',
+ 's': 'OPEN', 'post': None, 'date': [...KZ public holidays...],
+ 'ev': [...gate/open/close events...]}
+```
+
+Two related, distinct market codes also appear:
+
+- `KASE.CUR` (`mkt_id: 30000000026`) — likely the KASE currency/FX
+  market, given the name pattern (meaning not confirmed from this payload
+  alone).
+- `KASE.OTC` (`mkt_id: 30000000027`) — likely an OTC segment of KASE
+  (meaning not confirmed from this payload alone).
+
+`AIX` (`mkt_id: 30000000025`) is confirmed present as a **separate** entry
+from `KASE` — corroborating the earlier caution in F-25 that the two must
+not be conflated. Also present: `ITS` and `ITS_MONEY` (`tz: Asia/Almaty`),
+whose relationship to KASE, if any, is not confirmed by this payload and
+should not be assumed.
+
+**Note on the `tz` field:** `KASE`, `KASE.CUR`, and `AIX` all report
+`'tz': 'Asia/Yekaterinburg'`, not `'Asia/Almaty'` — recorded exactly as
+observed; this is presumably a UTC-offset-equivalent timezone choice on
+Tradernet's side (Yekaterinburg and Almaty currently share the same UTC
+offset) rather than an error, but this is not confirmed and should not be
+relied upon to mean anything beyond "same offset."
+
+**Impact:** This closes the open question from F-25. WebSocket market
+status coverage for KASE is now live-confirmed, on top of the
+already-confirmed protocol/auth mechanism (F-23) and the already-confirmed
+end-to-end connectivity (F-25). Combined with the KASE-suffixed tickers
+already seen in the `quotes` subscription list (F-21 — `HSBK.KZ`,
+`KSPI.KZ`, `CCBN.KZ`, etc.), there is now live evidence that both market
+status and instrument quotes are available for KASE over this WebSocket
+connection.
+
+**Still not live-tested:** `quotes()` specifically for a KASE ticker
+through the SDK (only `markets()` has been tested so far), and the
+`getAllSecurities` REST endpoint for KASE coverage (F-24).
+
+---
+
+### 2026-07-31 (continued) — `kase-pilot stream-quotes` Live End-to-End Confirmation
+
+**Date:** 2026-07-31
+**Source:** Project owner ran the newly implemented
+`kase-pilot stream-quotes HSBK.KZ` command against a real account and
+supplied the output directly.
+
+#### F-27 — Live quote stream confirmed for a real KASE/KZT instrument through this project's own code | Confirmed observed
+
+Two messages were received for `HSBK.KZ` (Halyk Bank, KASE):
+
+- A full quote message: `base_currency: "KZT"`, `base_ltr: "KASE"`,
+  `x_curr: "KZT"`, `marketStatus: "OPEN"`, `name: "Народный банк
+  Казахстана"`, live bid/ask/last prices in tenge (`bap`, `bbp`, `ltp`,
+  etc.).
+- A second, much smaller message for the same ticker (`c`, `init`, `lts`,
+  `ltt`, `n`, `rev`, `type`, `acc_srv_tm` only — most fields absent).
+
+**This is the first confirmation that runs entirely through this
+project's own code** (`TradernetWebsocketAdapter` → `StreamQuotes` →
+`kase-pilot stream-quotes` CLI command), not just SDK source reading
+(F-23), a bare Python smoke test (F-25), or a browser capture (F-20/F-21).
+It confirms, for a real KASE/KZT instrument specifically: connection,
+auth, subscription, and message delivery all work through the
+implementation built in this project.
+
+**New confirmed detail — quote messages are partial/delta updates, not
+always full snapshots.** The second message shares only 8 of the ~70
+fields present in the first. **Implication for any future consumer code:**
+no field should be assumed present on every message except `c` (the
+ticker) — not even fields as basic as `ltp` (last price) or `bap`/`bbp`
+(bid/ask). Any code that aggregates or persists this stream must merge
+partial updates onto prior state per ticker, not treat each message as a
+complete quote.
+
+**Readiness impact:** the WebSocket quote-streaming capability for
+KASE/KZT can now be considered fully confirmed end-to-end for this
+project's own implementation, not just the underlying SDK/protocol. What
+remains open is entirely downstream of this: persistence/storage design
+(explicitly deferred, per the architecture discussion preceding this
+implementation) and coverage of the remaining "core" streams (order book,
+trades, news) not yet implemented in this project.
