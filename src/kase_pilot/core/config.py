@@ -11,6 +11,9 @@ _PUBLIC_KEY_ENV = "TRADERNET_PUBLIC_KEY"
 _PRIVATE_KEY_ENV = "TRADERNET_PRIVATE_KEY"
 
 
+_MARKET_DATABASE_NAME = "market.sqlite3"
+
+
 def _find_project_root() -> Path:
     """Find the source root, falling back to the runtime working directory."""
     config_file = Path(__file__).resolve()
@@ -20,6 +23,22 @@ def _find_project_root() -> Path:
             return directory
 
     return Path.cwd().resolve()
+
+
+def _database_dir(project_root: Path) -> Path:
+    return project_root / "data" / "database"
+
+
+def market_database_path(project_root: Path | None = None) -> Path:
+    """Return the collected market database path, without needing credentials.
+
+    Commands that only read locally collected data (rebuilding a quote or an
+    order book) must not demand broker credentials, so they cannot go through
+    ``load_settings``. This shares the same path derivation as ``Settings`` so
+    the two cannot drift apart.
+    """
+    root = project_root if project_root is not None else _find_project_root()
+    return _database_dir(root) / _MARKET_DATABASE_NAME
 
 
 @dataclass(frozen=True)
@@ -47,7 +66,7 @@ class Settings:
         object.__setattr__(self, "project_root", project_root)
         object.__setattr__(self, "src_dir", project_root / "src")
         object.__setattr__(self, "data_dir", data_dir)
-        object.__setattr__(self, "database_dir", data_dir / "database")
+        object.__setattr__(self, "database_dir", _database_dir(project_root))
         object.__setattr__(self, "log_dir", data_dir / "logs")
         object.__setattr__(self, "backup_dir", data_dir / "backup")
         object.__setattr__(self, "cache_dir", data_dir / "cache")

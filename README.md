@@ -421,6 +421,45 @@ These three commands replaced an earlier `news` command that queried a
 different, superseded Tradernet contract and was disabled; see
 `docs/API_NOTES.md` (F-30) for the evidence trail.
 
+### Live streams and collection
+
+`stream-quotes` and `stream-orderbook` open a WebSocket and print messages
+as they arrive, until interrupted.
+
+```console
+kase-pilot stream-quotes HSBK.KZ KSPI.KZ
+kase-pilot stream-orderbook HSBK.KZ
+```
+
+Options: `--save`, `--reconnect`. Quote streaming takes several symbols;
+order-book streaming takes exactly one, because the broker's market-depth
+subscription is per-instrument.
+
+`--save` appends every message verbatim to a local SQLite database under
+`data/database/`, along with the collection session, so gaps in coverage stay
+visible. `--reconnect` retries with exponential backoff after a dropped
+connection and records each outage. For unattended collection see
+`tools/collector/README.md`.
+
+### Rebuilding state from collected data
+
+`rebuild-quote` and `rebuild-book` reconstruct current state from previously
+saved messages. They read only local data and need no broker credentials.
+
+```console
+kase-pilot rebuild-quote HSBK.KZ
+kase-pilot rebuild-book HSBK.KZ
+```
+
+Both start from the most recent complete message and apply later updates, and
+report `_from_snapshot` so you can tell whether the result rests on a complete
+starting point or only on partial updates. Exit code `3` means nothing was
+collected for that instrument.
+
+These reconstructions are one interpretation of the raw log, not stored data:
+the raw messages remain untouched, so a reconstruction can be rewritten and
+re-run whenever understanding of the protocol improves.
+
 ## Output
 
 Most commands print the Tradernet response as indented UTF-8 JSON:

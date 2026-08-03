@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from kase_pilot.broker._tradernet_ws import TradernetWebsocketAdapter
+from kase_pilot.broker._tradernet_ws import ReconnectObserver, TradernetWebsocketAdapter
 
 
 class StreamQuotes:
@@ -17,7 +17,14 @@ class StreamQuotes:
     async def execute(
         self,
         symbols: Sequence[str],
+        *,
+        reconnect: bool = False,
+        observer: ReconnectObserver | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the quote-streaming use case."""
-        async for quote in self._adapter.quotes(symbols):
+        async for quote in self._adapter.quotes(
+            symbols,
+            reconnect=reconnect,
+            observer=observer,
+        ):
             yield quote

@@ -168,3 +168,62 @@ def test_save_without_context_manager_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="context manager"):
         store.save({"c": "HSBK.KZ"})
+
+
+def test_records_interruption_so_gaps_are_visible(tmp_path: Path) -> None:
+    """A dropped connection must be distinguishable from a quiet market."""
+    database_path = tmp_path / "market.sqlite3"
+
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
+        store.save({"c": "HSBK.KZ"})
+        store.record_interruption(1)
+
+    ((attempt, failed_at, resumed_at),) = _rows(
+        database_path,
+        "SELECT attempt, failed_at, resumed_at FROM collector_interruptions",
+    )
+    assert attempt == 1
+    assert failed_at
+    assert resumed_at is None
+
+
+def test_records_resumption_against_the_open_interruption(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
+        store.record_interruption(1)
+        store.record_resumption()
+
+    ((resumed_at,),) = _rows(
+        database_path, "SELECT resumed_at FROM collector_interruptions"
+    )
+    assert resumed_at
+
+
+def test_interruption_is_linked_to_its_session(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
+        store.record_interruption(1)
+
+    ((session_id,),) = _rows(
+        database_path, "SELECT session_id FROM collector_interruptions"
+    )
+    ((expected,),) = _rows(database_path, "SELECT id FROM collector_sessions")
+    assert session_id == expected
+
+
+def test_repeated_failures_are_recorded_separately(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
+        store.record_interruption(1)
+        store.record_interruption(2)
+        store.record_resumption()
+
+    rows = _rows(
+        database_path,
+        "SELECT attempt, resumed_at FROM collector_interruptions ORDER BY id",
+    )
+    assert [attempt for attempt, _ in rows] == [1, 2]
+    assert all(resumed_at for _, resumed_at in rows)

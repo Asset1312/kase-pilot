@@ -13,6 +13,11 @@ from kase_pilot.broker._tradernet_ws import TradernetWebsocketAdapter
 from kase_pilot.core.exceptions import ApiRequestError, ValidationError
 
 
+async def _no_sleep(delay: float) -> None:
+    """Skip retry backoff so reconnection tests stay fast."""
+    return
+
+
 class FakeWebsocket:
     """Stands in for tradernet.TradernetWebsocket in tests."""
 
@@ -210,3 +215,122 @@ def test_market_depth_wraps_iteration_failure(
         _collect_depth(adapter, "HSBK.KZ")
 
     assert exc_info.value.__cause__ is original
+
+
+class FlakyWebsocket:
+    """Fails a set number of times, then streams normally."""
+
+    def __init__(self, failures: int, messages: Sequence[dict[str, Any]]) -> None:
+        self._remaining_failures = failures
+        self._messages = messages
+        self.connection_attempts = 0
+
+    async def __aenter__(self) -> Self:
+        self.connection_attempts += 1
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def quotes(
+        self,
+        symbols: Sequence[str],
+    ) -> AsyncIterator[dict[str, Any]]:
+        if self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            raise RuntimeError("connection dropped")
+            yield  # pragma: no cover - unreachable, marks this a generator
+        for message in self._messages:
+            yield message
+
+
+def _collect_reconnecting(
+    adapter: TradernetWebsocketAdapter,
+    symbols: Sequence[str],
+    observer: Any = None,
+) -> list[Any]:
+    async def run() -> list[Any]:
+        return [
+            quote
+            async for quote in adapter.quotes(
+                symbols, reconnect=True, observer=observer
+            )
+        ]
+
+    return asyncio.run(run())
+
+
+def test_reconnect_retries_until_the_stream_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [{"c": "HSBK.KZ", "ltp": 1}]
+    fake = FlakyWebsocket(failures=2, messages=messages)
+    _install_fake_websocket(monkeypatch, fake)
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    assert _collect_reconnecting(adapter, ["HSBK.KZ"]) == messages
+    assert fake.connection_attempts == 3
+
+
+def test_reconnect_reports_each_failure_and_the_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, int, float]] = []
+    fake = FlakyWebsocket(failures=2, messages=[{"c": "HSBK.KZ"}])
+    _install_fake_websocket(monkeypatch, fake)
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    _collect_reconnecting(
+        adapter,
+        ["HSBK.KZ"],
+        lambda event, attempt, delay: events.append((event, attempt, delay)),
+    )
+
+    assert [event for event, _, _ in events] == ["failed", "failed", "resumed"]
+    assert [attempt for _, attempt, _ in events] == [1, 2, 2]
+
+
+def test_reconnect_backs_off_exponentially(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+    fake = FlakyWebsocket(failures=3, messages=[])
+    _install_fake_websocket(monkeypatch, fake)
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", record_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    _collect_reconnecting(adapter, ["HSBK.KZ"])
+
+    assert delays == [1.0, 2.0, 4.0]
+
+
+def test_reconnect_does_not_retry_validation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed message is not transient; retrying would hide it."""
+    fake = FakeWebsocket(object(), messages=[["not", "a", "mapping"]])  # type: ignore[list-item]
+    _install_fake_websocket(monkeypatch, fake)
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError):
+        _collect_reconnecting(adapter, ["HSBK.KZ"])
+
+
+def test_without_reconnect_a_failure_still_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FlakyWebsocket(failures=1, messages=[{"c": "HSBK.KZ"}])
+    _install_fake_websocket(monkeypatch, fake)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    with pytest.raises(ApiRequestError):
+        _collect(adapter, ["HSBK.KZ"])
+
+    assert fake.connection_attempts == 1

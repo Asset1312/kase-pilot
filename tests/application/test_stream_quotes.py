@@ -14,7 +14,11 @@ class FakeAdapter:
         self._messages = messages
         self.calls: list[Sequence[str]] = []
 
-    async def quotes(self, symbols: Sequence[str]) -> AsyncIterator[dict[str, Any]]:
+    async def quotes(
+        self,
+        symbols: Sequence[str],
+        **kwargs: object,
+    ) -> AsyncIterator[dict[str, Any]]:
         self.calls.append(symbols)
         for message in self._messages:
             yield message

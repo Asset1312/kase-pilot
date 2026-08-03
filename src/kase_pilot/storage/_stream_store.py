@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS order_book_messages (
 
 CREATE INDEX IF NOT EXISTS order_book_messages_ticker_received_at
     ON order_book_messages (ticker, received_at);
+
+CREATE TABLE IF NOT EXISTS collector_interruptions (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL,
+    attempt     INTEGER NOT NULL,
+    failed_at   TEXT NOT NULL,
+    resumed_at  TEXT,
+    FOREIGN KEY (session_id) REFERENCES collector_sessions (id)
+);
 """
 
 
@@ -147,5 +156,38 @@ class StreamStore:
                 self._session_id,
                 json.dumps(message, ensure_ascii=False),
             ),
+        )
+        self._connection.commit()
+
+    def record_interruption(self, attempt: int) -> None:
+        """Record that the connection dropped and a retry is pending.
+
+        Without this, an outage is indistinguishable from a quiet market: the
+        message log simply has no rows for that period. Recording it makes the
+        gap explicit and queryable.
+        """
+        if self._connection is None:
+            raise RuntimeError(
+                f"{type(self).__name__} must be used as a context manager"
+            )
+
+        self._connection.execute(
+            "INSERT INTO collector_interruptions (session_id, attempt, failed_at) "
+            "VALUES (?, ?, ?)",
+            (self._session_id, attempt, _utc_now()),
+        )
+        self._connection.commit()
+
+    def record_resumption(self) -> None:
+        """Close out the open interruption for this session, if any."""
+        if self._connection is None:
+            raise RuntimeError(
+                f"{type(self).__name__} must be used as a context manager"
+            )
+
+        self._connection.execute(
+            "UPDATE collector_interruptions SET resumed_at = ? "
+            "WHERE session_id = ? AND resumed_at IS NULL",
+            (_utc_now(), self._session_id),
         )
         self._connection.commit()

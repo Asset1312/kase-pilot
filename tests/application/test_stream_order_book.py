@@ -14,7 +14,11 @@ class FakeAdapter:
         self._messages = messages
         self.calls: list[str] = []
 
-    async def market_depth(self, symbol: str) -> AsyncIterator[dict[str, Any]]:
+    async def market_depth(
+        self,
+        symbol: str,
+        **kwargs: object,
+    ) -> AsyncIterator[dict[str, Any]]:
         self.calls.append(symbol)
         for message in self._messages:
             yield message

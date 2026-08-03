@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from kase_pilot.broker._tradernet_ws import TradernetWebsocketAdapter
+from kase_pilot.broker._tradernet_ws import ReconnectObserver, TradernetWebsocketAdapter
 
 
 class StreamOrderBook:
@@ -14,7 +14,17 @@ class StreamOrderBook:
     def __init__(self, adapter: TradernetWebsocketAdapter) -> None:
         self._adapter = adapter
 
-    async def execute(self, symbol: str) -> AsyncIterator[dict[str, Any]]:
+    async def execute(
+        self,
+        symbol: str,
+        *,
+        reconnect: bool = False,
+        observer: ReconnectObserver | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         """Execute the order-book-streaming use case."""
-        async for update in self._adapter.market_depth(symbol):
+        async for update in self._adapter.market_depth(
+            symbol,
+            reconnect=reconnect,
+            observer=observer,
+        ):
             yield update

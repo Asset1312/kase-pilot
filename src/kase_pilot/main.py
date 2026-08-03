@@ -49,10 +49,13 @@ from kase_pilot.app import (
     create_stream_quotes,
 )
 from kase_pilot.application import StreamOrderBook, StreamQuotes
-from kase_pilot.core.config import load_settings
+from kase_pilot.broker._tradernet_ws import ReconnectObserver
+from kase_pilot.core.config import load_settings, market_database_path
 from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
+from kase_pilot.derive import rebuild_order_book, rebuild_quote
 from kase_pilot.storage import OrderBookStore, QuoteStore
+from kase_pilot.storage._stream_store import StreamStore
 
 _USAGE = (
     "Usage:\n"
@@ -99,8 +102,10 @@ _USAGE = (
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]\n"
     "  kase-pilot ticks SYMBOL\n"
-    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
-    "  kase-pilot stream-orderbook SYMBOL [--save]"
+    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect]\n"
+    "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect]\n"
+    "  kase-pilot rebuild-quote SYMBOL\n"
+    "  kase-pilot rebuild-book SYMBOL"
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
@@ -937,12 +942,64 @@ def _run_ticks(public_key: str, private_key: str, symbol: str) -> int:
     return 0
 
 
+_NOTHING_COLLECTED_TEMPLATE = "No collected {stream} data for {ticker}"
+
+
+def _run_rebuild_quote(symbol: str, *, database_path: Path) -> int:
+    state = rebuild_quote(database_path, symbol)
+    if state is None:
+        print(
+            _NOTHING_COLLECTED_TEMPLATE.format(stream="quote", ticker=symbol),
+            file=sys.stderr,
+        )
+        return 3
+    print(json.dumps(state, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _run_rebuild_book(symbol: str, *, database_path: Path) -> int:
+    book = rebuild_order_book(database_path, symbol)
+    if book is None:
+        print(
+            _NOTHING_COLLECTED_TEMPLATE.format(stream="order-book", ticker=symbol),
+            file=sys.stderr,
+        )
+        return 3
+    print(json.dumps(book, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _make_reconnect_observer(store: StreamStore | None) -> ReconnectObserver:
+    """Report connection drops to stderr, and record them when collecting."""
+
+    def observe(event: str, attempt: int, delay: float) -> None:
+        if event == "failed":
+            print(
+                f"Connection lost (attempt {attempt}); retrying in {delay:.0f}s",
+                file=sys.stderr,
+            )
+            if store is not None:
+                store.record_interruption(attempt)
+        else:
+            print("Connection restored", file=sys.stderr)
+            if store is not None:
+                store.record_resumption()
+
+    return observe
+
+
 async def _stream_quotes(
     use_case: StreamQuotes,
     symbols: Sequence[str],
     store: QuoteStore | None = None,
+    *,
+    reconnect: bool = False,
 ) -> None:
-    async for quote in use_case.execute(symbols):
+    async for quote in use_case.execute(
+        symbols,
+        reconnect=reconnect,
+        observer=_make_reconnect_observer(store) if reconnect else None,
+    ):
         if store is not None:
             store.save(quote)
         print(json.dumps(quote, indent=2, ensure_ascii=False))
@@ -954,15 +1011,18 @@ def _run_stream_quotes(
     symbols: Sequence[str],
     *,
     save: bool,
+    reconnect: bool,
     database_path: Path,
 ) -> int:
     use_case = create_stream_quotes(public_key, private_key)
     try:
         if save:
             with QuoteStore(database_path).open_session(tuple(symbols)) as store:
-                asyncio.run(_stream_quotes(use_case, symbols, store))
+                asyncio.run(
+                    _stream_quotes(use_case, symbols, store, reconnect=reconnect)
+                )
         else:
-            asyncio.run(_stream_quotes(use_case, symbols))
+            asyncio.run(_stream_quotes(use_case, symbols, reconnect=reconnect))
     except KeyboardInterrupt:
         pass
     return 0
@@ -972,8 +1032,14 @@ async def _stream_order_book(
     use_case: StreamOrderBook,
     symbol: str,
     store: OrderBookStore | None = None,
+    *,
+    reconnect: bool = False,
 ) -> None:
-    async for update in use_case.execute(symbol):
+    async for update in use_case.execute(
+        symbol,
+        reconnect=reconnect,
+        observer=_make_reconnect_observer(store) if reconnect else None,
+    ):
         if store is not None:
             store.save(update)
         print(json.dumps(update, indent=2, ensure_ascii=False))
@@ -985,15 +1051,18 @@ def _run_stream_order_book(
     symbol: str,
     *,
     save: bool,
+    reconnect: bool,
     database_path: Path,
 ) -> int:
     use_case = create_stream_order_book(public_key, private_key)
     try:
         if save:
             with OrderBookStore(database_path).open_session((symbol,)) as store:
-                asyncio.run(_stream_order_book(use_case, symbol, store))
+                asyncio.run(
+                    _stream_order_book(use_case, symbol, store, reconnect=reconnect)
+                )
         else:
-            asyncio.run(_stream_order_book(use_case, symbol))
+            asyncio.run(_stream_order_book(use_case, symbol, reconnect=reconnect))
     except KeyboardInterrupt:
         pass
     return 0
@@ -1007,6 +1076,7 @@ def run(
     active: bool = True,
     show_expired: bool = False,
     save: bool = False,
+    reconnect: bool = False,
     follow: bool = False,
     json_output: bool = False,
     sort_field: str | None = None,
@@ -1078,6 +1148,8 @@ def run(
         "ticks",
         "stream-quotes",
         "stream-orderbook",
+        "rebuild-quote",
+        "rebuild-book",
     }:
         raise ValueError(f"Unknown command: {command}")
     if command == "trades" and (ticker is not None or start is None or end is None):
@@ -1199,6 +1271,10 @@ def run(
         raise ValueError(
             "Saving is supported only for stream-quotes and stream-orderbook"
         )
+    if reconnect and command not in {"stream-quotes", "stream-orderbook"}:
+        raise ValueError(
+            "Reconnecting is supported only for stream-quotes and stream-orderbook"
+        )
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
     if command == "instruments" and (market is None) == (search is None):
@@ -1221,6 +1297,18 @@ def run(
     if command == "instrument":
         assert ticker is not None
         return _run_instrument(ticker)
+    if command == "rebuild-quote":
+        assert ticker is not None
+        return _run_rebuild_quote(
+            ticker,
+            database_path=market_database_path(project_root),
+        )
+    if command == "rebuild-book":
+        assert ticker is not None
+        return _run_rebuild_book(
+            ticker,
+            database_path=market_database_path(project_root),
+        )
 
     settings = load_settings(project_root, environ=environ)
     public_key = settings.tradernet_public_key
@@ -1395,7 +1483,8 @@ def run(
             private_key,
             symbols,
             save=save,
-            database_path=settings.database_dir / "market.sqlite3",
+            reconnect=reconnect,
+            database_path=market_database_path(project_root),
         )
     if command == "stream-orderbook":
         return _run_stream_order_book(
@@ -1403,7 +1492,8 @@ def run(
             private_key,
             ticker,
             save=save,
-            database_path=settings.database_dir / "market.sqlite3",
+            reconnect=reconnect,
+            database_path=market_database_path(project_root),
         )
     raise ValueError(f"Unknown command: {command}")
 
@@ -1434,6 +1524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_fields: list[str] | None = None
     stream_quotes_symbols: list[str] = []
     save_stream = False
+    reconnect_stream = False
     news_provider = None
     news_take = None
     news_skip = None
@@ -1485,13 +1576,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             "candles",
             "instrument",
             "ticks",
+            "rebuild-quote",
+            "rebuild-book",
         }
     ):
         pass
     elif arguments and arguments[0] == "stream-orderbook":
         remaining = list(arguments[1:])
-        if remaining and remaining[-1] == "--save":
-            save_stream = True
+        seen_flags: set[str] = set()
+        while remaining and remaining[-1] in {"--save", "--reconnect"}:
+            flag = remaining[-1]
+            if flag in seen_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            if flag == "--save":
+                save_stream = True
+            else:
+                reconnect_stream = True
             remaining = remaining[:-1]
         if len(remaining) != 1 or remaining[0].startswith("--"):
             print(_USAGE, file=sys.stderr)
@@ -1665,8 +1767,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             export_fields = values
     elif arguments and arguments[0] == "stream-quotes":
         remaining = list(arguments[1:])
-        if remaining and remaining[-1] == "--save":
-            save_stream = True
+        seen_flags: set[str] = set()
+        while remaining and remaining[-1] in {"--save", "--reconnect"}:
+            flag = remaining[-1]
+            if flag in seen_flags:
+                print(_USAGE, file=sys.stderr)
+                return 2
+            seen_flags.add(flag)
+            if flag == "--save":
+                save_stream = True
+            else:
+                reconnect_stream = True
             remaining = remaining[:-1]
         stream_quotes_symbols = remaining
         if not stream_quotes_symbols or any(
@@ -2204,6 +2315,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             if save_stream:
                 stream_quotes_arguments["save"] = True
+            if reconnect_stream:
+                stream_quotes_arguments["reconnect"] = True
             return run("stream-quotes", **stream_quotes_arguments)
         if arguments[0] == "options":
             options_arguments: dict[str, object] = {"exchange": options_exchange}
@@ -2350,6 +2463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             order_book_arguments: dict[str, object] = {}
             if save_stream:
                 order_book_arguments["save"] = True
+            if reconnect_stream:
+                order_book_arguments["reconnect"] = True
             return run("stream-orderbook", arguments[1], **order_book_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:

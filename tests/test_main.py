@@ -1371,7 +1371,7 @@ class FakeStreamQuotes:
         self._messages = [] if messages is None else messages
         self.calls: list[object] = []
 
-    async def execute(self, symbols: object) -> Any:
+    async def execute(self, symbols: object, **kwargs: object) -> Any:
         self.calls.append(symbols)
         for message in self._messages:
             yield message
@@ -1403,7 +1403,7 @@ def test_run_stream_quotes_prints_messages_without_saving(
     assert capsys.readouterr().out == (
         json.dumps(messages[0], indent=2, ensure_ascii=False) + "\n"
     )
-    assert not list(tmp_path.glob("*.sqlite3"))
+    assert not list(tmp_path.rglob("*.sqlite3"))
 
 
 def test_run_stream_quotes_with_save_writes_messages_to_database(
@@ -1432,11 +1432,12 @@ def test_run_stream_quotes_with_save_writes_messages_to_database(
         "stream-quotes",
         symbols=["HSBK.KZ"],
         save=True,
+        project_root=tmp_path,
         environ={},
     )
 
     assert exit_code == 0
-    database_path = tmp_path / "market.sqlite3"
+    database_path = tmp_path / "data" / "database" / "market.sqlite3"
     assert database_path.is_file()
 
     connection = sqlite3.connect(database_path)
@@ -1479,10 +1480,26 @@ def test_run_accepts_save_for_both_stream_commands(
     )
 
     assert (
-        main_module.run("stream-quotes", symbols=["HSBK.KZ"], save=True, environ={})
+        main_module.run(
+            "stream-quotes",
+            symbols=["HSBK.KZ"],
+            save=True,
+            project_root=tmp_path,
+            environ={},
+        )
         == 0
     )
-    assert main_module.run("stream-orderbook", "HSBK.KZ", save=True, environ={}) == 0
+    assert (
+        main_module.run(
+            "stream-orderbook",
+            "HSBK.KZ",
+            save=True,
+            project_root=tmp_path,
+            environ={},
+        )
+        == 0
+    )
+    assert (tmp_path / "data" / "database" / "market.sqlite3").is_file()
 
 
 def test_main_routes_stream_quotes_without_save(
@@ -1516,6 +1533,88 @@ def test_main_routes_stream_quotes_with_save(
 
 
 @pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            ["stream-quotes", "HSBK.KZ", "--reconnect"],
+            {"symbols": ["HSBK.KZ"], "reconnect": True},
+        ),
+        (
+            ["stream-quotes", "HSBK.KZ", "--save", "--reconnect"],
+            {"symbols": ["HSBK.KZ"], "save": True, "reconnect": True},
+        ),
+        (
+            ["stream-quotes", "HSBK.KZ", "--reconnect", "--save"],
+            {"symbols": ["HSBK.KZ"], "save": True, "reconnect": True},
+        ),
+    ],
+)
+def test_main_routes_stream_quotes_reconnect_flag(
+    arguments: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("stream-quotes", expected)]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["stream-orderbook", "HSBK.KZ", "--reconnect"], {"reconnect": True}),
+        (
+            ["stream-orderbook", "HSBK.KZ", "--save", "--reconnect"],
+            {"save": True, "reconnect": True},
+        ),
+    ],
+)
+def test_main_routes_stream_order_book_reconnect_flag(
+    arguments: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, symbol: str, **options: object) -> int:
+        calls.append((command, symbol, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("stream-orderbook", "HSBK.KZ", expected)]
+
+
+def test_run_rejects_reconnect_for_other_commands() -> None:
+    with pytest.raises(ValueError, match="only for stream-quotes"):
+        main_module.run("info", "HSBK.KZ", reconnect=True)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stream-quotes", "HSBK.KZ", "--reconnect", "--reconnect"],
+        ["stream-quotes", "HSBK.KZ", "--save", "--save"],
+        ["stream-orderbook", "HSBK.KZ", "--reconnect", "--reconnect"],
+    ],
+)
+def test_main_rejects_repeated_stream_flags(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(arguments) == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
     "arguments",
     [
         ["stream-quotes"],
@@ -1536,7 +1635,7 @@ class FakeStreamOrderBook:
         self._messages = [] if messages is None else messages
         self.calls: list[object] = []
 
-    async def execute(self, symbol: object) -> Any:
+    async def execute(self, symbol: object, **kwargs: object) -> Any:
         self.calls.append(symbol)
         for message in self._messages:
             yield message
@@ -1568,7 +1667,7 @@ def test_run_stream_order_book_prints_without_saving(
     assert capsys.readouterr().out == (
         json.dumps(messages[0], indent=2, ensure_ascii=False) + "\n"
     )
-    assert not list(tmp_path.glob("*.sqlite3"))
+    assert not list(tmp_path.rglob("*.sqlite3"))
 
 
 def test_run_stream_order_book_with_save_writes_diffs_to_database(
@@ -1597,11 +1696,12 @@ def test_run_stream_order_book_with_save_writes_diffs_to_database(
         "stream-orderbook",
         "HSBK.KZ",
         save=True,
+        project_root=tmp_path,
         environ={},
     )
 
     assert exit_code == 0
-    connection = sqlite3.connect(tmp_path / "market.sqlite3")
+    connection = sqlite3.connect(tmp_path / "data" / "database" / "market.sqlite3")
     try:
         stored = list(
             connection.execute("SELECT payload FROM order_book_messages ORDER BY id")
@@ -6432,8 +6532,10 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
         "  kase-pilot ticks SYMBOL\n"
-        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
-        "  kase-pilot stream-orderbook SYMBOL [--save]\n"
+        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect]\n"
+        "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect]\n"
+        "  kase-pilot rebuild-quote SYMBOL\n"
+        "  kase-pilot rebuild-book SYMBOL\n"
     )
 
 
@@ -6654,4 +6756,136 @@ def test_main_rejects_invalid_broker_report_before_orchestration(
     assert main_module.main(arguments) == 2
     assert orchestration_calls == []
     assert use_case.calls == []
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+def _collect_quotes_into(project_root: Path, messages: list[dict[str, Any]]) -> None:
+    from kase_pilot.core.config import market_database_path
+    from kase_pilot.storage import QuoteStore
+
+    with QuoteStore(market_database_path(project_root)).open_session(
+        ("HSBK.KZ",)
+    ) as store:
+        for message in messages:
+            store.save(message)
+
+
+def _collect_book_into(project_root: Path, messages: list[dict[str, Any]]) -> None:
+    from kase_pilot.core.config import market_database_path
+    from kase_pilot.storage import OrderBookStore
+
+    with OrderBookStore(market_database_path(project_root)).open_session(
+        ("HSBK.KZ",)
+    ) as store:
+        for message in messages:
+            store.save(message)
+
+
+def test_run_rebuild_quote_prints_merged_state(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _collect_quotes_into(
+        tmp_path,
+        [
+            {"c": "HSBK.KZ", "init": 1, "ltp": 383.83, "name": "Halyk"},
+            {"c": "HSBK.KZ", "init": 0, "ltp": 384.49},
+        ],
+    )
+
+    exit_code = main_module.run("rebuild-quote", "HSBK.KZ", project_root=tmp_path)
+
+    assert exit_code == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["ltp"] == 384.49
+    assert state["name"] == "Halyk"
+
+
+def test_run_rebuild_book_prints_reconstructed_book(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _collect_book_into(
+        tmp_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 385.0, "s": "S", "q": 10, "k": 0},
+                    {"p": 384.0, "s": "B", "q": 30, "k": 1},
+                ],
+            }
+        ],
+    )
+
+    exit_code = main_module.run("rebuild-book", "HSBK.KZ", project_root=tmp_path)
+
+    assert exit_code == 0
+    book = json.loads(capsys.readouterr().out)
+    assert [level["p"] for level in book["asks"]] == [385.0]
+    assert [level["p"] for level in book["bids"]] == [384.0]
+
+
+def test_run_rebuild_quote_reports_when_nothing_collected(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _collect_quotes_into(tmp_path, [{"c": "HSBK.KZ", "init": 1}])
+
+    exit_code = main_module.run("rebuild-quote", "KSPI.KZ", project_root=tmp_path)
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert captured.out == ""
+    assert "KSPI.KZ" in captured.err
+
+
+def test_run_rebuild_book_reports_when_nothing_collected(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _collect_book_into(tmp_path, [{"i": "HSBK.KZ", "n": 0}])
+
+    exit_code = main_module.run("rebuild-book", "KSPI.KZ", project_root=tmp_path)
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert "KSPI.KZ" in captured.err
+
+
+@pytest.mark.parametrize("command", ["rebuild-quote", "rebuild-book"])
+def test_rebuild_commands_require_no_broker_credentials(
+    command: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Rebuilding reads only locally collected data."""
+
+    def fail_load_settings(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"{command} must not load broker settings")
+
+    monkeypatch.setattr(main_module, "load_settings", fail_load_settings)
+    _collect_quotes_into(tmp_path, [{"c": "HSBK.KZ", "init": 1}])
+    _collect_book_into(tmp_path, [{"i": "HSBK.KZ", "n": 0}])
+
+    assert main_module.run(command, "HSBK.KZ", project_root=tmp_path, environ={}) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["rebuild-quote"],
+        ["rebuild-book"],
+        ["rebuild-quote", "HSBK.KZ", "extra"],
+        ["rebuild-book", "HSBK.KZ", "extra"],
+    ],
+)
+def test_main_rejects_invalid_rebuild_arguments(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(arguments) == 2
     assert capsys.readouterr() == ("", main_module._USAGE + "\n")
