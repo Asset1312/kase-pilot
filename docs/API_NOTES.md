@@ -2175,3 +2175,52 @@ market timezone (`UTCOffset` / `tz`), and this project's own receipt clock
 (`received_at`). The storage layer keeps `received_at` separate from the
 raw payload precisely because of this ambiguity; nothing should be derived
 from `acc_srv_tm` until its timezone is confirmed.
+
+---
+
+### 2026-08-03 (continued) — First Persisted Order-Book Collection Run
+
+**Date:** 2026-08-03
+**Source:** Project owner ran `kase-pilot stream-orderbook HSBK.KZ --save`
+during KASE trading hours; six messages captured.
+
+#### F-40 — Order-book stream sends a full book at `n: 0`, then `upd` deltas | Observed twice, consistent
+
+This run captured a materially richer session than F-28, and revealed
+behaviour that first observation did not show:
+
+| `n` | `ins` | `del` | `upd` | `cnt` | `x` |
+|---|---|---|---|---|---|
+| 0 | 20 levels (10 `S`, 10 `B`) | — | — | 20 | 10 |
+| 1 | — | — | 2 levels | 20 | 10 |
+| 2–5 | — | — | 1 level each | 20 | 10 |
+
+**Observations, each now seen in two independent sessions:**
+
+- **`n` is a per-session sequence counter starting at 0**, and the `n: 0`
+  message carried the entire book (20 levels) rather than a diff. This is
+  the order-book analogue of `init: 1` in the quote stream (F-38): a point
+  from which state can be rebuilt without replaying earlier messages. In
+  F-28 the `n: 0` message likewise carried the initial levels (2 at the
+  time, a much thinner book).
+- **`upd` is genuinely used** — in F-28 it was empty in both captured
+  messages, so its role was unverified. Here every delta after the
+  snapshot arrived through `upd`, never through `del`+`ins`.
+- **`k` is a stable per-level identifier within the book, not a
+  per-message index.** Messages `n: 2` through `n: 5` all update `k: 9`
+  (the `384.49` ask), changing only `q`: 38 → 88 → 86 → 76. F-28 showed
+  the complementary case — `del` referencing the same `k` values that a
+  prior `ins` had created.
+- **`cnt` appears to be the total level count and `x` the per-side
+  depth.** Here `cnt: 20`, `x: 10` with 10 bids and 10 asks; in F-28,
+  `cnt: 2`, `x: 1` with 1 bid and 1 ask. Consistent across both, but the
+  meaning is inferred from two samples, not documented.
+
+**Impact on a future book-reconstruction layer:** start from the most
+recent `n: 0` message at or before the target time, then apply
+`ins`/`del`/`upd` by `k` in `n` order. **Caveat:** whether `n` resets per
+connection, per trading day, or never is not established — with only
+single-session captures so far, a reconstruction keyed on `n` alone could
+silently mis-order messages across sessions. The stored `session_id` and
+`received_at` columns give an independent ordering that does not depend on
+resolving this.
