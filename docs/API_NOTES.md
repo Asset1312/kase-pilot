@@ -1934,3 +1934,187 @@ account's session state can influence.
 API-key permissions/scopes or tariff in the Tradernet member area, or
 contact their support, to confirm which commands this key is entitled to
 call.
+
+---
+
+### 2026-07-31 (continued) — Level 2 (Portfolio/Orders) Verification Begins
+
+**Date:** 2026-07-31
+**Source:** Project owner ran `kase-pilot summary` against a real account.
+
+#### F-33 — `getPositionJson` (portfolio/account summary) also returns HTTP 403 | Confirmed observed
+
+```
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url:
+https://freedom24.com/api/getPositionJson
+```
+
+Same failure shape as F-29/F-31 (`getHloc`, news commands). This extends
+the blocked-command list beyond historical/news data into account/
+portfolio data, which was not previously tested live in this project.
+`GetAccountSummary`/`AccountService.account_summary()` (backing
+`summary`/`portfolio`/`watch`) is affected.
+
+**Still to test:** `trades` (`get_trades_history`), `orders`
+(`get_placed`), `orders-history` (`get_historical`) — Level 2 items not
+yet live-tested at all in this project before this session.
+
+#### F-34 — All remaining Level 2 commands also return HTTP 403; working hypothesis revised to "market-data-only key" | Confirmed observed
+
+Continuing from F-33, the project owner ran the remaining three Level 2
+commands. All failed identically:
+
+| Command | Broker `cmd` | Result |
+|---|---|---|
+| `orders` | `getNotifyOrderJson` | 403 |
+| `trades --from ... --to ...` | `getTradesHistory` | 403 |
+| `orders-history` | `getOrdersHistory` | 403 |
+
+**Full picture across this session's live testing, all against the same
+account/API key:**
+
+| Command | Broker `cmd` | Transport | Result |
+|---|---|---|---|
+| `info` | `getSecurityInfo` | REST | ✅ Confirmed (F-17) |
+| `stream-quotes` | `quotes` | WebSocket | ✅ Confirmed (F-25/F-27) |
+| `stream-orderbook` | `orderBook` | WebSocket | ✅ Confirmed (F-28) |
+| (markets status smoke test) | `markets` | WebSocket | ✅ Confirmed (F-25/F-26) |
+| `candles` / `ticks` | `getHloc` | REST | ❌ 403 (F-29) |
+| `news-providers` | `getNewsProvidersList` | REST | ❌ 403 (F-31) |
+| `news-list` | `getNewsList` | REST | ❌ 403 (F-31) |
+| `news-detail` | `getNewsDetail` | REST | ❌ 403 (F-31) |
+| `summary`/`portfolio`/`watch` | `getPositionJson` | REST | ❌ 403 (F-33) |
+| `orders` | `getNotifyOrderJson` | REST | ❌ 403 (this entry) |
+| `trades` | `getTradesHistory` | REST | ❌ 403 (this entry) |
+| `orders-history` | `getOrdersHistory` | REST | ❌ 403 (this entry) |
+
+**Working hypothesis revised.** The earlier framing ("historical/news data
+requires a higher tier") undersold the pattern. With account/portfolio/
+order data now also blocked, the more accurate description is: **this API
+key appears to have market-data-only access** — exactly one REST command
+works (`getSecurityInfo`, a single-instrument lookup) plus the WebSocket
+streams already confirmed (`quotes`, `orderBook`, `markets`). Every other
+REST command tried — spanning historical data, news, and all account/
+portfolio/order data — is blocked. This is consistent with a
+"market-data" or "quotes-only" API-key tier that explicitly excludes
+account-level and historical REST access, as opposed to a full trading
+account tier.
+
+**This has scope implications for the project, not just this account.**
+Levels 2 and the REST parts of Level 1 (candles/trades/news) cannot be
+verified further, and cannot be used by anyone with a similarly-scoped
+key, until the key's permissions are resolved account-side. Nothing here
+suggests a code defect — every failure follows the same confirmed-correct
+request path as the one working REST call.
+
+**Next step unchanged, now higher priority:** check the API key's
+permissions/scope/tariff in the Tradernet member area, or contact their
+support, specifically asking whether this key can be upgraded/reconfigured
+for account and historical-data access, or whether a different key
+(e.g. tied to a funded/live trading account rather than a market-data
+subscription) is required.
+
+---
+
+### 2026-08-03 — All 403s Resolved; F-29/F-31/F-33/F-34 Conclusions Retracted
+
+**Date:** 2026-08-03
+**Source:** Tradernet support replied to the ticket; project owner then
+re-ran the previously failing commands.
+
+#### F-35 — Every previously-403 command now succeeds | Confirmed observed; supersedes F-29, F-31, F-33, F-34
+
+**Support's reply (paraphrased):** the API key is a single unified key that
+already covers account and history; there is no per-key permissions list in
+the member area; the restriction is not tariff-related. They asked for the
+403 response body text to diagnose further.
+
+**Before that body could be captured, the 403s stopped occurring.** A
+diagnostic script (`tools/research/capture_403_body.py`, gitignored) written
+to capture the 403 body instead found every command succeeding:
+
+| Command | Broker `cmd` | Previous | Now |
+|---|---|---|---|
+| `summary`/`portfolio`/`watch` | `getPositionJson` | 403 (F-33) | ✅ Real portfolio data |
+| `candles` | `getHloc` | 403 (F-29) | ✅ Full history |
+| `ticks` | `getHloc` (`timeframe: -1`) | 403 (F-29) | ✅ (via same endpoint) |
+| `news-providers` | `getNewsProvidersList` | 403 (F-31) | ✅ |
+| `news-list` | `getNewsList` | 403 (F-31) | ✅ (empty list for HSBK.KZ) |
+| `news-detail` | `getNewsDetail` | 403 (F-31) | ✅ |
+| `orders` | `getNotifyOrderJson` | 403 (F-34) | ✅ |
+| `trades` | `getTradesHistory` | 403 (F-34) | ✅ |
+| `orders-history` | `getOrdersHistory` | 403 (F-34) | ✅ |
+
+**Retracted conclusions.** The "market-data-only API key" hypothesis
+(F-34) and the tiered-permission framing (F-29, F-31, F-33) are **wrong**
+and are retracted. Support states the key always covered these operations.
+Those entries are kept for the record — the observations in them were
+accurate; the interpretation built on top of them was not.
+
+**Root cause of the 403 period: not established.** Candidate explanations,
+none confirmed, none to be presented as fact:
+
+- A transient server-side or infrastructure condition (WAF, rate limiting,
+  deployment) that has since cleared.
+- Something changed account-side after the support ticket was opened,
+  whether or not support acted deliberately.
+- The security session the owner opened (F-32) taking effect later than the
+  immediate retest performed at the time.
+
+Since the 403 response body was never captured, this cannot be resolved
+retrospectively. **If 403s recur, capture the body first** — the
+diagnostic script exists for exactly that.
+
+**Methodological note for this project:** F-34's confident "working
+hypothesis revised" section was built by pattern-matching across
+observations without any direct evidence about the cause. It read as a
+finding but was an inference. Support's one-line correction overturned it
+entirely. Observations (what a request returned) and interpretations (why)
+should stay clearly separated in this file, and interpretations should be
+labelled as provisional even when the pattern looks strong.
+
+#### F-36 — `getHloc` live response shape confirmed for a KASE instrument | Confirmed observed
+
+`kase-pilot candles HSBK.KZ` returned a full historical series. Top-level
+keys of the response:
+
+- `hloc` — `{ticker: [[high, low, open, close], ...]}`. Column order
+  matches the SDK README's own documented usage
+  (`columns=["high", "low", "open", "close"]`), and the sample values are
+  consistent with it (e.g. `[364.80000001, 360.90999999, 364.8, 360.91]`).
+  Note the visible floating-point noise in the first two columns
+  (`364.80000001`, `360.90999999`) — the broker appears to send
+  high/low with tiny epsilon offsets; do not assume exact equality with
+  open/close values.
+- `vl` — `{ticker: [volume, ...]}`, integers, aligned by index with `hloc`.
+- `xSeries` — `{ticker: [unix_timestamp_seconds, ...]}`, aligned by index.
+  Earliest observed value `1262206800` (Jan 2010) despite `info.firstDate`
+  reporting `03.23.2015` — the series predates the reported first date;
+  reason not established.
+- `info` — `{ticker: {...}}` with the same instrument-metadata shape
+  already confirmed for `getSecurityInfo` in F-17 (`id`, `nt_ticker`,
+  `short_name`, `currency`, `min_step`, `lot`, `mkt_name`, `firstDate`,
+  nested `mrkt`). Confirms `mkt_name: "KASE"`, `currency: "KZT"`.
+- `maxSeries` — `{ticker: <latest timestamp>}`.
+- `took` — float, server-side processing time.
+
+This is a distinct, richer shape from the `getHloc` trades-mode response
+documented for `timeframe: -1` (which the manual describes as returning
+`series`/`info`/`took`). The two modes of the same command return
+differently-shaped payloads.
+
+#### F-37 — `getNewsList` live response confirmed; empty for HSBK.KZ | Confirmed observed
+
+`kase-pilot news-list --ticker HSBK.KZ --take 5` returned:
+
+```json
+{"list": [], "total": 0, "take": 5, "skip": 0}
+```
+
+Exactly the documented shape (F-30), including the documented
+"empty list plus `total: 0` when nothing matches" behaviour, and echoing
+back the requested `take`/`skip`. The command works; this particular
+ticker simply has no news from the providers available to this account.
+Whether any KASE instrument has news coverage from the known providers
+(`fbrokerkz`, `Oninvest`, `OninvestCompanyNews`) is not yet established —
+worth testing without a ticker filter, or with a different ticker.
