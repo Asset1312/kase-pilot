@@ -2118,3 +2118,60 @@ ticker simply has no news from the providers available to this account.
 Whether any KASE instrument has news coverage from the known providers
 (`fbrokerkz`, `Oninvest`, `OninvestCompanyNews`) is not yet established —
 worth testing without a ticker filter, or with a different ticker.
+
+---
+
+### 2026-08-03 (continued) — First Persisted Quote Collection Run
+
+**Date:** 2026-08-03
+**Source:** Project owner ran `kase-pilot stream-quotes HSBK.KZ --save`
+during KASE trading hours and inspected the resulting SQLite database.
+
+#### F-38 — `init` flag appears to distinguish full snapshots from deltas | Observed once, not confirmed as a rule
+
+Four messages were captured in one session. Their shapes differed sharply:
+
+| # | `init` | Field count | Contents |
+|---|---|---|---|
+| 1 | `1` | ~90 | Full instrument snapshot: prices, volumes, name, ISIN, market metadata, discounts, etc. |
+| 2 | `0` | 7 | `bbf`, `bbs`, `c`, `init`, `n`, `rev`, `type`, `acc_srv_tm` — bid size/volume only, **no prices at all** |
+| 3 | `0` | 7 | Same shape as #2 |
+| 4 | `0` | 14 | Trade update: `ltp`, `lts`, `ltt`, `trades`, `vol`, `vlt`, `chg`, `pcp`, bid/ask sizes |
+
+**Observation:** `init: 1` accompanied the only full snapshot; `init: 0`
+accompanied all three partial deltas. This is a plausible and useful
+signal — a full snapshot is a point from which state can be rebuilt
+without replaying earlier deltas — but it is **one observation of one
+session on one instrument**, and no documentation confirms this meaning.
+Do not treat `init` as a guaranteed snapshot marker without further
+evidence.
+
+This directly reinforces the storage design decision (see
+`src/kase_pilot/storage/quote_store.py`): message #2 and #3 contain no
+price whatsoever. Any "current state" store would have had to guess merge
+semantics at write time, irreversibly. The raw append-only log defers that
+decision.
+
+#### F-39 — Broker `acc_srv_tm` is offset ~3 hours from UTC | Observed, timezone not declared
+
+Comparing the broker's own timestamp with this project's receipt time
+(recorded independently in UTC by `QuoteStore`):
+
+| Broker `acc_srv_tm` | Our `received_at` (UTC) |
+|---|---|
+| `2026-08-03 14:36:23.353` | `2026-08-03T11:36:20.787935+00:00` |
+
+A consistent ~3 hour offset, suggesting `acc_srv_tm` is UTC+3 (Moscow
+time), though **the field carries no timezone designator and no
+documentation states its timezone**. Note this is a different offset from
+the `UTCOffset: 300` field present in the same message (which is +5 hours
+and presumably describes the instrument's market, not the server clock),
+and different again from the `tz: "Asia/Yekaterinburg"` reported for KASE
+in `markets` (F-26).
+
+**At least three distinct time references are in play** and must not be
+conflated: the broker's server clock (`acc_srv_tm`), the instrument's
+market timezone (`UTCOffset` / `tz`), and this project's own receipt clock
+(`received_at`). The storage layer keeps `received_at` separate from the
+raw payload precisely because of this ambiguity; nothing should be derived
+from `acc_srv_tm` until its timezone is confirmed.
