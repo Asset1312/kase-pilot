@@ -52,7 +52,7 @@ from kase_pilot.application import StreamOrderBook, StreamQuotes
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
-from kase_pilot.storage import QuoteStore
+from kase_pilot.storage import OrderBookStore, QuoteStore
 
 _USAGE = (
     "Usage:\n"
@@ -100,7 +100,7 @@ _USAGE = (
     "[--timeframe SECONDS]\n"
     "  kase-pilot ticks SYMBOL\n"
     "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
-    "  kase-pilot stream-orderbook SYMBOL"
+    "  kase-pilot stream-orderbook SYMBOL [--save]"
 )
 
 _PORTFOLIO_NAME_WIDTH = 28
@@ -959,8 +959,7 @@ def _run_stream_quotes(
     use_case = create_stream_quotes(public_key, private_key)
     try:
         if save:
-            store = QuoteStore(database_path).open_session("quotes", tuple(symbols))
-            with store:
+            with QuoteStore(database_path).open_session(tuple(symbols)) as store:
                 asyncio.run(_stream_quotes(use_case, symbols, store))
         else:
             asyncio.run(_stream_quotes(use_case, symbols))
@@ -969,8 +968,14 @@ def _run_stream_quotes(
     return 0
 
 
-async def _stream_order_book(use_case: StreamOrderBook, symbol: str) -> None:
+async def _stream_order_book(
+    use_case: StreamOrderBook,
+    symbol: str,
+    store: OrderBookStore | None = None,
+) -> None:
     async for update in use_case.execute(symbol):
+        if store is not None:
+            store.save(update)
         print(json.dumps(update, indent=2, ensure_ascii=False))
 
 
@@ -978,10 +983,17 @@ def _run_stream_order_book(
     public_key: str,
     private_key: str,
     symbol: str,
+    *,
+    save: bool,
+    database_path: Path,
 ) -> int:
     use_case = create_stream_order_book(public_key, private_key)
     try:
-        asyncio.run(_stream_order_book(use_case, symbol))
+        if save:
+            with OrderBookStore(database_path).open_session((symbol,)) as store:
+                asyncio.run(_stream_order_book(use_case, symbol, store))
+        else:
+            asyncio.run(_stream_order_book(use_case, symbol))
     except KeyboardInterrupt:
         pass
     return 0
@@ -1183,8 +1195,10 @@ def run(
         raise ValueError("The news-detail command requires a news id")
     if command == "stream-quotes" and not symbols:
         raise ValueError("The stream-quotes command requires symbols")
-    if save and command != "stream-quotes":
-        raise ValueError("Saving is supported only for stream-quotes")
+    if save and command not in {"stream-quotes", "stream-orderbook"}:
+        raise ValueError(
+            "Saving is supported only for stream-quotes and stream-orderbook"
+        )
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
     if command == "instruments" and (market is None) == (search is None):
@@ -1384,7 +1398,13 @@ def run(
             database_path=settings.database_dir / "market.sqlite3",
         )
     if command == "stream-orderbook":
-        return _run_stream_order_book(public_key, private_key, ticker)
+        return _run_stream_order_book(
+            public_key,
+            private_key,
+            ticker,
+            save=save,
+            database_path=settings.database_dir / "market.sqlite3",
+        )
     raise ValueError(f"Unknown command: {command}")
 
 
@@ -1465,10 +1485,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "candles",
             "instrument",
             "ticks",
-            "stream-orderbook",
         }
     ):
         pass
+    elif arguments and arguments[0] == "stream-orderbook":
+        remaining = list(arguments[1:])
+        if remaining and remaining[-1] == "--save":
+            save_stream = True
+            remaining = remaining[:-1]
+        if len(remaining) != 1 or remaining[0].startswith("--"):
+            print(_USAGE, file=sys.stderr)
+            return 2
     elif arguments and arguments[0] == "profile-fields":
         profile_field_flags = {"--reception", "--json"}
         seen_flags: set[str] = set()
@@ -2319,6 +2346,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if json_output:
                 broker_report_arguments["json_output"] = True
             return run("broker-report", **broker_report_arguments)
+        if arguments[0] == "stream-orderbook":
+            order_book_arguments: dict[str, object] = {}
+            if save_stream:
+                order_book_arguments["save"] = True
+            return run("stream-orderbook", arguments[1], **order_book_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:
         print(error, file=sys.stderr)

@@ -1456,6 +1456,35 @@ def test_run_rejects_save_for_other_commands() -> None:
         main_module.run("info", "HSBK.KZ", save=True)
 
 
+def test_run_accepts_save_for_both_stream_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Both streaming commands support --save; nothing else does."""
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+        database_dir=tmp_path,
+    )
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_quotes",
+        lambda public, private: FakeStreamQuotes(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_order_book",
+        lambda public, private: FakeStreamOrderBook(),
+    )
+
+    assert (
+        main_module.run("stream-quotes", symbols=["HSBK.KZ"], save=True, environ={})
+        == 0
+    )
+    assert main_module.run("stream-orderbook", "HSBK.KZ", save=True, environ={}) == 0
+
+
 def test_main_routes_stream_quotes_without_save(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1495,6 +1524,135 @@ def test_main_routes_stream_quotes_with_save(
     ],
 )
 def test_main_rejects_invalid_stream_quotes(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(arguments) == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+class FakeStreamOrderBook:
+    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+        self._messages = [] if messages is None else messages
+        self.calls: list[object] = []
+
+    async def execute(self, symbol: object) -> Any:
+        self.calls.append(symbol)
+        for message in self._messages:
+            yield message
+
+
+def test_run_stream_order_book_prints_without_saving(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+        database_dir=tmp_path,
+    )
+    messages = [{"i": "HSBK.KZ", "ins": [], "del": [], "upd": []}]
+    use_case = FakeStreamOrderBook(messages)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_order_book",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run("stream-orderbook", "HSBK.KZ", environ={})
+
+    assert exit_code == 0
+    assert use_case.calls == ["HSBK.KZ"]
+    assert capsys.readouterr().out == (
+        json.dumps(messages[0], indent=2, ensure_ascii=False) + "\n"
+    )
+    assert not list(tmp_path.glob("*.sqlite3"))
+
+
+def test_run_stream_order_book_with_save_writes_diffs_to_database(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+        database_dir=tmp_path,
+    )
+    messages = [
+        {"n": 0, "i": "HSBK.KZ", "ins": [{"p": 383.96, "s": "S", "q": 249, "k": 0}]},
+        {"n": 1, "i": "HSBK.KZ", "del": [{"p": 383.96, "k": 0}]},
+    ]
+    use_case = FakeStreamOrderBook(messages)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_order_book",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run(
+        "stream-orderbook",
+        "HSBK.KZ",
+        save=True,
+        environ={},
+    )
+
+    assert exit_code == 0
+    connection = sqlite3.connect(tmp_path / "market.sqlite3")
+    try:
+        stored = list(
+            connection.execute("SELECT payload FROM order_book_messages ORDER BY id")
+        )
+    finally:
+        connection.close()
+
+    assert [json.loads(payload) for (payload,) in stored] == messages
+    capsys.readouterr()
+
+
+def test_main_routes_stream_order_book_without_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, symbol: str, **options: object) -> int:
+        calls.append((command, symbol, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["stream-orderbook", "HSBK.KZ"]) == 17
+    assert calls == [("stream-orderbook", "HSBK.KZ", {})]
+
+
+def test_main_routes_stream_order_book_with_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, symbol: str, **options: object) -> int:
+        calls.append((command, symbol, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["stream-orderbook", "HSBK.KZ", "--save"]) == 17
+    assert calls == [("stream-orderbook", "HSBK.KZ", {"save": True})]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stream-orderbook"],
+        ["stream-orderbook", "--save"],
+        ["stream-orderbook", "HSBK.KZ", "KSPI.KZ"],
+        ["stream-orderbook", "--unknown", "HSBK.KZ"],
+    ],
+)
+def test_main_rejects_invalid_stream_order_book(
     arguments: list[str],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -6275,7 +6433,7 @@ def test_main_rejects_invalid_argument_count(
         "[--timeframe SECONDS]\n"
         "  kase-pilot ticks SYMBOL\n"
         "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
-        "  kase-pilot stream-orderbook SYMBOL\n"
+        "  kase-pilot stream-orderbook SYMBOL [--save]\n"
     )
 
 

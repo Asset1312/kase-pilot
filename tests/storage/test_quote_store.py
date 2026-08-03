@@ -22,7 +22,7 @@ def _rows(database_path: Path, query: str) -> list[tuple[object, ...]]:
 def test_creates_database_file_and_parent_directory(tmp_path: Path) -> None:
     database_path = tmp_path / "nested" / "market.sqlite3"
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)):
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)):
         pass
 
     assert database_path.is_file()
@@ -37,7 +37,7 @@ def test_stores_message_payload_verbatim(tmp_path: Path) -> None:
         "nested": {"unknown": [True, None]},
     }
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save(message)
 
     rows = _rows(database_path, "SELECT ticker, payload FROM quote_messages")
@@ -52,7 +52,7 @@ def test_appends_rather_than_overwriting(tmp_path: Path) -> None:
     first = {"c": "HSBK.KZ", "ltp": 383.83}
     second = {"c": "HSBK.KZ", "ltp": 384.0}
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save(first)
         store.save(second)
 
@@ -65,7 +65,7 @@ def test_partial_delta_message_is_stored_as_is(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
     delta = {"c": "HSBK.KZ", "n": 2275, "rev": 32375194}
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save(delta)
 
     ((payload,),) = _rows(database_path, "SELECT payload FROM quote_messages")
@@ -76,7 +76,7 @@ def test_message_without_ticker_is_still_stored(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
     message = {"unexpected": "shape"}
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save(message)
 
     ((ticker, payload),) = _rows(
@@ -89,7 +89,7 @@ def test_message_without_ticker_is_still_stored(tmp_path: Path) -> None:
 def test_records_session_start_and_finish(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ", "KSPI.KZ")):
+    with QuoteStore(database_path).open_session(("HSBK.KZ", "KSPI.KZ")):
         pass
 
     ((stream, symbols, started_at, finished_at),) = _rows(
@@ -108,7 +108,7 @@ def test_session_is_closed_even_when_collector_fails(tmp_path: Path) -> None:
 
     with (
         pytest.raises(RuntimeError),
-        QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store,
+        QuoteStore(database_path).open_session(("HSBK.KZ",)) as store,
     ):
         store.save({"c": "HSBK.KZ"})
         raise RuntimeError("stream dropped")
@@ -122,9 +122,9 @@ def test_session_is_closed_even_when_collector_fails(tmp_path: Path) -> None:
 def test_messages_are_linked_to_their_session(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save({"c": "HSBK.KZ"})
-    with QuoteStore(database_path).open_session("quotes", ("KSPI.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("KSPI.KZ",)) as store:
         store.save({"c": "KSPI.KZ"})
 
     rows = _rows(
@@ -137,9 +137,9 @@ def test_messages_are_linked_to_their_session(tmp_path: Path) -> None:
 def test_second_run_reuses_existing_database(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save({"c": "HSBK.KZ", "ltp": 1})
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save({"c": "HSBK.KZ", "ltp": 2})
 
     ((count,),) = _rows(database_path, "SELECT COUNT(*) FROM quote_messages")
@@ -153,7 +153,7 @@ def test_received_at_is_recorded_separately_from_broker_time(tmp_path: Path) -> 
     database_path = tmp_path / "market.sqlite3"
     message = {"c": "HSBK.KZ", "acc_srv_tm": "2026-07-31 12:56:15.127"}
 
-    with QuoteStore(database_path).open_session("quotes", ("HSBK.KZ",)) as store:
+    with QuoteStore(database_path).open_session(("HSBK.KZ",)) as store:
         store.save(message)
 
     ((received_at, payload),) = _rows(
@@ -164,7 +164,7 @@ def test_received_at_is_recorded_separately_from_broker_time(tmp_path: Path) -> 
 
 
 def test_save_without_context_manager_is_rejected(tmp_path: Path) -> None:
-    store = QuoteStore(tmp_path / "market.sqlite3").open_session("quotes", ())
+    store = QuoteStore(tmp_path / "market.sqlite3").open_session(())
 
     with pytest.raises(RuntimeError, match="context manager"):
         store.save({"c": "HSBK.KZ"})
