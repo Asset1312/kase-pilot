@@ -27,14 +27,29 @@ Open a **new** terminal afterwards; `setx` does not affect the current one.
 
 ## Manual run
 
+To start everything at once:
+
+```cmd
+tools\collector\collect-all.cmd HSBK.KZ KSPI.KZ
+```
+
+Each collector opens in its own console window: one window for quotes (a
+single subscription covers all the symbols) and one window per symbol for the
+order book, because the broker's market-depth subscription is per-instrument.
+Close a window or press Ctrl+C in it to stop that collector; the others keep
+running.
+
+Credentials are checked before any window opens, so a missing key fails where
+you can see it rather than flashing past in a child window.
+
+To run a single collector in the current window:
+
 ```cmd
 tools\collector\collect-quotes.cmd HSBK.KZ KSPI.KZ
 tools\collector\collect-orderbook.cmd HSBK.KZ
 ```
 
-Both run until interrupted. Quote collection takes several symbols in one
-process; order-book collection takes exactly one, because the broker's
-market-depth subscription is per-instrument.
+Both run until interrupted.
 
 ## Scheduled task (Windows)
 
