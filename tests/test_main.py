@@ -2,6 +2,7 @@
 
 import copy
 import json
+import sqlite3
 import sys
 import tomllib
 from datetime import date, datetime, time
@@ -1363,6 +1364,142 @@ def test_run_news_detail_forwards_id_and_prints_raw_pretty_json(
 def test_run_news_detail_requires_news_id() -> None:
     with pytest.raises(ValueError, match="requires a news id"):
         main_module.run("news-detail")
+
+
+class FakeStreamQuotes:
+    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+        self._messages = [] if messages is None else messages
+        self.calls: list[object] = []
+
+    async def execute(self, symbols: object) -> Any:
+        self.calls.append(symbols)
+        for message in self._messages:
+            yield message
+
+
+def test_run_stream_quotes_prints_messages_without_saving(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+        database_dir=tmp_path,
+    )
+    messages = [{"c": "HSBK.KZ", "ltp": 383.83}]
+    use_case = FakeStreamQuotes(messages)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_quotes",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run("stream-quotes", symbols=["HSBK.KZ"], environ={})
+
+    assert exit_code == 0
+    assert use_case.calls == [["HSBK.KZ"]]
+    assert capsys.readouterr().out == (
+        json.dumps(messages[0], indent=2, ensure_ascii=False) + "\n"
+    )
+    assert not list(tmp_path.glob("*.sqlite3"))
+
+
+def test_run_stream_quotes_with_save_writes_messages_to_database(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = SimpleNamespace(
+        tradernet_public_key="PublicKey",
+        tradernet_private_key="PrivateKey",
+        database_dir=tmp_path,
+    )
+    messages = [
+        {"c": "HSBK.KZ", "ltp": 383.83},
+        {"c": "HSBK.KZ", "n": 2275},
+    ]
+    use_case = FakeStreamQuotes(messages)
+    monkeypatch.setattr(main_module, "load_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(
+        main_module,
+        "create_stream_quotes",
+        lambda public, private: use_case,
+    )
+
+    exit_code = main_module.run(
+        "stream-quotes",
+        symbols=["HSBK.KZ"],
+        save=True,
+        environ={},
+    )
+
+    assert exit_code == 0
+    database_path = tmp_path / "market.sqlite3"
+    assert database_path.is_file()
+
+    connection = sqlite3.connect(database_path)
+    try:
+        stored = list(
+            connection.execute("SELECT payload FROM quote_messages ORDER BY id")
+        )
+    finally:
+        connection.close()
+
+    assert [json.loads(payload) for (payload,) in stored] == messages
+    capsys.readouterr()
+
+
+def test_run_rejects_save_for_other_commands() -> None:
+    with pytest.raises(ValueError, match="only for stream-quotes"):
+        main_module.run("info", "HSBK.KZ", save=True)
+
+
+def test_main_routes_stream_quotes_without_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["stream-quotes", "HSBK.KZ", "KSPI.KZ"]) == 17
+    assert calls == [("stream-quotes", {"symbols": ["HSBK.KZ", "KSPI.KZ"]})]
+
+
+def test_main_routes_stream_quotes_with_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(["stream-quotes", "HSBK.KZ", "--save"]) == 17
+    assert calls == [("stream-quotes", {"symbols": ["HSBK.KZ"], "save": True})]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stream-quotes"],
+        ["stream-quotes", "--save"],
+        ["stream-quotes", "--unknown", "HSBK.KZ"],
+    ],
+)
+def test_main_rejects_invalid_stream_quotes(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(arguments) == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
 
 
 def test_run_market_status_uses_defaults_and_prints_raw_pretty_json(
@@ -6137,7 +6274,7 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
         "  kase-pilot ticks SYMBOL\n"
-        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
+        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
         "  kase-pilot stream-orderbook SYMBOL\n"
     )
 

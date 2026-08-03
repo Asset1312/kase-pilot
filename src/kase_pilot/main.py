@@ -52,6 +52,7 @@ from kase_pilot.application import StreamOrderBook, StreamQuotes
 from kase_pilot.core.config import load_settings
 from kase_pilot.core.exceptions import BrokerError, ConfigurationError, ValidationError
 from kase_pilot.core.version import __version__
+from kase_pilot.storage import QuoteStore
 
 _USAGE = (
     "Usage:\n"
@@ -98,7 +99,7 @@ _USAGE = (
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]\n"
     "  kase-pilot ticks SYMBOL\n"
-    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...]\n"
+    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save]\n"
     "  kase-pilot stream-orderbook SYMBOL"
 )
 
@@ -936,8 +937,14 @@ def _run_ticks(public_key: str, private_key: str, symbol: str) -> int:
     return 0
 
 
-async def _stream_quotes(use_case: StreamQuotes, symbols: Sequence[str]) -> None:
+async def _stream_quotes(
+    use_case: StreamQuotes,
+    symbols: Sequence[str],
+    store: QuoteStore | None = None,
+) -> None:
     async for quote in use_case.execute(symbols):
+        if store is not None:
+            store.save(quote)
         print(json.dumps(quote, indent=2, ensure_ascii=False))
 
 
@@ -945,10 +952,18 @@ def _run_stream_quotes(
     public_key: str,
     private_key: str,
     symbols: Sequence[str],
+    *,
+    save: bool,
+    database_path: Path,
 ) -> int:
     use_case = create_stream_quotes(public_key, private_key)
     try:
-        asyncio.run(_stream_quotes(use_case, symbols))
+        if save:
+            store = QuoteStore(database_path).open_session("quotes", tuple(symbols))
+            with store:
+                asyncio.run(_stream_quotes(use_case, symbols, store))
+        else:
+            asyncio.run(_stream_quotes(use_case, symbols))
     except KeyboardInterrupt:
         pass
     return 0
@@ -979,6 +994,7 @@ def run(
     sup: bool = True,
     active: bool = True,
     show_expired: bool = False,
+    save: bool = False,
     follow: bool = False,
     json_output: bool = False,
     sort_field: str | None = None,
@@ -1167,6 +1183,8 @@ def run(
         raise ValueError("The news-detail command requires a news id")
     if command == "stream-quotes" and not symbols:
         raise ValueError("The stream-quotes command requires symbols")
+    if save and command != "stream-quotes":
+        raise ValueError("Saving is supported only for stream-quotes")
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
     if command == "instruments" and (market is None) == (search is None):
@@ -1358,7 +1376,13 @@ def run(
         return _run_ticks(public_key, private_key, ticker)
     if command == "stream-quotes":
         assert symbols is not None
-        return _run_stream_quotes(public_key, private_key, symbols)
+        return _run_stream_quotes(
+            public_key,
+            private_key,
+            symbols,
+            save=save,
+            database_path=settings.database_dir / "market.sqlite3",
+        )
     if command == "stream-orderbook":
         return _run_stream_order_book(public_key, private_key, ticker)
     raise ValueError(f"Unknown command: {command}")
@@ -1389,6 +1413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_symbols: list[str] = []
     export_fields: list[str] | None = None
     stream_quotes_symbols: list[str] = []
+    save_stream = False
     news_provider = None
     news_take = None
     news_skip = None
@@ -1612,7 +1637,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             export_fields = values
     elif arguments and arguments[0] == "stream-quotes":
-        stream_quotes_symbols = list(arguments[1:])
+        remaining = list(arguments[1:])
+        if remaining and remaining[-1] == "--save":
+            save_stream = True
+            remaining = remaining[:-1]
+        stream_quotes_symbols = remaining
         if not stream_quotes_symbols or any(
             symbol.startswith("--") for symbol in stream_quotes_symbols
         ):
@@ -2143,7 +2172,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 export_arguments["json_output"] = True
             return run("export-securities", **export_arguments)
         if arguments[0] == "stream-quotes":
-            return run("stream-quotes", symbols=stream_quotes_symbols)
+            stream_quotes_arguments: dict[str, object] = {
+                "symbols": stream_quotes_symbols,
+            }
+            if save_stream:
+                stream_quotes_arguments["save"] = True
+            return run("stream-quotes", **stream_quotes_arguments)
         if arguments[0] == "options":
             options_arguments: dict[str, object] = {"exchange": options_exchange}
             if json_output:

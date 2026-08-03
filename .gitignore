@@ -51,3 +51,6 @@ venv/
 /portfolio.json
 /top.json
 tools/research/
+
+# Collected market data (never commit market history or account data)
+/data/
