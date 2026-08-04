@@ -7,10 +7,11 @@ import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from kase_pilot.app import (
     create_check_missing_fields,
@@ -102,8 +103,9 @@ _USAGE = (
     "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
     "[--timeframe SECONDS]\n"
     "  kase-pilot ticks SYMBOL\n"
-    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect]\n"
-    "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect]\n"
+    "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect] "
+    "[--until HH:MM]\n"
+    "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect] [--until HH:MM]\n"
     "  kase-pilot rebuild-quote SYMBOL\n"
     "  kase-pilot rebuild-book SYMBOL"
 )
@@ -988,6 +990,91 @@ def _make_reconnect_observer(store: StreamStore | None) -> ReconnectObserver:
     return observe
 
 
+class _StreamFlags(NamedTuple):
+    """Trailing flags shared by both streaming commands."""
+
+    symbols: list[str]
+    save: bool
+    reconnect: bool
+    until: datetime_time | None
+
+
+def _parse_stream_flags(arguments: Sequence[str]) -> _StreamFlags | None:
+    """Split trailing --save/--reconnect/--until off a streaming command.
+
+    Returns ``None`` when the flags are malformed, so the caller prints usage.
+    Flags may appear in any order, but none may repeat.
+    """
+    remaining = list(arguments)
+    save = False
+    reconnect = False
+    until: datetime_time | None = None
+    seen: set[str] = set()
+
+    while remaining:
+        if remaining[-1] in {"--save", "--reconnect"}:
+            flag = remaining.pop()
+            if flag in seen:
+                return None
+            seen.add(flag)
+            if flag == "--save":
+                save = True
+            else:
+                reconnect = True
+            continue
+        if len(remaining) >= 2 and remaining[-2] == "--until":
+            if "--until" in seen:
+                return None
+            seen.add("--until")
+            try:
+                until = datetime_time.fromisoformat(remaining[-1])
+            except ValueError:
+                return None
+            remaining = remaining[:-2]
+            continue
+        break
+
+    return _StreamFlags(remaining, save, reconnect, until)
+
+
+def _seconds_until(deadline: datetime_time) -> float:
+    """Seconds from now until the next occurrence of a local wall-clock time.
+
+    Interpreted in the machine's local timezone, because that is what an
+    operator scheduling "stop at 18:00" means. If the time has already passed
+    today the deadline is tomorrow, so starting a collector in the evening
+    does not make it exit immediately.
+    """
+    # Deliberately naive: an operator scheduling "stop at 18:00" means 18:00 on
+    # this machine's clock, not in UTC.
+    now = datetime.now()  # noqa: DTZ005
+    target = now.replace(
+        hour=deadline.hour,
+        minute=deadline.minute,
+        second=0,
+        microsecond=0,
+    )
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def _run_until(coroutine: Any, until: datetime_time | None) -> None:
+    """Run a streaming coroutine, stopping cleanly at a wall-clock deadline.
+
+    Cancelling the coroutine unwinds the stream, while the collector session is
+    closed by the caller's context manager — so a scheduled stop still records
+    ``finished_at`` and the run stays distinguishable from a crash.
+    """
+    if until is None:
+        await coroutine
+        return
+    try:
+        await asyncio.wait_for(coroutine, timeout=_seconds_until(until))
+    except TimeoutError:
+        print(f"Reached {until.strftime('%H:%M')}; stopping.", file=sys.stderr)
+
+
 async def _stream_quotes(
     use_case: StreamQuotes,
     symbols: Sequence[str],
@@ -1012,6 +1099,7 @@ def _run_stream_quotes(
     *,
     save: bool,
     reconnect: bool,
+    until: datetime_time | None,
     database_path: Path,
 ) -> int:
     use_case = create_stream_quotes(public_key, private_key)
@@ -1019,10 +1107,18 @@ def _run_stream_quotes(
         if save:
             with QuoteStore(database_path).open_session(tuple(symbols)) as store:
                 asyncio.run(
-                    _stream_quotes(use_case, symbols, store, reconnect=reconnect)
+                    _run_until(
+                        _stream_quotes(use_case, symbols, store, reconnect=reconnect),
+                        until,
+                    )
                 )
         else:
-            asyncio.run(_stream_quotes(use_case, symbols, reconnect=reconnect))
+            asyncio.run(
+                _run_until(
+                    _stream_quotes(use_case, symbols, reconnect=reconnect),
+                    until,
+                )
+            )
     except KeyboardInterrupt:
         pass
     return 0
@@ -1052,6 +1148,7 @@ def _run_stream_order_book(
     *,
     save: bool,
     reconnect: bool,
+    until: datetime_time | None,
     database_path: Path,
 ) -> int:
     use_case = create_stream_order_book(public_key, private_key)
@@ -1059,10 +1156,20 @@ def _run_stream_order_book(
         if save:
             with OrderBookStore(database_path).open_session((symbol,)) as store:
                 asyncio.run(
-                    _stream_order_book(use_case, symbol, store, reconnect=reconnect)
+                    _run_until(
+                        _stream_order_book(
+                            use_case, symbol, store, reconnect=reconnect
+                        ),
+                        until,
+                    )
                 )
         else:
-            asyncio.run(_stream_order_book(use_case, symbol, reconnect=reconnect))
+            asyncio.run(
+                _run_until(
+                    _stream_order_book(use_case, symbol, reconnect=reconnect),
+                    until,
+                )
+            )
     except KeyboardInterrupt:
         pass
     return 0
@@ -1077,6 +1184,7 @@ def run(
     show_expired: bool = False,
     save: bool = False,
     reconnect: bool = False,
+    until: datetime_time | None = None,
     follow: bool = False,
     json_output: bool = False,
     sort_field: str | None = None,
@@ -1274,6 +1382,10 @@ def run(
     if reconnect and command not in {"stream-quotes", "stream-orderbook"}:
         raise ValueError(
             "Reconnecting is supported only for stream-quotes and stream-orderbook"
+        )
+    if until is not None and command not in {"stream-quotes", "stream-orderbook"}:
+        raise ValueError(
+            "A stop time is supported only for stream-quotes and stream-orderbook"
         )
     if command == "options" and exchange is None:
         raise ValueError("The options command requires an exchange")
@@ -1484,6 +1596,7 @@ def run(
             symbols,
             save=save,
             reconnect=reconnect,
+            until=until,
             database_path=market_database_path(project_root),
         )
     if command == "stream-orderbook":
@@ -1493,6 +1606,7 @@ def run(
             ticker,
             save=save,
             reconnect=reconnect,
+            until=until,
             database_path=market_database_path(project_root),
         )
     raise ValueError(f"Unknown command: {command}")
@@ -1525,6 +1639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stream_quotes_symbols: list[str] = []
     save_stream = False
     reconnect_stream = False
+    until_stream: datetime_time | None = None
     news_provider = None
     news_take = None
     news_skip = None
@@ -1582,20 +1697,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         pass
     elif arguments and arguments[0] == "stream-orderbook":
-        remaining = list(arguments[1:])
-        seen_flags: set[str] = set()
-        while remaining and remaining[-1] in {"--save", "--reconnect"}:
-            flag = remaining[-1]
-            if flag in seen_flags:
-                print(_USAGE, file=sys.stderr)
-                return 2
-            seen_flags.add(flag)
-            if flag == "--save":
-                save_stream = True
-            else:
-                reconnect_stream = True
-            remaining = remaining[:-1]
-        if len(remaining) != 1 or remaining[0].startswith("--"):
+        parsed = _parse_stream_flags(arguments[1:])
+        if parsed is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
+        save_stream = parsed.save
+        reconnect_stream = parsed.reconnect
+        until_stream = parsed.until
+        if len(parsed.symbols) != 1 or parsed.symbols[0].startswith("--"):
             print(_USAGE, file=sys.stderr)
             return 2
     elif arguments and arguments[0] == "profile-fields":
@@ -1766,20 +1875,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             export_fields = values
     elif arguments and arguments[0] == "stream-quotes":
-        remaining = list(arguments[1:])
-        seen_flags: set[str] = set()
-        while remaining and remaining[-1] in {"--save", "--reconnect"}:
-            flag = remaining[-1]
-            if flag in seen_flags:
-                print(_USAGE, file=sys.stderr)
-                return 2
-            seen_flags.add(flag)
-            if flag == "--save":
-                save_stream = True
-            else:
-                reconnect_stream = True
-            remaining = remaining[:-1]
-        stream_quotes_symbols = remaining
+        parsed = _parse_stream_flags(arguments[1:])
+        if parsed is None:
+            print(_USAGE, file=sys.stderr)
+            return 2
+        save_stream = parsed.save
+        reconnect_stream = parsed.reconnect
+        until_stream = parsed.until
+        stream_quotes_symbols = parsed.symbols
         if not stream_quotes_symbols or any(
             symbol.startswith("--") for symbol in stream_quotes_symbols
         ):
@@ -2317,6 +2420,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 stream_quotes_arguments["save"] = True
             if reconnect_stream:
                 stream_quotes_arguments["reconnect"] = True
+            if until_stream is not None:
+                stream_quotes_arguments["until"] = until_stream
             return run("stream-quotes", **stream_quotes_arguments)
         if arguments[0] == "options":
             options_arguments: dict[str, object] = {"exchange": options_exchange}
@@ -2465,6 +2570,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 order_book_arguments["save"] = True
             if reconnect_stream:
                 order_book_arguments["reconnect"] = True
+            if until_stream is not None:
+                order_book_arguments["until"] = until_stream
             return run("stream-orderbook", arguments[1], **order_book_arguments)
         return run(arguments[0], arguments[1], **run_arguments)
     except ConfigurationError as error:

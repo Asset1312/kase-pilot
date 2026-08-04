@@ -27,6 +27,10 @@ if "%TRADERNET_PRIVATE_KEY%"=="" (
     exit /b 1
 )
 
-kase-pilot stream-quotes %* --save --reconnect
+if defined KASE_COLLECT_UNTIL (
+    kase-pilot stream-quotes %* --save --reconnect --until %KASE_COLLECT_UNTIL%
+) else (
+    kase-pilot stream-quotes %* --save --reconnect
+)
 
 endlocal

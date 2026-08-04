@@ -4,6 +4,11 @@ The collected market database lives inside the project tree, so a test that
 forgets to redirect it writes into the developer's real, irreplaceable market
 history. This happened once during development; the guard below makes it fail
 loudly instead of silently corrupting collected data.
+
+The check intercepts the store as it opens, rather than watching the file for
+changes: a collector running in the background writes to that same file
+continuously, so any file-watching check would fire on other people's writes
+and not on the test's own.
 """
 
 from __future__ import annotations
@@ -13,19 +18,22 @@ from collections.abc import Iterator
 import pytest
 
 from kase_pilot.core.config import market_database_path
+from kase_pilot.storage._stream_store import StreamStore
 
 
 @pytest.fixture(autouse=True)
-def _protect_real_market_database() -> Iterator[None]:
-    """Fail any test that writes to the real collected market database."""
-    real_database = market_database_path()
-    before = real_database.stat().st_mtime_ns if real_database.exists() else None
+def _protect_real_market_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fail any test that opens a store on the real market database."""
+    real_database = market_database_path().resolve()
+    original_enter = StreamStore.__enter__
 
+    def guarded_enter(self: StreamStore) -> StreamStore:
+        if self._database_path.resolve() == real_database:
+            raise AssertionError(
+                f"Test opened the real market database at {real_database}. "
+                "Pass project_root=tmp_path so collection is redirected."
+            )
+        return original_enter(self)
+
+    monkeypatch.setattr(StreamStore, "__enter__", guarded_enter)
     yield
-
-    after = real_database.stat().st_mtime_ns if real_database.exists() else None
-    if before != after:
-        raise AssertionError(
-            f"Test modified the real market database at {real_database}. "
-            "Pass project_root=tmp_path so collection is redirected."
-        )

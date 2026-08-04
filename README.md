@@ -431,14 +431,17 @@ kase-pilot stream-quotes HSBK.KZ KSPI.KZ
 kase-pilot stream-orderbook HSBK.KZ
 ```
 
-Options: `--save`, `--reconnect`. Quote streaming takes several symbols;
+Options: `--save`, `--reconnect`, `--until HH:MM`. Quote streaming takes
+several symbols;
 order-book streaming takes exactly one, because the broker's market-depth
 subscription is per-instrument.
 
 `--save` appends every message verbatim to a local SQLite database under
 `data/database/`, along with the collection session, so gaps in coverage stay
 visible. `--reconnect` retries with exponential backoff after a dropped
-connection and records each outage. For unattended collection see
+connection and records each outage. `--until HH:MM` stops the stream cleanly at
+that local wall-clock time, so a scheduled run still records a finished session
+instead of looking like a crash. For unattended collection see
 `tools/collector/README.md`.
 
 ### Rebuilding state from collected data

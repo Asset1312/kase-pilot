@@ -51,28 +51,66 @@ tools\collector\collect-orderbook.cmd HSBK.KZ
 
 Both run until interrupted.
 
-## Scheduled task (Windows)
+## Collecting one trading session, hands-off
 
-Register a task that starts at logon and keeps running. Review the command
-before running it — it creates a persistent scheduled task:
+`collect-session.cmd` collects both streams and stops itself at a wall-clock
+time, without opening console windows:
 
 ```cmd
-schtasks /Create /TN "KASE Pilot quotes" /SC ONLOGON /RL LIMITED ^
-  /TR "cmd /c \"D:\KASE-Pilot\tools\collector\collect-quotes.cmd HSBK.KZ >> D:\KASE-Pilot\data\logs\quotes.log 2>&1\""
+set KASE_COLLECT_UNTIL=18:00
+tools\collector\collect-session.cmd HSBK.KZ KSPI.KZ
 ```
 
-Adjust the path if the project lives elsewhere. Redirecting both streams to a
-log file matters: without it, reconnection notices and errors go nowhere and a
-silently failing collector looks identical to a quiet market.
+`KASE_COLLECT_UNTIL` defaults to `18:00` and is read as **local machine
+time** — so the machine's clock must actually be set to the timezone you mean.
+Output goes to `data/logs/`, since nothing is watching a console.
+
+The collectors stop *themselves* at that time rather than being killed. This
+matters: a killed process never writes `finished_at`, so the session becomes
+indistinguishable from a crash when you later look for gaps.
+
+Note that the broker's own market status (`docs/API_NOTES.md` F-26) reports
+KASE closing at 22:00, not 18:00. If 18:00 is the end of the main session
+rather than of trading altogether, collecting until 18:00 leaves the rest of
+the day uncollected.
+
+## Scheduled task (Windows)
+
+Start the session collector every weekday at the market open. Review the
+command before running it — it creates a persistent scheduled task on your
+machine:
+
+```cmd
+schtasks /Create /TN "KASE Pilot session" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 11:30 ^
+  /TR "cmd /c \"D:\KASE-Pilot\tools\collector\collect-session.cmd HSBK.KZ\""
+```
+
+Adjust the path and symbols to taste. `/ST 11:30` is the machine's local time,
+matching how `--until` is interpreted — both assume the machine's clock is set
+to the timezone you actually mean.
+
+No second task is needed to stop it: the collectors exit on their own at
+`KASE_COLLECT_UNTIL` (18:00 unless you set it otherwise). If you set that
+variable with `setx` it applies to scheduled runs too; setting it with `set` in
+your own terminal does not.
+
+To run without a visible window and even when you are not logged in, add
+`/RU` and `/RP` so the task has its own credentials, or set "Run whether user
+is logged on or not" in the Task Scheduler UI. Be aware that stores the account
+password in Windows Credential Manager.
 
 Useful follow-ups:
 
 ```cmd
-schtasks /Query  /TN "KASE Pilot quotes"
-schtasks /Run    /TN "KASE Pilot quotes"
-schtasks /End    /TN "KASE Pilot quotes"
-schtasks /Delete /TN "KASE Pilot quotes" /F
+schtasks /Query  /TN "KASE Pilot session" /V /FO LIST
+schtasks /Run    /TN "KASE Pilot session"
+schtasks /End    /TN "KASE Pilot session"
+schtasks /Delete /TN "KASE Pilot session" /F
 ```
+
+Note that `schtasks /End` kills the process rather than letting it finish, so
+the collection session it interrupts will have no `finished_at` — use it to
+stop a stuck run, not as the normal way to end a day.
 
 ## Checking that collection is actually happening
 

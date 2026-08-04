@@ -6532,8 +6532,9 @@ def test_main_rejects_invalid_argument_count(
         "  kase-pilot candles SYMBOL [--from YYYY-MM-DD] [--to YYYY-MM-DD] "
         "[--timeframe SECONDS]\n"
         "  kase-pilot ticks SYMBOL\n"
-        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect]\n"
-        "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect]\n"
+        "  kase-pilot stream-quotes SYMBOL [SYMBOL ...] [--save] [--reconnect] "
+        "[--until HH:MM]\n"
+        "  kase-pilot stream-orderbook SYMBOL [--save] [--reconnect] [--until HH:MM]\n"
         "  kase-pilot rebuild-quote SYMBOL\n"
         "  kase-pilot rebuild-book SYMBOL\n"
     )
@@ -6889,3 +6890,106 @@ def test_main_rejects_invalid_rebuild_arguments(
 ) -> None:
     assert main_module.main(arguments) == 2
     assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            ["stream-quotes", "HSBK.KZ", "--until", "18:00"],
+            {"symbols": ["HSBK.KZ"], "until": time(18, 0)},
+        ),
+        (
+            ["stream-quotes", "HSBK.KZ", "--save", "--reconnect", "--until", "18:00"],
+            {
+                "symbols": ["HSBK.KZ"],
+                "save": True,
+                "reconnect": True,
+                "until": time(18, 0),
+            },
+        ),
+        (
+            ["stream-quotes", "HSBK.KZ", "--until", "18:00", "--save"],
+            {"symbols": ["HSBK.KZ"], "save": True, "until": time(18, 0)},
+        ),
+    ],
+)
+def test_main_routes_stream_quotes_until_flag(
+    arguments: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(command: str, **options: object) -> int:
+        calls.append((command, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    assert main_module.main(arguments) == 17
+    assert calls == [("stream-quotes", expected)]
+
+
+def test_main_routes_stream_order_book_until_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_run(command: str, symbol: str, **options: object) -> int:
+        calls.append((command, symbol, options))
+        return 17
+
+    monkeypatch.setattr(main_module, "run", fake_run)
+
+    arguments = ["stream-orderbook", "HSBK.KZ", "--save", "--until", "18:00"]
+    assert main_module.main(arguments) == 17
+    assert calls == [
+        ("stream-orderbook", "HSBK.KZ", {"save": True, "until": time(18, 0)})
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stream-quotes", "HSBK.KZ", "--until"],
+        ["stream-quotes", "HSBK.KZ", "--until", "not-a-time"],
+        ["stream-quotes", "HSBK.KZ", "--until", "25:00"],
+        ["stream-quotes", "HSBK.KZ", "--until", "18:00", "--until", "19:00"],
+        ["stream-orderbook", "HSBK.KZ", "--until", "not-a-time"],
+    ],
+)
+def test_main_rejects_invalid_until(
+    arguments: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main_module.main(arguments) == 2
+    assert capsys.readouterr() == ("", main_module._USAGE + "\n")
+
+
+def test_run_rejects_until_for_other_commands() -> None:
+    with pytest.raises(ValueError, match="stop time is supported only"):
+        main_module.run("info", "HSBK.KZ", until=time(18, 0))
+
+
+def test_seconds_until_returns_a_positive_delay_later_today() -> None:
+    now = datetime.now()  # noqa: DTZ005
+    if now.hour >= 22:
+        pytest.skip("too close to midnight for a same-day deadline")
+    target = time(now.hour + 1, 0)
+
+    seconds = main_module._seconds_until(target)
+
+    assert 0 < seconds <= 3600
+
+
+def test_seconds_until_rolls_over_to_tomorrow_when_time_has_passed() -> None:
+    """Starting a collector in the evening must not stop it immediately."""
+    now = datetime.now()  # noqa: DTZ005
+    if now.hour == 0:
+        pytest.skip("no earlier hour available today")
+    target = time(now.hour - 1, 0)
+
+    seconds = main_module._seconds_until(target)
+
+    assert seconds > 0
