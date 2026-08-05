@@ -27,10 +27,15 @@ if "%TRADERNET_PRIVATE_KEY%"=="" (
     exit /b 1
 )
 
-if defined KASE_COLLECT_UNTIL (
-    kase-pilot stream-orderbook %1 --save --reconnect --until %KASE_COLLECT_UNTIL%
+set "UNTIL_ARG="
+if defined KASE_COLLECT_UNTIL set "UNTIL_ARG=--until %KASE_COLLECT_UNTIL%"
+
+REM Redirection lives here rather than in a caller's `cmd /c "..."`, because
+REM nesting quotes inside cmd /c breaks the redirect target.
+if defined KASE_COLLECT_LOG (
+    kase-pilot stream-orderbook %1 --save --reconnect %UNTIL_ARG% >> "%KASE_COLLECT_LOG%" 2>&1
 ) else (
-    kase-pilot stream-orderbook %1 --save --reconnect
+    kase-pilot stream-orderbook %1 --save --reconnect %UNTIL_ARG%
 )
 
 endlocal

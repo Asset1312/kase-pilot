@@ -60,7 +60,9 @@ and keeps running until stopped:
 tools\collector\collect-session.cmd HSBK.KZ KSPI.KZ
 ```
 
-Output goes to `data/logs/`, since nothing is watching a console.
+Output goes to `data/logs/`, one file per collector, since nothing is watching
+a console. The single-collector scripts write to a log too when
+`KASE_COLLECT_LOG` names one; otherwise they print to the console as before.
 
 Collecting around the clock is harmless: outside trading hours the broker
 simply sends nothing, so the collector idles rather than recording noise. It

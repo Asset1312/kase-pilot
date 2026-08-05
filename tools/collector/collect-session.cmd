@@ -30,25 +30,37 @@ if "%TRADERNET_PRIVATE_KEY%"=="" (
     exit /b 1
 )
 
-set "PROJECT_DIR=%~dp0..\.."
+set "COLLECTOR_DIR=%~dp0"
+for %%I in ("%~dp0..\..") do set "PROJECT_DIR=%%~fI"
 set "LOG_DIR=%PROJECT_DIR%\data\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 if defined KASE_COLLECT_UNTIL (
-    set "UNTIL_ARG=--until %KASE_COLLECT_UNTIL%"
     echo Collecting until %KASE_COLLECT_UNTIL% local time; logs in %LOG_DIR%
 ) else (
-    set "UNTIL_ARG="
     echo Collecting continuously; logs in %LOG_DIR%
 )
 
 REM /b keeps these in the same console (no new windows), so a hidden scheduled
-REM task stays hidden. Output goes to logs, since nobody is watching a console.
-start /b "" cmd /c "kase-pilot stream-quotes %* --save --reconnect %UNTIL_ARG% >> "%LOG_DIR%\quotes.log" 2>&1"
+REM task stays hidden. Each wrapper applies its own redirect, taking the target
+REM from KASE_COLLECT_LOG - the child inherits the value set just before it is
+REM started. Redirecting here instead would mean nesting quotes inside
+REM `cmd /c "..."`, which cmd mis-parses and which silently sends every
+REM collector's output to the wrong place.
+set "KASE_COLLECT_LOG=%LOG_DIR%\quotes.log"
+start /b "" "%COLLECTOR_DIR%collect-quotes.cmd" %*
 
 for %%S in (%*) do (
-    start /b "" cmd /c "kase-pilot stream-orderbook %%S --save --reconnect %UNTIL_ARG% >> "%LOG_DIR%\orderbook-%%S.log" 2>&1"
+    set "KASE_COLLECT_LOG=%LOG_DIR%\orderbook-%%S.log"
+    call :start_orderbook "%%S"
 )
+goto :collectors_started
+
+:start_orderbook
+start /b "" "%COLLECTOR_DIR%collect-orderbook.cmd" %~1
+exit /b 0
+
+:collectors_started
 
 REM Stay alive while the collectors run, so a scheduled task reports the real
 REM run duration instead of exiting immediately. Without KASE_COLLECT_UNTIL
