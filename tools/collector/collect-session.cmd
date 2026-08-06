@@ -30,15 +30,15 @@ if "%TRADERNET_PRIVATE_KEY%"=="" (
     exit /b 1
 )
 
-REM Collectors already running would fight the new ones over the same log
-REM files, and the only symptom would be four "file is in use" lines with no
-REM hint of the cause. Refuse instead, and say what to do about it.
-tasklist /fi "imagename eq kase-pilot.exe" 2>nul | find /i "kase-pilot.exe" >nul
-if not errorlevel 1 (
-    echo Collectors are already running. 1>&2
-    echo Stop them first, or leave them be - they are still collecting. 1>&2
-    echo   tasklist /fi "imagename eq kase-pilot.exe" 1>&2
-    echo   taskkill /im kase-pilot.exe 1>&2
+REM Anything still holding the log files would make the new collectors fail
+REM with four unexplained "file is in use" lines. Check for the wrappers too,
+REM not just the collectors: a wrapper can outlive the collector it started
+REM and keep the log open on its own.
+call :collector_running && (
+    echo Collectors are already running, or a previous run left a wrapper 1>&2
+    echo behind that still holds the log files. Check, then stop them: 1>&2
+    echo   tools\collector\collector-status.cmd 1>&2
+    echo   tools\collector\stop-collectors.cmd 1>&2
     exit /b 1
 )
 
@@ -59,8 +59,12 @@ REM from KASE_COLLECT_LOG - the child inherits the value set just before it is
 REM started. Redirecting here instead would mean nesting quotes inside
 REM `cmd /c "..."`, which cmd mis-parses and which silently sends every
 REM collector's output to the wrong place.
+REM `cmd /c` is spelled out because `start` otherwise launches a .cmd through
+REM `cmd /K`, which keeps the wrapper alive after the collector exits. Those
+REM survivors hold the log files open forever, so the next run fails with
+REM "the file is in use" while nothing named kase-pilot is even running.
 set "KASE_COLLECT_LOG=%LOG_DIR%\quotes.log"
-start /b "" "%COLLECTOR_DIR%collect-quotes.cmd" %*
+start /b "" cmd /c "%COLLECTOR_DIR%collect-quotes.cmd" %*
 
 for %%S in (%*) do (
     set "KASE_COLLECT_LOG=%LOG_DIR%\orderbook-%%S.log"
@@ -69,8 +73,23 @@ for %%S in (%*) do (
 goto :collectors_started
 
 :start_orderbook
-start /b "" "%COLLECTOR_DIR%collect-orderbook.cmd" %~1
+start /b "" cmd /c "%COLLECTOR_DIR%collect-orderbook.cmd" %~1
 exit /b 0
+
+REM Succeeds when collection is already under way. Callers use
+REM `call :collector_running && (...)`.
+REM
+REM Two questions, because either alone misses a case. A running collector is
+REM the ordinary case. A locked log file catches the awkward one: a wrapper
+REM that outlived its collector still owns the handle, so nothing named
+REM kase-pilot is running yet the next run would still fail to write.
+:collector_running
+tasklist /fi "imagename eq kase-pilot.exe" 2>nul | find /i "kase-pilot.exe" >nul
+if not errorlevel 1 exit /b 0
+if exist "%LOG_DIR%\quotes.log" (
+    2>nul ( >>"%LOG_DIR%\quotes.log" call ) || exit /b 0
+)
+exit /b 1
 
 :collectors_started
 
