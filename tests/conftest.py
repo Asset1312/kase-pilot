@@ -18,16 +18,16 @@ from collections.abc import Iterator
 import pytest
 
 from kase_pilot.core.config import market_database_path
-from kase_pilot.storage._stream_store import StreamStore
+from kase_pilot.storage._sqlite_store import SqliteStreamStore
 
 
 @pytest.fixture(autouse=True)
 def _protect_real_market_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Fail any test that opens a store on the real market database."""
     real_database = market_database_path().resolve()
-    original_enter = StreamStore.__enter__
+    original_enter = SqliteStreamStore.__enter__
 
-    def guarded_enter(self: StreamStore) -> StreamStore:
+    def guarded_enter(self: SqliteStreamStore) -> SqliteStreamStore:
         if self._database_path.resolve() == real_database:
             raise AssertionError(
                 f"Test opened the real market database at {real_database}. "
@@ -35,5 +35,5 @@ def _protect_real_market_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
             )
         return original_enter(self)
 
-    monkeypatch.setattr(StreamStore, "__enter__", guarded_enter)
+    monkeypatch.setattr(SqliteStreamStore, "__enter__", guarded_enter)
     yield

@@ -459,7 +459,14 @@ report `_from_snapshot` so you can tell whether the result rests on a complete
 starting point or only on partial updates. Exit code `3` means nothing was
 collected for that instrument.
 
-These reconstructions are one interpretation of the raw log, not stored data:
+These reconstructions are collected into an append-only log under `data/logs`.
+
+By default, the raw streams are stored in local SQLite databases. If you need
+to store them in PostgreSQL instead, provide the `POSTGRES_URI` environment
+variable. The schema will be initialized automatically, and the application
+will transparently use PostgreSQL. No credentials or URIs are ever logged.
+
+## Viewing Stored Data:
 the raw messages remain untouched, so a reconstruction can be rewritten and
 re-run whenever understanding of the protocol improves.
 

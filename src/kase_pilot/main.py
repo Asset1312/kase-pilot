@@ -56,7 +56,7 @@ from kase_pilot.core.exceptions import BrokerError, ConfigurationError, Validati
 from kase_pilot.core.version import __version__
 from kase_pilot.derive import rebuild_order_book, rebuild_quote
 from kase_pilot.storage import OrderBookStore, QuoteStore
-from kase_pilot.storage._stream_store import StreamStore
+from kase_pilot.storage.base import StreamBackend
 
 _USAGE = (
     "Usage:\n"
@@ -971,7 +971,7 @@ def _run_rebuild_book(symbol: str, *, database_path: Path) -> int:
     return 0
 
 
-def _make_reconnect_observer(store: StreamStore | None) -> ReconnectObserver:
+def _make_reconnect_observer(store: StreamBackend | None) -> ReconnectObserver:
     """Report connection drops to stderr, and record them when collecting."""
 
     def observe(event: str, attempt: int, delay: float) -> None:

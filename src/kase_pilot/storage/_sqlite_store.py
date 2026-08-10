@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar, Self
+from typing import Any, Self
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS collector_sessions (
@@ -79,22 +79,24 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-class StreamStore:
+class SqliteStreamStore:
     """Append-only store for one raw broker stream, backed by SQLite.
-
-    Subclasses declare which table they write to, which message field holds
-    the ticker, and the stream name recorded against collector sessions.
 
     Use as a context manager; the session is opened on entry and closed on
     exit, so an interrupted run still records when it stopped.
     """
 
-    _TABLE: ClassVar[str]
-    _TICKER_FIELD: ClassVar[str]
-    _STREAM: ClassVar[str]
-
-    def __init__(self, database_path: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        table: str,
+        ticker_field: str,
+        stream: str,
+    ) -> None:
         self._database_path = database_path
+        self._table = table
+        self._ticker_field = ticker_field
+        self._stream = stream
         self._connection: sqlite3.Connection | None = None
         self._session_id: int | None = None
         self._symbols: tuple[str, ...] = ()
@@ -111,7 +113,7 @@ class StreamStore:
         cursor = connection.execute(
             "INSERT INTO collector_sessions (stream, symbols, started_at) "
             "VALUES (?, ?, ?)",
-            (self._STREAM, json.dumps(list(self._symbols)), _utc_now()),
+            (self._stream, json.dumps(list(self._symbols)), _utc_now()),
         )
         connection.commit()
         self._connection = connection
@@ -145,10 +147,10 @@ class StreamStore:
                 f"{type(self).__name__} must be used as a context manager"
             )
 
-        ticker = message.get(self._TICKER_FIELD)
-        # Table name is a class constant, never user input; values are bound.
+        ticker = message.get(self._ticker_field)
+        # Table name is passed dynamically, but internally controlled. We trust it.
         self._connection.execute(
-            f"INSERT INTO {self._TABLE} "
+            f"INSERT INTO {self._table} "
             "(ticker, received_at, session_id, payload) VALUES (?, ?, ?, ?)",
             (
                 ticker if isinstance(ticker, str) else "",
