@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from kase_pilot.derive import rebuild_order_book, rebuild_quote
 from kase_pilot.storage import OrderBookStore, QuoteStore
 
@@ -120,15 +122,14 @@ def test_rebuild_book_applies_inserts_and_sorts_each_side(tmp_path: Path) -> Non
     assert book["_from_snapshot"] is True
 
 
-def test_rebuild_book_applies_updates_by_level_key(tmp_path: Path) -> None:
-    """upd carries the same k as the level it modifies (F-40)."""
+def test_rebuild_book_updates_current_positional_index(tmp_path: Path) -> None:
     database_path = tmp_path / "market.sqlite3"
     _store_book(
         database_path,
         [
-            {"i": "HSBK.KZ", "n": 0, "ins": [{"p": 384.49, "s": "S", "q": 39, "k": 9}]},
-            {"i": "HSBK.KZ", "n": 1, "upd": [{"p": 384.49, "s": "S", "q": 88, "k": 9}]},
-            {"i": "HSBK.KZ", "n": 2, "upd": [{"p": 384.49, "s": "S", "q": 76, "k": 9}]},
+            {"i": "HSBK.KZ", "n": 0, "ins": [{"p": 384.49, "s": "S", "q": 39, "k": 0}]},
+            {"i": "HSBK.KZ", "n": 1, "upd": [{"q": 88, "k": 0}]},
+            {"i": "HSBK.KZ", "n": 2, "upd": [{"q": 76, "k": 0}]},
         ],
     )
 
@@ -137,6 +138,138 @@ def test_rebuild_book_applies_updates_by_level_key(tmp_path: Path) -> None:
     assert book is not None
     assert len(book["asks"]) == 1
     assert book["asks"][0]["q"] == 76
+
+
+def test_rebuild_book_delete_shifts_later_indices(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 101.0, "s": "S", "q": 10, "k": 0},
+                    {"p": 102.0, "s": "S", "q": 20, "k": 1},
+                    {"p": 99.0, "s": "B", "q": 30, "k": 2},
+                ],
+            },
+            {
+                "i": "HSBK.KZ",
+                "n": 1,
+                "del": [{"k": 0}],
+                "upd": [{"k": 0, "q": 77}],
+            },
+        ],
+    )
+
+    book = rebuild_order_book(database_path, "HSBK.KZ")
+
+    assert book is not None
+    assert [level["p"] for level in book["asks"]] == [102.0]
+    assert book["asks"][0]["q"] == 77
+
+
+def test_rebuild_book_insert_shifts_later_indices(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 102.0, "s": "S", "q": 20, "k": 0},
+                    {"p": 99.0, "s": "B", "q": 30, "k": 1},
+                ],
+            },
+            {
+                "i": "HSBK.KZ",
+                "n": 1,
+                "ins": [{"p": 101.0, "s": "S", "q": 10, "k": 0}],
+                "upd": [{"k": 1, "q": 77}],
+            },
+        ],
+    )
+
+    book = rebuild_order_book(database_path, "HSBK.KZ")
+
+    assert book is not None
+    assert [level["p"] for level in book["asks"]] == [101.0, 102.0]
+    assert next(level for level in book["asks"] if level["p"] == 102.0)["q"] == 77
+
+
+def test_rebuild_book_applies_multiple_operations_in_payload_order(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 101.0, "s": "S", "q": 10, "k": 0},
+                    {"p": 103.0, "s": "S", "q": 20, "k": 1},
+                    {"p": 99.0, "s": "B", "q": 30, "k": 2},
+                    {"p": 98.0, "s": "B", "q": 40, "k": 3},
+                ],
+            },
+            {
+                "i": "HSBK.KZ",
+                "n": 1,
+                "del": [{"k": 0}, {"k": 1}],
+                "ins": [
+                    {"p": 102.0, "s": "S", "q": 12, "k": 0},
+                    {"p": 101.0, "s": "S", "q": 11, "k": 0},
+                ],
+                "upd": [{"k": 2, "q": 33}, {"k": 3, "q": 44}],
+            },
+        ],
+    )
+
+    book = rebuild_order_book(database_path, "HSBK.KZ")
+
+    assert book is not None
+    assert [level["p"] for level in book["asks"]] == [101.0, 102.0, 103.0]
+    assert [level["k"] for level in book["asks"]] == [0, 1, 2]
+    assert next(level for level in book["asks"] if level["p"] == 103.0)["q"] == 33
+    assert book["bids"] == [{"p": 98.0, "s": "B", "q": 44, "k": 3}]
+
+
+def test_positional_reconstruction_avoids_stale_false_crossed_book(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 101.0, "s": "S", "q": 10, "k": 0},
+                    {"p": 102.0, "s": "S", "q": 20, "k": 1},
+                    {"p": 99.0, "s": "B", "q": 30, "k": 2},
+                    {"p": 98.0, "s": "B", "q": 40, "k": 3},
+                ],
+            },
+            {
+                "i": "HSBK.KZ",
+                "n": 1,
+                "del": [{"k": 0}],
+                "upd": [{"k": 1, "p": 98.0, "q": 35}],
+            },
+        ],
+    )
+
+    book = rebuild_order_book(database_path, "HSBK.KZ")
+
+    assert book is not None
+    assert book["asks"][0]["p"] == 102.0
+    assert book["bids"][0]["p"] == 98.0
+    assert book["bids"][0]["p"] < book["asks"][0]["p"]
 
 
 def test_rebuild_book_applies_deletes(tmp_path: Path) -> None:
@@ -182,17 +315,75 @@ def test_rebuild_book_restarts_from_the_latest_full_book(tmp_path: Path) -> None
     assert book["_messages_applied"] == 1
 
 
-def test_rebuild_book_reports_when_no_full_book_was_captured(tmp_path: Path) -> None:
+def test_rebuild_book_rejects_out_of_range_update_without_baseline(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "market.sqlite3"
     _store_book(
         database_path,
         [{"i": "HSBK.KZ", "n": 7, "upd": [{"p": 384.0, "s": "B", "q": 5, "k": 3}]}],
     )
 
+    with pytest.raises(ValueError, match="upd index 3 out of range for book size 0"):
+        rebuild_order_book(database_path, "HSBK.KZ")
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"del": [{"k": 2}]},
+        {"upd": [{"k": 2, "q": 1}]},
+        {"del": [{"k": True}]},
+        {"ins": [{"p": 100.0, "s": "S", "q": 1, "k": -1}]},
+        {"upd": [{"k": "0", "q": 1}]},
+        {"del": [{}]},
+    ],
+)
+def test_rebuild_book_rejects_malformed_positional_index(
+    tmp_path: Path,
+    operation: dict[str, list[dict[str, Any]]],
+) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 101.0, "s": "S", "q": 10, "k": 0},
+                    {"p": 99.0, "s": "B", "q": 10, "k": 1},
+                ],
+            },
+            {"i": "HSBK.KZ", "n": 1, **operation},
+        ],
+    )
+
+    with pytest.raises((TypeError, ValueError), match="order-book"):
+        rebuild_order_book(database_path, "HSBK.KZ")
+
+
+def test_rebuild_book_insert_beyond_end_appends(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _store_book(
+        database_path,
+        [
+            {
+                "i": "HSBK.KZ",
+                "n": 0,
+                "ins": [
+                    {"p": 101.0, "s": "S", "q": 10, "k": 99},
+                    {"p": 99.0, "s": "B", "q": 10, "k": 99},
+                ],
+            }
+        ],
+    )
+
     book = rebuild_order_book(database_path, "HSBK.KZ")
 
     assert book is not None
-    assert book["_from_snapshot"] is False
+    assert book["asks"][0]["p"] == 101.0
+    assert book["bids"][0]["p"] == 99.0
 
 
 def test_rebuild_book_tolerates_missing_diff_arrays(tmp_path: Path) -> None:

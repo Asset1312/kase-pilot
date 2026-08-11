@@ -14,10 +14,10 @@ class OrderBookStore:
     """Append-only store for raw order-book (market depth) messages.
 
     Order-book messages are incremental diffs, not snapshots: each carries
-    ``ins``/``del``/``upd`` arrays of price levels correlated by an opaque
-    ``k`` key, and a single message is not a usable book on its own after
-    the first (see docs/API_NOTES.md F-28). Reconstructing the book is
-    therefore left to a later derived layer, working from this raw log.
+    ``ins``/``del``/``upd`` arrays whose ``k`` values are positional indices
+    in the current ordered level list. A single message is not a usable book
+    on its own after the first (see docs/API_NOTES.md F-28). Reconstructing the
+    book is therefore left to a later derived layer, working from this raw log.
 
     Note the ticker field differs from the quote stream: order-book
     messages use ``i``, not ``c``.

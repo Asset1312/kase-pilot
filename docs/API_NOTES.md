@@ -1707,18 +1707,18 @@ context only, not officially confirmed):** `n` — sequence number
 (increments per message); `i` — ticker; `min_step`/`step_price` — present
 only on the first message, `null`, absent afterward; `del`/`ins`/`upd` —
 arrays of order-book level changes; each level has `p` (price), `s` (side,
-`"B"`/`"S"`), `q` (quantity), `k` (an index/key used to correlate `ins`
-and later `del` entries — the second message deletes exactly the two `k`
-values inserted by the first); `cnt` — count (meaning of what, not
-confirmed); `x` — unexplained integer flag.
+`"B"`/`"S"`), `q` (quantity), `k` (the current positional index in the
+ordered level list); `cnt` — count (meaning of what, not confirmed); `x` —
+unexplained integer flag. The positional meaning of `k` was established by
+the later cross-stream validation recorded under F-40.
 
 **This confirms the order book stream is an incremental diff feed, not a
 full-snapshot feed** — same pattern already seen for `quotes` (F-27:
 partial updates), but here explicit: the protocol has dedicated
 insert/delete/update arrays rather than sparse full-record fields. **Any
-future consumer must maintain order-book state per ticker by applying
-`del`/`ins`/`upd` to prior state, keyed by `k`** — a single message is not
-a usable order book on its own after the first one.
+future consumer must maintain an ordered level list per ticker and apply
+`del`/`ins`/`upd` sequentially using `k` as the current list index** — a
+single message is not a usable order book on its own after the first one.
 
 **Readiness impact:** WebSocket order-book streaming for KASE is now
 confirmed end-to-end through this project's own implementation
@@ -2206,21 +2206,25 @@ behaviour that first observation did not show:
 - **`upd` is genuinely used** — in F-28 it was empty in both captured
   messages, so its role was unverified. Here every delta after the
   snapshot arrived through `upd`, never through `del`+`ins`.
-- **`k` is a stable per-level identifier within the book, not a
-  per-message index.** Messages `n: 2` through `n: 5` all update `k: 9`
-  (the `384.49` ask), changing only `q`: 38 → 88 → 86 → 76. F-28 showed
-  the complementary case — `del` referencing the same `k` values that a
-  prior `ins` had created.
+- **Correction, 2026-08-11: `k` is a positional list index, not a stable
+  level identifier.** The earlier stable-key inference from repeated `k: 9`
+  updates was falsified by reconstructing recorded depth data both ways and
+  comparing the resulting top of book with independent Tradernet `bbp`/`bap`
+  quotes no more than one second later. Positional reconstruction matched
+  97.99% of ASBN.KZ, 98.76% of HSBK.KZ, and 99.38% of CCBN.KZ comparisons;
+  stable-key reconstruction matched only 44.72%, 39.75%, and 30.86%, with no
+  stable-only wins. Repeated `k: 9` therefore means repeated updates to the
+  level currently at index 9; inserts and deletes can shift that position.
 - **`cnt` appears to be the total level count and `x` the per-side
   depth.** Here `cnt: 20`, `x: 10` with 10 bids and 10 asks; in F-28,
   `cnt: 2`, `x: 1` with 1 bid and 1 ask. Consistent across both, but the
   meaning is inferred from two samples, not documented.
 
-**Impact on a future book-reconstruction layer:** start from the most
-recent `n: 0` message at or before the target time, then apply
-`ins`/`del`/`upd` by `k` in `n` order. **Caveat:** whether `n` resets per
-connection, per trading day, or never is not established — with only
-single-session captures so far, a reconstruction keyed on `n` alone could
-silently mis-order messages across sessions. The stored `session_id` and
-`received_at` columns give an independent ordering that does not depend on
-resolving this.
+**Impact on a future book-reconstruction layer:** start from the most recent
+`n: 0` message at or before the target time, maintain the book as an ordered
+list, and apply each `del`, then `ins`, then `upd` entry sequentially at its
+current integer `k` position. **Caveat:** whether `n` resets per connection,
+per trading day, or never is not established — with only single-session
+captures so far, a reconstruction keyed on `n` alone could silently mis-order
+messages across sessions. The stored `session_id` and `received_at` columns
+give an independent ordering that does not depend on resolving this.

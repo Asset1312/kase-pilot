@@ -4,11 +4,11 @@ Design rationale (see docs/API_NOTES.md F-27, F-28, F-38):
 
 Stream messages are *partial updates*, not self-contained records. Quote
 messages may carry as few as 7 of ~90 fields and sometimes no price at all;
-order-book messages are explicit ``ins``/``del``/``upd`` diffs keyed by an
-opaque ``k``. Merging either into a "current state" at write time would bake
-an unconfirmed interpretation into the data irreversibly. Every stream is
-therefore stored verbatim, append-only, and any derived view is rebuilt from
-this log later — and can be rebuilt again when understanding improves.
+order-book messages are explicit positional ``ins``/``del``/``upd`` diffs.
+Merging either into a "current state" at write time would bake protocol
+interpretation into the data irreversibly. Every stream is therefore stored
+verbatim, append-only, and any derived view is rebuilt from this log later —
+and can be rebuilt again when understanding improves.
 
 Two timestamps are kept distinct, never conflated (F-39):
 
