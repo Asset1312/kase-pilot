@@ -25,11 +25,20 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
+
+# SQLite permits only one writer at a time.  Give short collector transactions
+# enough time to wait for that writer instead of failing immediately.  This value
+# configures both sqlite3.connect(timeout=...) and PRAGMA busy_timeout.
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+_LOCK_RETRY_ATTEMPTS = 3
+_LOCK_RETRY_BASE_SECONDS = 0.05
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS collector_sessions (
@@ -108,14 +117,22 @@ class SqliteStreamStore:
 
     def __enter__(self) -> Self:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self._database_path)
-        connection.executescript(_SCHEMA)
-        cursor = connection.execute(
-            "INSERT INTO collector_sessions (stream, symbols, started_at) "
-            "VALUES (?, ?, ?)",
-            (self._stream, json.dumps(list(self._symbols)), _utc_now()),
+        connection = sqlite3.connect(
+            self._database_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
         )
-        connection.commit()
+        try:
+            self._configure_connection(connection)
+            self._retry_locked(lambda: connection.executescript(_SCHEMA), connection)
+            cursor = self._execute_and_commit(
+                connection,
+                "INSERT INTO collector_sessions (stream, symbols, started_at) "
+                "VALUES (?, ?, ?)",
+                (self._stream, json.dumps(list(self._symbols)), _utc_now()),
+            )
+        except BaseException:
+            connection.close()
+            raise
         self._connection = connection
         self._session_id = cursor.lastrowid
         return self
@@ -128,13 +145,17 @@ class SqliteStreamStore:
     ) -> None:
         if self._connection is None:
             return
-        self._connection.execute(
-            "UPDATE collector_sessions SET finished_at = ? WHERE id = ?",
-            (_utc_now(), self._session_id),
-        )
-        self._connection.commit()
-        self._connection.close()
-        self._connection = None
+        connection = self._connection
+        try:
+            self._execute_and_commit(
+                connection,
+                "UPDATE collector_sessions SET finished_at = ? WHERE id = ?",
+                (_utc_now(), self._session_id),
+            )
+        finally:
+            connection.close()
+            self._connection = None
+            self._session_id = None
 
     def save(self, message: Mapping[str, Any]) -> None:
         """Append one raw stream message verbatim.
@@ -149,7 +170,8 @@ class SqliteStreamStore:
 
         ticker = message.get(self._ticker_field)
         # Table name is passed dynamically, but internally controlled. We trust it.
-        self._connection.execute(
+        self._execute_and_commit(
+            self._connection,
             f"INSERT INTO {self._table} "
             "(ticker, received_at, session_id, payload) VALUES (?, ?, ?, ?)",
             (
@@ -159,7 +181,6 @@ class SqliteStreamStore:
                 json.dumps(message, ensure_ascii=False),
             ),
         )
-        self._connection.commit()
 
     def record_interruption(self, attempt: int) -> None:
         """Record that the connection dropped and a retry is pending.
@@ -173,12 +194,12 @@ class SqliteStreamStore:
                 f"{type(self).__name__} must be used as a context manager"
             )
 
-        self._connection.execute(
+        self._execute_and_commit(
+            self._connection,
             "INSERT INTO collector_interruptions (session_id, attempt, failed_at) "
             "VALUES (?, ?, ?)",
             (self._session_id, attempt, _utc_now()),
         )
-        self._connection.commit()
 
     def record_resumption(self) -> None:
         """Close out the open interruption for this session, if any."""
@@ -187,9 +208,84 @@ class SqliteStreamStore:
                 f"{type(self).__name__} must be used as a context manager"
             )
 
-        self._connection.execute(
+        self._execute_and_commit(
+            self._connection,
             "UPDATE collector_interruptions SET resumed_at = ? "
             "WHERE session_id = ? AND resumed_at IS NULL",
             (_utc_now(), self._session_id),
         )
-        self._connection.commit()
+
+    @staticmethod
+    def _configure_connection(connection: sqlite3.Connection) -> None:
+        """Configure one process-local connection for concurrent appends.
+
+        WAL allows readers and the active writer to proceed concurrently.  NORMAL
+        synchronous mode keeps WAL transactions durable across application/process
+        crashes while avoiding the extra checkpoint sync of FULL; a host power loss
+        can still lose the most recently committed WAL transaction.
+        """
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        current_row = connection.execute("PRAGMA journal_mode").fetchone()
+        current_mode = str(current_row[0]).lower() if current_row else ""
+        if current_mode != "wal":
+            mode_row = SqliteStreamStore._retry_locked(
+                lambda: connection.execute("PRAGMA journal_mode=WAL").fetchone(),
+                connection,
+            )
+            current_mode = str(mode_row[0]).lower() if mode_row else ""
+        if current_mode != "wal":
+            raise sqlite3.OperationalError(
+                f"SQLite WAL journal mode is unavailable (got {current_mode!r})"
+            )
+        connection.execute("PRAGMA synchronous=NORMAL")
+
+    @staticmethod
+    def _execute_and_commit(
+        connection: sqlite3.Connection,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> sqlite3.Cursor:
+        """Execute one bounded transaction without duplicating a committed row."""
+
+        def transaction() -> sqlite3.Cursor:
+            cursor = connection.execute(sql, parameters)
+            connection.commit()
+            return cursor
+
+        return SqliteStreamStore._retry_locked(transaction, connection)
+
+    @staticmethod
+    def _retry_locked(
+        operation: Callable[[], Any],
+        connection: sqlite3.Connection,
+    ) -> Any:
+        """Retry only SQLite's transient writer-lock errors.
+
+        sqlite3's busy handler gets the first chance to wait.  If it still reports
+        SQLITE_BUSY/SQLITE_LOCKED, roll back the uncommitted attempt and retry with
+        a small deterministic backoff.  Successful commits return without retry,
+        so an acknowledged row cannot be inserted twice.
+        """
+        for retry_index in range(_LOCK_RETRY_ATTEMPTS):
+            try:
+                return operation()
+            except sqlite3.OperationalError as error:
+                if not _is_transient_lock(error):
+                    raise
+                with suppress(sqlite3.Error):
+                    connection.rollback()
+                if retry_index + 1 == _LOCK_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(_LOCK_RETRY_BASE_SECONDS * (retry_index + 1))
+        raise AssertionError("unreachable SQLite retry state")
+
+
+def _is_transient_lock(error: sqlite3.OperationalError) -> bool:
+    error_code = getattr(error, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        return error_code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    return str(error).lower() in {
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+    }
