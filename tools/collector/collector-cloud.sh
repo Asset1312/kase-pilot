@@ -34,7 +34,7 @@ run_quotes core \
   HSBK.KZ ASBN.KZ CCBN.KZ KSPI.KZ &
 
 run_quotes group2 \
-  KEGC.KZ AIRA.KZ KZTO.KZ KMGZ.KZ GB_ALTN.KZ &
+  KEGC.KZ AIRA.KZ &
 
 for ticker in \
   HSBK.KZ \
@@ -42,10 +42,7 @@ for ticker in \
   CCBN.KZ \
   KSPI.KZ \
   KEGC.KZ \
-  AIRA.KZ \
-  KZTO.KZ \
-  KMGZ.KZ \
-  GB_ALTN.KZ
+  AIRA.KZ
 do
   run_orderbook "$ticker" &
 done
