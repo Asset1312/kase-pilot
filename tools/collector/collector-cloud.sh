@@ -33,16 +33,11 @@ run_orderbook() {
 run_quotes core \
   HSBK.KZ ASBN.KZ CCBN.KZ KSPI.KZ &
 
-run_quotes group2 \
-  KEGC.KZ AIRA.KZ &
-
 for ticker in \
   HSBK.KZ \
   ASBN.KZ \
   CCBN.KZ \
-  KSPI.KZ \
-  KEGC.KZ \
-  AIRA.KZ
+  KSPI.KZ
 do
   run_orderbook "$ticker" &
 done
