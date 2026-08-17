@@ -34,32 +34,18 @@ run_quotes core \
   HSBK.KZ ASBN.KZ CCBN.KZ KSPI.KZ &
 
 run_quotes group2 \
-  KMGD.KZ KEGC.KZ KZTO.KZ AIRA.KZ &
-
-run_quotes group3 \
-  KCEL.KZ GB_ALTN.KZ KMGZ.KZ RAHT.KZ &
-
-run_quotes group4 \
-  CCBNp.KZ KZTK.KZ BSUL.KZ MMGZp.KZ BAST.KZ &
+  KEGC.KZ AIRA.KZ KZTO.KZ KMGZ.KZ GB_ALTN.KZ &
 
 for ticker in \
   HSBK.KZ \
   ASBN.KZ \
   CCBN.KZ \
   KSPI.KZ \
-  KMGD.KZ \
   KEGC.KZ \
-  KZTO.KZ \
   AIRA.KZ \
-  KCEL.KZ \
-  GB_ALTN.KZ \
+  KZTO.KZ \
   KMGZ.KZ \
-  RAHT.KZ \
-  CCBNp.KZ \
-  KZTK.KZ \
-  BSUL.KZ \
-  MMGZp.KZ \
-  BAST.KZ
+  GB_ALTN.KZ
 do
   run_orderbook "$ticker" &
 done
