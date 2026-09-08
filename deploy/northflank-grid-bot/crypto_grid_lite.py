@@ -22,10 +22,12 @@ import hmac
 import hashlib
 import json
 import logging
+import threading
 import urllib.request
 import urllib.parse
 from decimal import Decimal, ROUND_DOWN
 from dataclasses import dataclass
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +36,38 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("grid_bot")
+
+PORT = int(os.getenv("PORT", "8080"))
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Responds to Render.com health check requests to keep the free container active."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        status_payload = {
+            "status": "HEALTHY",
+            "bot": "Binance Cloud Grid Bot",
+            "symbol": SYMBOL,
+            "testnet": USE_TESTNET,
+            "uptime_seconds": time.time()
+        }
+        self.wfile.write(json.dumps(status_payload).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass  # Suppress noisy HTTP access logs
+
+
+def start_healthcheck_server(port: int):
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"Health-check web server started on 0.0.0.0:{port} for Render.com")
+    except Exception as e:
+        logger.warning(f"Failed to start healthcheck web server: {e}")
 
 # --- Environment Configuration ---
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
@@ -333,9 +367,14 @@ class CloudGridEngine:
 
 
 def main() -> None:
+    # Start background web server for Render health checks
+    start_healthcheck_server(PORT)
+
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
         logger.error("Missing BINANCE_API_KEY or BINANCE_SECRET_KEY in environment variables!")
-        sys.exit(1)
+        # Keep web server alive so user can see healthcheck status even if keys not set yet
+        while True:
+            time.sleep(10)
 
     client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY, BASE_URL)
     engine = CloudGridEngine(client)
