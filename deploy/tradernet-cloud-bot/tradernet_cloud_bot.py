@@ -239,7 +239,64 @@ class CloudBotEngine:
         if not is_kase_market_open():
             return
         try:
-            quotes = self.kase_client.get_quotes(['ASBN.KZ', 'HSBK.KZ', 'KMGD.KZ']).get('result', {}).get('q', [])
+            # Active scalping configs for KASE
+            kase_configs = {
+                'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01},
+                'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01}
+            }
+
+            user_data = self.kase_client.get_user_data().get('OPQ', {})
+            positions = {p.get('i'): p for p in user_data.get('ps', {}).get('pos', [])}
+            orders_list = user_data.get('orders', {}).get('order', [])
+            active_orders = [o for o in orders_list if o.get('stat') in [10, 2, 1]]
+
+            quotes = self.kase_client.get_quotes(list(kase_configs.keys())).get('result', {}).get('q', [])
+            q_dict = {q.get('c'): q for q in quotes}
+
+            for sym, cfg in kase_configs.items():
+                q = q_dict.get(sym)
+                if not q:
+                    continue
+                bbp = float(q.get('bbp') or 0)
+                bap = float(q.get('bap') or 0)
+                if not bbp or not bap:
+                    continue
+
+                pos_info = positions.get(sym, {})
+                curr_shares = int(pos_info.get('q') or 0)
+                entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0)
+
+                sym_orders = [o for o in active_orders if o.get('instr') == sym]
+                sell_orders = [o for o in sym_orders if o.get('oper') == 3]
+                buy_orders = [o for o in sym_orders if o.get('oper') == 1]
+
+                # Case A: We hold shares and have no active SELL order -> place TP sell above entry
+                if curr_shares >= cfg['qty'] and not sell_orders:
+                    tp_price = max(bap, round(entry_price * (1 + cfg['min_spread_pct']), 2))
+                    logger.info(f"[{sym}] Placing Take-Profit SELL: {cfg['qty']} shares @ {tp_price:.2f} KZT (Entry: {entry_price:.2f})")
+                    self.kase_client.authorized_request('putTradeOrder', {
+                        'instr_name': sym,
+                        'action_id': 3,
+                        'order_type_id': 2,
+                        'qty': cfg['qty'],
+                        'limit_price': tp_price,
+                        'expiration_id': 1
+                    })
+
+                # Case B: We have no active BUY order and no inventory -> place resting BUY at best bid
+                elif curr_shares < cfg['qty'] and not buy_orders:
+                    # Check spread profitability
+                    if (bap - bbp) / bbp >= cfg['min_spread_pct']:
+                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT")
+                        self.kase_client.authorized_request('putTradeOrder', {
+                            'instr_name': sym,
+                            'action_id': 1,
+                            'order_type_id': 2,
+                            'qty': cfg['qty'],
+                            'limit_price': round(bbp, 2),
+                            'expiration_id': 1
+                        })
+
         except Exception as e:
             logger.error(f"Error in KASE step: {e}")
 
