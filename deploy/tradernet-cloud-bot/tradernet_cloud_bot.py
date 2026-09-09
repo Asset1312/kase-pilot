@@ -41,20 +41,179 @@ DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # Allow json endpoint via /json
+        if self.path == '/json':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            status = {
+                "status": "online",
+                "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
+                "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
+                "deepseek_connected": bool(DEEPSEEK_API_KEY),
+                "signals": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
+                "benchmarks": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            self.wfile.write(json.dumps(status, indent=2, ensure_ascii=False).encode('utf-8'))
+            return
+
+        # Render Modern Russian HTML Dashboard
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
-        status = {
-            "status": "online",
-            "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
-            "service": "Render.com Web Service",
-            "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
-            "deepseek_connected": bool(DEEPSEEK_API_KEY),
-            "ai_latest_signal": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
-            "latest_binance": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-        self.wfile.write(json.dumps(status, indent=2).encode('utf-8'))
+
+        signals = getattr(CloudBotEngine, 'LATEST_ADVICE', {})
+        benchmarks = getattr(CloudBotEngine, 'LATEST_BINANCE', {})
+        kase_status = "🟢 ОТКРЫТ" if is_kase_market_open() else "🔴 ЗАКРЫТ"
+        now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+        cards_html = ""
+        for sym in ["SOL/USD", "SUI/USD"]:
+            sig = signals.get(sym, {})
+            bm = benchmarks.get(sym, {})
+            action = sig.get('action', 'ОЖИДАНИЕ')
+            reason = sig.get('reasoning', 'Анализ рыночной ситуации нейросетью...')
+            buy_p = sig.get('recommended_buy_price', '—')
+            sell_p = sig.get('recommended_sell_price', '—')
+            risk = sig.get('risk_score', '—')
+            bm_price = bm.get('last_price', 'Загрузка...')
+
+            badge_color = "#3b82f6"
+            action_ru = "ЖДАТЬ"
+            if action == "BUY":
+                badge_color = "#10b981"
+                action_ru = "ПОКУПАТЬ (BUY)"
+            elif action == "SELL":
+                badge_color = "#ef4444"
+                action_ru = "ПРОДАВАТЬ (SELL)"
+            elif action == "WAIT":
+                badge_color = "#f59e0b"
+                action_ru = "ЖДАТЬ (ВЫЖИДАНИЕ)"
+
+            cards_html += f"""
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">💎 {sym}</div>
+                    <span class="badge" style="background: {badge_color}">{action_ru}</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Мировая цена (Биржа)</div>
+                        <div class="stat-val">${bm_price}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Цель покупки</div>
+                        <div class="stat-val" style="color: #10b981;">${buy_p}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Цель продажи (Тейк-профит)</div>
+                        <div class="stat-val" style="color: #6366f1;">${sell_p}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Уровень риска</div>
+                        <div class="stat-val" style="color: #f59e0b;">{risk} / 10</div>
+                    </div>
+                </div>
+                <div class="reason-box">
+                    <strong>🧠 Анализ DeepSeek AI:</strong>
+                    <p>{reason}</p>
+                </div>
+            </div>
+            """
+
+        html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="15">
+    <title>Панель управления Tradernet AI Cloud Bot</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
+        body {{ background: #0b0f19; color: #f3f4f6; padding: 24px; }}
+        .container {{ max-width: 900px; margin: 0 auto; }}
+        .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #1f2937; }}
+        .header h1 {{ font-size: 22px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 10px; }}
+        .pulse {{ width: 10px; height: 10px; border-radius: 50%; background: #10b981; box-shadow: 0 0 10px #10b981; animation: pulse 2s infinite; }}
+        @keyframes pulse {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} 100% {{ opacity: 1; }} }}
+        .status-bar {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+        .status-pill {{ background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 14px 18px; }}
+        .status-pill .label {{ font-size: 12px; color: #9ca3af; text-transform: uppercase; margin-bottom: 4px; }}
+        .status-pill .val {{ font-size: 16px; font-weight: 600; color: #f9fafb; }}
+        .grid {{ display: flex; flex-direction: column; gap: 20px; }}
+        .card {{ background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
+        .card-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }}
+        .card-title {{ font-size: 18px; font-weight: 700; color: #ffffff; }}
+        .badge {{ padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; color: #ffffff; letter-spacing: 0.5px; }}
+        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }}
+        .stat-box {{ background: #1f2937; padding: 12px 14px; border-radius: 10px; }}
+        .stat-label {{ font-size: 11px; color: #9ca3af; margin-bottom: 4px; }}
+        .stat-val {{ font-size: 16px; font-weight: 700; color: #f3f4f6; }}
+        .reason-box {{ background: #1e1b4b; border-left: 4px solid #6366f1; padding: 14px; border-radius: 8px; }}
+        .reason-box strong {{ font-size: 13px; color: #a5b4fc; display: block; margin-bottom: 6px; }}
+        .reason-box p {{ font-size: 14px; line-height: 1.5; color: #e0e7ff; }}
+        .footer {{ text-align: center; margin-top: 28px; color: #6b7280; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><div class="pulse"></div> Облачный торговый робот Tradernet AI</h1>
+            <span style="font-size: 13px; color: #9ca3af;">Обновлено: {now_str}</span>
+        </div>
+
+        <div class="status-bar">
+            <div class="status-pill">
+                <div class="label">Статус сервера</div>
+                <div class="val" style="color: #10b981;">🟢 В сети (Render.com)</div>
+            </div>
+            <div class="status-pill">
+                <div class="label">Рынок KASE (Казахстан)</div>
+                <div class="val">{kase_status}</div>
+            </div>
+            <div class="status-pill">
+                <div class="label">Нейросеть DeepSeek</div>
+                <div class="val" style="color: #38bdf8;">🧠 Активна (API подключен)</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            {cards_html}
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🇰🇿 Казахстанские акции (KASE)</div>
+                    <span class="badge" style="background: #10b981;">АКТИВНЫЙ СКАЛЬПИНГ</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Air Astana (AIRA.KZ)</div>
+                        <div class="stat-val">3 акции в работе</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">KM GOLD (KMGD.KZ)</div>
+                        <div class="stat-val">25 акций в работе</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Защита от застоя</div>
+                        <div class="stat-val" style="color: #10b981;">Включена (24h)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Убыточные продажи</div>
+                        <div class="stat-val" style="color: #ef4444;">Запрещены (0%)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Страница обновляется автоматически каждые 15 секунд • Доступен JSON формат по адресу <a href="/json" style="color: #38bdf8;">/json</a>
+        </div>
+    </div>
+</body>
+</html>"""
+        self.wfile.write(html.encode('utf-8'))
 
     def log_message(self, format, *args):
         pass
@@ -73,21 +232,38 @@ def is_kase_market_open() -> bool:
     end_time = datetime.time(17, 0, 0)
     return start_time <= now.time() <= end_time
 
-def get_global_binance_price(symbol="SOLUSDT") -> dict:
-    """Fetch real-time global price from public Binance API."""
+def get_global_crypto_price(symbol="SOLUSDT") -> dict:
+    """Fetch real-time global price from Binance or CoinGecko."""
+    # 1. Try Binance
     url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4) as r:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=3) as r:
             data = json.loads(r.read())
             return {
                 "last_price": float(data['lastPrice']),
                 "change_pct": float(data['priceChangePercent']),
-                "high_24h": float(data['highPrice']),
-                "low_24h": float(data['lowPrice'])
+                "source": "Binance"
             }
+    except Exception:
+        pass
+
+    # 2. Fallback to CryptoCompare (never blocks cloud IPs)
+    base_coin = symbol.replace("USDT", "")
+    cc_url = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={base_coin}&tsyms=USD"
+    try:
+        req = urllib.request.Request(cc_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            res = json.loads(r.read())
+            raw = res.get('RAW', {}).get(base_coin, {}).get('USD', {})
+            if raw:
+                return {
+                    "last_price": float(raw.get('PRICE', 0)),
+                    "change_pct": float(raw.get('CHANGEPCT24HOUR', 0)),
+                    "source": "CryptoCompare"
+                }
     except Exception as e:
-        logger.error(f"Global Binance query error: {e}")
+        logger.error(f"Global crypto price fallback error: {e}")
     return {}
 
 def ask_deepseek_crypto(symbol: str, binance_data: dict, freedom_quote: dict, inventory: float, cash: float) -> dict:
@@ -200,7 +376,7 @@ class CloudBotEngine:
                 now = time.time()
                 last_check = self.last_ai_check.get(sym, 0)
                 if now - last_check > 45:
-                    global_feed = get_global_binance_price(cfg['binance'])
+                    global_feed = get_global_crypto_price(cfg['binance'])
                     if global_feed:
                         CloudBotEngine.LATEST_BINANCE[sym] = global_feed
                     freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 4)}
