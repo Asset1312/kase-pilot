@@ -1,4 +1,4 @@
-﻿"""
+"""
 Cloud Tradernet Multi-Asset Trading Bot (Render.com Web Service)
 AI-Enhanced with DeepSeek + Global Crypto Market Signal (Binance Lead-Lag Arb).
 
@@ -49,9 +49,12 @@ class HealthHandler(BaseHTTPRequestHandler):
             "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
             "service": "Render.com Web Service",
             "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
+            "deepseek_connected": bool(DEEPSEEK_API_KEY),
+            "ai_latest_signal": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
+            "latest_binance": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
             "timestamp": datetime.datetime.now().isoformat()
         }
-        self.wfile.write(json.dumps(status).encode('utf-8'))
+        self.wfile.write(json.dumps(status, indent=2).encode('utf-8'))
 
     def log_message(self, format, *args):
         pass
@@ -142,6 +145,9 @@ Respond ONLY with valid JSON in this exact schema:
     return {}
 
 class CloudBotEngine:
+    LATEST_ADVICE = {}
+    LATEST_BINANCE = {}
+
     def __init__(self):
         self.kase_client = tradernet.Tradernet(KASE_PUB_KEY, KASE_SEC_KEY)
         self.crypto_client = tradernet.Tradernet(CRYPTO_PUB_KEY, CRYPTO_SEC_KEY)
@@ -183,10 +189,13 @@ class CloudBotEngine:
             now = time.time()
             if now - self.last_ai_check > 45:
                 global_sol = get_global_binance_price("SOLUSDT")
+                if global_sol:
+                    CloudBotEngine.LATEST_BINANCE = global_sol
                 freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 2)}
                 advice = ask_deepseek_solana(global_sol, freedom_snapshot, sol_qty)
                 if advice:
                     self.cached_ai_advice = advice
+                    CloudBotEngine.LATEST_ADVICE = advice
                     self.last_ai_check = now
                     logger.info(f"🧠 DeepSeek AI Signal: {advice.get('action')} | Reason: {advice.get('reasoning')}")
 
