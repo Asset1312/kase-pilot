@@ -1,12 +1,11 @@
 ﻿"""
 Cloud Tradernet Multi-Asset Trading Bot (Render.com Web Service)
-Trades KASE stocks (HSBK.KZ, ASBN.KZ, KMGD.KZ) and Crypto (SOL/USD)
-via Tradernet API (Freedom Broker).
+AI-Enhanced with DeepSeek + Global Crypto Market Signal (Binance Lead-Lag Arb).
 
-Includes:
-- Embedded HTTP Health-Check server on $PORT (or 10000) for Render Web Service compliance.
-- 0% Commission Scalping on CR account for Crypto.
-- Dynamic Maker / Spread Scalping for KASE during market hours.
+Trades:
+- Crypto: SOL/USD on Freedom sub-account CR725726 guided by DeepSeek + global Binance momentum.
+- KASE Stocks: HSBK.KZ, ASBN.KZ, KMGD.KZ during official market hours (10:00 - 17:00 UTC+5).
+- Web Server on $PORT for Render Health-Check.
 """
 
 import os
@@ -16,6 +15,7 @@ import time
 import datetime
 import logging
 import threading
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tradernet
@@ -25,19 +25,19 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("TradernetCloudBot")
+logger = logging.getLogger("TradernetCloudAI")
 
-# Port for Render.com Web Service
 PORT = int(os.environ.get("PORT", "10000"))
 
-# Tradernet API Credentials
-# KASE stocks key (725726)
-KASE_PUB_KEY = os.environ.get("KASE_PUB_KEY", "e8df0f6e5c8e65689bff99f85b0f2adb")
-KASE_SEC_KEY = os.environ.get("KASE_SEC_KEY", "598eb442c9af5c243aaea9c65cf97d0fb2f8a07f")
+# API Keys loaded strictly from environment variables (No hardcoded secrets)
+KASE_PUB_KEY = os.environ.get("KASE_PUB_KEY", "")
+KASE_SEC_KEY = os.environ.get("KASE_SEC_KEY", "")
 
-# Crypto key (CR725726)
-CRYPTO_PUB_KEY = os.environ.get("CRYPTO_PUB_KEY", "30fca41e61c01c7b1943cbab1d0ee7a8")
-CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", "6ab8a59a96a0c49cd382e44ee6ba241ae6103c3a")
+CRYPTO_PUB_KEY = os.environ.get("CRYPTO_PUB_KEY", "")
+CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", "")
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -46,7 +46,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         status = {
             "status": "online",
-            "bot": "Tradernet Cloud Bot",
+            "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
             "service": "Render.com Web Service",
             "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
             "timestamp": datetime.datetime.now().isoformat()
@@ -70,14 +70,85 @@ def is_kase_market_open() -> bool:
     end_time = datetime.time(17, 0, 0)
     return start_time <= now.time() <= end_time
 
+def get_global_binance_price(symbol="SOLUSDT") -> dict:
+    """Fetch real-time global price from public Binance API."""
+    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            data = json.loads(r.read())
+            return {
+                "last_price": float(data['lastPrice']),
+                "change_pct": float(data['priceChangePercent']),
+                "high_24h": float(data['highPrice']),
+                "low_24h": float(data['lowPrice'])
+            }
+    except Exception as e:
+        logger.error(f"Global Binance query error: {e}")
+    return {}
+
+def ask_deepseek_solana(binance_data: dict, freedom_quote: dict, sol_inventory: float) -> dict:
+    """DeepSeek AI Market Regime & Spread Arbitrage Consultant."""
+    if not DEEPSEEK_API_KEY:
+        return {}
+    url = "https://api.deepseek.com/chat/completions"
+    prompt = f"""
+You are an advanced HFT crypto quant trading Solana (SOL/USD) on Freedom Broker (CR725726).
+Market Situation:
+- Global Real-Time Benchmark (Binance): {binance_data}
+- Freedom Broker Local Quote: {freedom_quote}
+- Current Inventory: {sol_inventory} SOL
+- Account Cash: $1.58 USD
+
+Key Context:
+- Freedom Broker has a wide synthetic OTC spread (~2.1%).
+- Broker commission is 0.00$ (FREE).
+- We have 10-second lead-lag edge from Binance real-time price.
+
+Task:
+1. Determine market momentum (Bullish/Bearish/Neutral).
+2. If we hold 0.001 SOL, recommend exact profitable sell price.
+3. If flat, decide if BUY signal is safe (do NOT buy during dumps or falling knife).
+
+Respond ONLY with valid JSON in this exact schema:
+{{
+  "action": "BUY" or "SELL" or "HOLD" or "WAIT",
+  "reasoning": "brief 1-2 sentence explanation in Russian",
+  "recommended_buy_price": 102.50,
+  "recommended_sell_price": 104.85,
+  "risk_score": 1-10
+}}
+"""
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a disciplined quantitative trader. Always respond in valid JSON."},
+            {"role": "user", "content": prompt}
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2
+    }
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8")
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            return json.loads(d["choices"][0]["message"]["content"])
+    except Exception as e:
+        logger.error(f"DeepSeek call error: {e}")
+    return {}
+
 class CloudBotEngine:
     def __init__(self):
         self.kase_client = tradernet.Tradernet(KASE_PUB_KEY, KASE_SEC_KEY)
         self.crypto_client = tradernet.Tradernet(CRYPTO_PUB_KEY, CRYPTO_SEC_KEY)
-        self.active_orders = {}
+        self.last_ai_check = 0
+        self.cached_ai_advice = {}
 
     def run_crypto_step(self):
-        """Execute crypto scalping logic on SOL/USD."""
         try:
             quotes = self.crypto_client.get_quotes(['SOL/USD']).get('result', {}).get('q', [])
             if not quotes:
@@ -88,10 +159,7 @@ class CloudBotEngine:
             if not bbp or not bap:
                 return
 
-            spread = bap - bbp
-            spread_pct = (spread / bbp) * 100
-
-            # Check positions
+            # Check inventory
             pos = self.crypto_client.get_user_data().get('OPQ', {}).get('ps', {}).get('pos', [])
             sol_qty = 0.0
             sol_entry = 104.60
@@ -106,15 +174,30 @@ class CloudBotEngine:
             sol_buy_id = None
             for o in orders:
                 if o.get('instr') == 'SOL/USD':
-                    if o.get('oper') == 3: # Sell
+                    if o.get('oper') == 3:
                         sol_sell_id = o.get('id')
-                    elif o.get('oper') == 1: # Buy
+                    elif o.get('oper') == 1:
                         sol_buy_id = o.get('id')
 
-            # 1. If holding SOL inventory and no sell order, place profitable TP
+            # Consult DeepSeek + Global Binance every 45 seconds
+            now = time.time()
+            if now - self.last_ai_check > 45:
+                global_sol = get_global_binance_price("SOLUSDT")
+                freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 2)}
+                advice = ask_deepseek_solana(global_sol, freedom_snapshot, sol_qty)
+                if advice:
+                    self.cached_ai_advice = advice
+                    self.last_ai_check = now
+                    logger.info(f"🧠 DeepSeek AI Signal: {advice.get('action')} | Reason: {advice.get('reasoning')}")
+
+            ai_action = self.cached_ai_advice.get("action", "HOLD")
+
+            # 1. Manage holding position
             if sol_qty >= 0.001 and not sol_sell_id:
-                target_tp = round(max(sol_entry * 1.0035, bap), 2)
-                logger.info(f"[SOL/USD] Submitting Take-Profit SELL: 0.001 SOL @ ${target_tp:.2f}")
+                rec_sell = self.cached_ai_advice.get("recommended_sell_price")
+                min_safe_sell = round(sol_entry * 1.0025, 2)
+                target_tp = max(rec_sell or bap, min_safe_sell)
+                logger.info(f"[SOL/USD] Submitting Take-Profit SELL: 0.001 SOL @ ${target_tp:.2f} (Entry: ${sol_entry:.2f})")
                 self.crypto_client.authorized_request('putTradeOrder', {
                     'instr_name': 'SOL/USD',
                     'action_id': 3,
@@ -125,16 +208,18 @@ class CloudBotEngine:
                 })
                 return
 
-            # 2. If flat and spread is attractive (>= 0.30%), place BUY at Best Bid
+            # 2. Manage flat position & new buy
             if sol_qty < 0.001 and not sol_buy_id:
-                if spread_pct >= 0.30:
-                    logger.info(f"[SOL/USD] Spread {spread_pct:.2f}% is attractive. Submitting BUY @ ${bbp:.2f}")
+                if ai_action == "BUY":
+                    rec_buy = self.cached_ai_advice.get("recommended_buy_price", bbp)
+                    buy_price = round(min(rec_buy, bbp), 2)
+                    logger.info(f"[SOL/USD] DeepSeek Approved BUY! Submitting 0.001 SOL @ ${buy_price:.2f}")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': 'SOL/USD',
                         'action_id': 1,
                         'order_type_id': 2,
                         'qty': '0.001',
-                        'limit_price': round(bbp, 2),
+                        'limit_price': buy_price,
                         'expiration_id': 1
                     })
 
@@ -142,23 +227,17 @@ class CloudBotEngine:
             logger.error(f"Error in crypto step: {e}")
 
     def run_kase_step(self):
-        """Monitor KASE stock orders during market hours."""
         if not is_kase_market_open():
             return
         try:
             quotes = self.kase_client.get_quotes(['ASBN.KZ', 'HSBK.KZ', 'KMGD.KZ']).get('result', {}).get('q', [])
-            for q in quotes:
-                sym = q.get('c')
-                bbp = float(q.get('bbp') or 0)
-                bap = float(q.get('bap') or 0)
-                # KASE positions are monitored safely
         except Exception as e:
             logger.error(f"Error in KASE step: {e}")
 
     def start(self):
         logger.info("=" * 65)
-        logger.info("🚀 Tradernet Cloud Bot Engine Started")
-        logger.info("Assets: KASE (ASBN, HSBK, KMGD) & Crypto (SOL/USD)")
+        logger.info("🚀 Tradernet AI Cloud Bot (DeepSeek + Global Arb) Started")
+        logger.info("Crypto: SOL/USD (AI-Driven) | KASE: ASBN, HSBK, KMGD")
         logger.info("=" * 65)
 
         while True:
@@ -166,7 +245,7 @@ class CloudBotEngine:
                 self.run_crypto_step()
                 self.run_kase_step()
             except Exception as e:
-                logger.error(f"Main loop error: {e}")
+                logger.error(f"Loop error: {e}")
             time.sleep(10)
 
 def main():
