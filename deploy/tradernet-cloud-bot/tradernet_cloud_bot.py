@@ -153,6 +153,7 @@ class CloudBotEngine:
         self.crypto_client = tradernet.Tradernet(CRYPTO_PUB_KEY, CRYPTO_SEC_KEY)
         self.last_ai_check = 0
         self.cached_ai_advice = {}
+        self.inventory_entry_time = {}
 
     def run_crypto_step(self):
         try:
@@ -270,6 +271,35 @@ class CloudBotEngine:
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
+                # Stagnation & Time-Stop tracking
+                if curr_shares >= cfg['qty']:
+                    if sym not in self.inventory_entry_time:
+                        self.inventory_entry_time[sym] = time.time()
+
+                    holding_hours = (time.time() - self.inventory_entry_time[sym]) / 3600.0
+
+                    # If holding > 24 hours without fill, check for breakeven exit
+                    if holding_hours >= 24.0:
+                        # Breakeven condition: best bid covers entry price
+                        if bbp >= entry_price:
+                            logger.info(f"[{sym}] ⏱ Stagnation Timeout ({holding_hours:.1f}h). Exiting at Breakeven: {curr_shares} shares @ {bbp:.2f} KZT")
+                            # Cancel resting sell order if any
+                            for so in sell_orders:
+                                self.kase_client.cancel(so.get('id'))
+                            # Exit at bid
+                            self.kase_client.authorized_request('putTradeOrder', {
+                                'instr_name': sym,
+                                'action_id': 3,
+                                'order_type_id': 2,
+                                'qty': curr_shares,
+                                'limit_price': round(bbp, 2),
+                                'expiration_id': 1
+                            })
+                            del self.inventory_entry_time[sym]
+                            continue
+                else:
+                    self.inventory_entry_time.pop(sym, None)
+
                 # Case A: We hold shares and have no active SELL order -> place TP sell above entry
                 if curr_shares >= cfg['qty'] and not sell_orders:
                     tp_price = max(bap, round(entry_price * (1 + cfg['min_spread_pct']), 2))
@@ -285,9 +315,10 @@ class CloudBotEngine:
 
                 # Case B: We have no active BUY order and no inventory -> place resting BUY at best bid
                 elif curr_shares < cfg['qty'] and not buy_orders:
-                    # Check spread profitability
-                    if (bap - bbp) / bbp >= cfg['min_spread_pct']:
-                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT")
+                    # Check spread profitability & volume liquidity
+                    spread_pct = (bap - bbp) / bbp
+                    if spread_pct >= cfg['min_spread_pct']:
+                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%)")
                         self.kase_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
