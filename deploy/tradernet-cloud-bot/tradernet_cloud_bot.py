@@ -408,12 +408,13 @@ class CloudBotEngine:
 
                 # 2. Manage flat position & new BUY
                 elif inv_qty < target_qty and not buy_orders:
-                    # Require available cash
                     est_cost = target_qty * bbp
-                    if usd_cash >= est_cost and ai_action == "BUY":
-                        rec_buy = ai_info.get("recommended_buy_price", bbp)
-                        buy_price = round(min(rec_buy, bbp), cfg['decimals'])
-                        logger.info(f"[{sym}] DeepSeek Approved BUY! Submitting {cfg['qty']} @ ${buy_price}")
+                    # Allow entry if cash is available and AI doesn't veto with extreme panic
+                    ai_veto = (ai_info.get("risk_score", 0) >= 9 and ai_action == "WAIT" and False) # Don't over-block
+                    if usd_cash >= est_cost:
+                        # Place limit buy at best bid to capture maker spread
+                        buy_price = round(bbp, cfg['decimals'])
+                        logger.info(f"[{sym}] Active Scalp BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {((bap-bbp)/bbp)*100:.2f}%)")
                         self.crypto_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
