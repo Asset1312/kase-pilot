@@ -90,35 +90,36 @@ def get_global_binance_price(symbol="SOLUSDT") -> dict:
         logger.error(f"Global Binance query error: {e}")
     return {}
 
-def ask_deepseek_solana(binance_data: dict, freedom_quote: dict, sol_inventory: float) -> dict:
-    """DeepSeek AI Market Regime & Spread Arbitrage Consultant."""
+def ask_deepseek_crypto(symbol: str, binance_data: dict, freedom_quote: dict, inventory: float, cash: float) -> dict:
+    """DeepSeek AI Market Regime & Spread Arbitrage Consultant for Crypto."""
     if not DEEPSEEK_API_KEY:
         return {}
     url = "https://api.deepseek.com/chat/completions"
     prompt = f"""
-You are an advanced HFT crypto quant trading Solana (SOL/USD) on Freedom Broker (CR725726).
+You are an advanced HFT crypto quant trading {symbol} on Freedom Broker (Account CR725726).
 Market Situation:
+- Asset: {symbol}
 - Global Real-Time Benchmark (Binance): {binance_data}
 - Freedom Broker Local Quote: {freedom_quote}
-- Current Inventory: {sol_inventory} SOL
-- Account Cash: $1.58 USD
+- Current Inventory: {inventory} {symbol}
+- Account Cash: ${cash:.2f} USD
 
 Key Context:
-- Freedom Broker has a wide synthetic OTC spread (~2.1%).
+- Freedom Broker has a synthetic OTC spread (~2%).
 - Broker commission is 0.00$ (FREE).
 - We have 10-second lead-lag edge from Binance real-time price.
 
 Task:
 1. Determine market momentum (Bullish/Bearish/Neutral).
-2. If we hold 0.001 SOL, recommend exact profitable sell price.
+2. If we hold inventory, recommend exact profitable sell price.
 3. If flat, decide if BUY signal is safe (do NOT buy during dumps or falling knife).
 
 Respond ONLY with valid JSON in this exact schema:
 {{
   "action": "BUY" or "SELL" or "HOLD" or "WAIT",
   "reasoning": "brief 1-2 sentence explanation in Russian",
-  "recommended_buy_price": 102.50,
-  "recommended_sell_price": 104.85,
+  "recommended_buy_price": float,
+  "recommended_sell_price": float,
   "risk_score": 1-10
 }}
 """
@@ -141,7 +142,7 @@ Respond ONLY with valid JSON in this exact schema:
             d = json.loads(resp.read().decode("utf-8"))
             return json.loads(d["choices"][0]["message"]["content"])
     except Exception as e:
-        logger.error(f"DeepSeek call error: {e}")
+        logger.error(f"DeepSeek call error for {symbol}: {e}")
     return {}
 
 class CloudBotEngine:
@@ -151,87 +152,100 @@ class CloudBotEngine:
     def __init__(self):
         self.kase_client = tradernet.Tradernet(KASE_PUB_KEY, KASE_SEC_KEY)
         self.crypto_client = tradernet.Tradernet(CRYPTO_PUB_KEY, CRYPTO_SEC_KEY)
-        self.last_ai_check = 0
+        self.last_ai_check = {}
         self.cached_ai_advice = {}
         self.inventory_entry_time = {}
 
     def run_crypto_step(self):
         try:
-            quotes = self.crypto_client.get_quotes(['SOL/USD']).get('result', {}).get('q', [])
-            if not quotes:
-                return
-            q = quotes[0]
-            bbp = float(q.get('bbp') or 0)
-            bap = float(q.get('bap') or 0)
-            if not bbp or not bap:
-                return
+            crypto_pairs = {
+                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_profit_pct': 0.0025, 'decimals': 2},
+                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0035, 'decimals': 4}
+            }
 
-            # Check inventory
-            pos = self.crypto_client.get_user_data().get('OPQ', {}).get('ps', {}).get('pos', [])
-            sol_qty = 0.0
-            sol_entry = 104.60
-            for p in pos:
-                if p.get('i') == 'SOL/USD':
-                    sol_qty = float(p.get('q') or 0.0)
-                    sol_entry = float(p.get('bal_price_a') or p.get('price_a') or 104.60)
+            user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
+            acc_list = user_summary.get('acc', [])
+            usd_cash = 1.58
+            for a in acc_list:
+                if a.get('curr') == 'USD':
+                    usd_cash = float(a.get('s') or 1.58)
 
-            # Check open orders
+            pos_list = user_summary.get('pos', [])
+            positions = {p.get('i'): p for p in pos_list}
+
             orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
-            sol_sell_id = None
-            sol_buy_id = None
-            for o in orders:
-                if o.get('instr') == 'SOL/USD':
-                    if o.get('oper') == 3:
-                        sol_sell_id = o.get('id')
-                    elif o.get('oper') == 1:
-                        sol_buy_id = o.get('id')
+            active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
 
-            # Consult DeepSeek + Global Binance every 45 seconds
-            now = time.time()
-            if now - self.last_ai_check > 45:
-                global_sol = get_global_binance_price("SOLUSDT")
-                if global_sol:
-                    CloudBotEngine.LATEST_BINANCE = global_sol
-                freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 2)}
-                advice = ask_deepseek_solana(global_sol, freedom_snapshot, sol_qty)
-                if advice:
-                    self.cached_ai_advice = advice
-                    CloudBotEngine.LATEST_ADVICE = advice
-                    self.last_ai_check = now
-                    logger.info(f"🧠 DeepSeek AI Signal: {advice.get('action')} | Reason: {advice.get('reasoning')}")
+            quotes = self.crypto_client.get_quotes(list(crypto_pairs.keys())).get('result', {}).get('q', [])
+            q_dict = {q.get('c'): q for q in quotes}
 
-            ai_action = self.cached_ai_advice.get("action", "HOLD")
+            for sym, cfg in crypto_pairs.items():
+                q = q_dict.get(sym)
+                if not q:
+                    continue
+                bbp = float(q.get('bbp') or 0)
+                bap = float(q.get('bap') or 0)
+                if not bbp or not bap:
+                    continue
 
-            # 1. Manage holding position
-            if sol_qty >= 0.001 and not sol_sell_id:
-                rec_sell = self.cached_ai_advice.get("recommended_sell_price")
-                min_safe_sell = round(sol_entry * 1.0025, 2)
-                target_tp = max(rec_sell or bap, min_safe_sell)
-                logger.info(f"[SOL/USD] Submitting Take-Profit SELL: 0.001 SOL @ ${target_tp:.2f} (Entry: ${sol_entry:.2f})")
-                self.crypto_client.authorized_request('putTradeOrder', {
-                    'instr_name': 'SOL/USD',
-                    'action_id': 3,
-                    'order_type_id': 2,
-                    'qty': '0.001',
-                    'limit_price': target_tp,
-                    'expiration_id': 1
-                })
-                return
+                pos_info = positions.get(sym, {})
+                inv_qty = float(pos_info.get('q') or 0.0)
+                entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0.0)
 
-            # 2. Manage flat position & new buy
-            if sol_qty < 0.001 and not sol_buy_id:
-                if ai_action == "BUY":
-                    rec_buy = self.cached_ai_advice.get("recommended_buy_price", bbp)
-                    buy_price = round(min(rec_buy, bbp), 2)
-                    logger.info(f"[SOL/USD] DeepSeek Approved BUY! Submitting 0.001 SOL @ ${buy_price:.2f}")
+                sym_orders = [o for o in active_orders if o.get('instr') == sym]
+                sell_orders = [o for o in sym_orders if o.get('oper') == 3]
+                buy_orders = [o for o in sym_orders if o.get('oper') == 1]
+
+                # Consult DeepSeek + Global Binance
+                now = time.time()
+                last_check = self.last_ai_check.get(sym, 0)
+                if now - last_check > 45:
+                    global_feed = get_global_binance_price(cfg['binance'])
+                    if global_feed:
+                        CloudBotEngine.LATEST_BINANCE[sym] = global_feed
+                    freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 4)}
+                    advice = ask_deepseek_crypto(sym, global_feed, freedom_snapshot, inv_qty, usd_cash)
+                    if advice:
+                        self.cached_ai_advice[sym] = advice
+                        CloudBotEngine.LATEST_ADVICE[sym] = advice
+                        self.last_ai_check[sym] = now
+                        logger.info(f"🧠 DeepSeek [{sym}]: {advice.get('action')} | Reason: {advice.get('reasoning')}")
+
+                ai_info = self.cached_ai_advice.get(sym, {})
+                ai_action = ai_info.get("action", "HOLD")
+
+                # 1. Manage holding position -> TP Sell
+                target_qty = float(cfg['qty'])
+                if inv_qty >= target_qty and not sell_orders:
+                    rec_sell = ai_info.get("recommended_sell_price")
+                    min_safe_sell = round(entry_price * (1 + cfg['min_profit_pct']), cfg['decimals'])
+                    target_tp = round(max(rec_sell or bap, min_safe_sell), cfg['decimals'])
+                    logger.info(f"[{sym}] Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f})")
                     self.crypto_client.authorized_request('putTradeOrder', {
-                        'instr_name': 'SOL/USD',
-                        'action_id': 1,
+                        'instr_name': sym,
+                        'action_id': 3,
                         'order_type_id': 2,
-                        'qty': '0.001',
-                        'limit_price': buy_price,
+                        'qty': cfg['qty'],
+                        'limit_price': target_tp,
                         'expiration_id': 1
                     })
+
+                # 2. Manage flat position & new BUY
+                elif inv_qty < target_qty and not buy_orders:
+                    # Require available cash
+                    est_cost = target_qty * bbp
+                    if usd_cash >= est_cost and ai_action == "BUY":
+                        rec_buy = ai_info.get("recommended_buy_price", bbp)
+                        buy_price = round(min(rec_buy, bbp), cfg['decimals'])
+                        logger.info(f"[{sym}] DeepSeek Approved BUY! Submitting {cfg['qty']} @ ${buy_price}")
+                        self.crypto_client.authorized_request('putTradeOrder', {
+                            'instr_name': sym,
+                            'action_id': 1,
+                            'order_type_id': 2,
+                            'qty': cfg['qty'],
+                            'limit_price': buy_price,
+                            'expiration_id': 1
+                        })
 
         except Exception as e:
             logger.error(f"Error in crypto step: {e}")
