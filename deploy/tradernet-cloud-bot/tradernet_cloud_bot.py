@@ -199,31 +199,6 @@ class HealthHandler(BaseHTTPRequestHandler):
 
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">⚡ Aptos (APT/USD)</div>
-                    <span class="badge" style="background: #3b82f6;">ГОТОВ К ВХОДУ</span>
-                </div>
-                <div class="stat-grid">
-                    <div class="stat-box">
-                        <div class="stat-label">Рабочий лот</div>
-                        <div class="stat-val">1 APT (~$0.62)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Мировой рынок</div>
-                        <div class="stat-val">${apt_bm}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Комиссия брокера</div>
-                        <div class="stat-val" style="color: #10b981;">$0.00 (Бесплатно)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Стратегия</div>
-                        <div class="stat-val" style="color: #38bdf8;">Мейкер в бид</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
                     <div class="card-title">🇰🇿 Казахстанские акции (KASE)</div>
                     <span class="badge" style="background: #10b981;">МЕЙКЕР-СКАЛЬПИНГ</span>
                 </div>
@@ -384,8 +359,7 @@ class CloudBotEngine:
         try:
             crypto_pairs = {
                 'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_profit_pct': 0.0025, 'decimals': 2},
-                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0035, 'decimals': 4},
-                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_profit_pct': 0.0035, 'decimals': 4}
+                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0035, 'decimals': 4}
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
