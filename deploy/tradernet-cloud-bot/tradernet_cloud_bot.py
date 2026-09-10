@@ -39,6 +39,10 @@ CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
+# Telegram Bot Integration
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppgtY2I6-JQFiM-mgcnZ36U")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "455103299")
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Allow json endpoint via /json
@@ -561,11 +565,122 @@ class CloudBotEngine:
                 logger.error(f"Loop error: {e}")
             time.sleep(10)
 
+def send_telegram_msg(text: str, chat_id: str = TELEGRAM_CHAT_ID):
+    """Send alert/reply to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        req = urllib.request.Request(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload).encode('utf-8'))
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
+
+def ask_deepseek_chat(user_msg: str, bot_context: dict) -> str:
+    """Chat with DeepSeek AI as trading assistant."""
+    if not DEEPSEEK_API_KEY:
+        return "DeepSeek API ключ не настроен."
+    url = "https://api.deepseek.com/chat/completions"
+    system_prompt = f"""
+Ты — персональный AI торговый ассистент трейдера Асета.
+Ты управляешь облачным торговым роботом на Tradernet / Freedom Broker и KASE.
+Контекст счета и позиций:
+{bot_context}
+
+Отвечай дружелюбно, профессионально, кратко и по существу на русском языке.
+Если трейдер спрашивает о балансе, позициях или ситуации на рынке — давай четкие цифры.
+"""
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg}
+        ],
+        "temperature": 0.4
+    }
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8")
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            return d["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Ошибка связи с DeepSeek: {e}"
+
+def telegram_polling_loop(engine: 'CloudBotEngine'):
+    """Listen for incoming messages from Telegram."""
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    logger.info("📱 Telegram listener thread started for @asset_trader_ai_bot")
+    offset = 0
+    # Send start notification
+    send_telegram_msg("🟢 Твой облачный помощник Tradernet AI запущен и готов к общению! Напиши мне что угодно.")
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                for upd in data.get('result', []):
+                    offset = upd['update_id'] + 1
+                    msg = upd.get('message', {})
+                    text = msg.get('text', '').strip()
+                    chat_id = str(msg.get('chat', {}).get('id', ''))
+                    if not text:
+                        continue
+
+                    logger.info(f"📩 Telegram msg from {chat_id}: {text}")
+
+                    # Commands
+                    if text == '/start' or text.lower() in ['привет', 'старт', 'помощь', 'help']:
+                        reply = ("👋 Привет, Асет!\nЯ твой персональный AI-помощник по торговле на Tradernet и KASE.\n\n"
+                                 "Можешь просто общаться со мной текстом или спрашивать:\n"
+                                 "• 'какой баланс?'\n"
+                                 "• 'что с позициями?'\n"
+                                 "• 'что думаешь по SUI и Solana?'\n"
+                                 "• 'как дела на KASE?'\n"
+                                 "Или задавать любые вопросы по рынку!")
+                        send_telegram_msg(reply, chat_id)
+                    elif text.lower() in ['баланс', '/balance', 'какой баланс?']:
+                        try:
+                            summary = engine.crypto_client.account_summary().get('result', {}).get('ps', {})
+                            cash_lines = [f"• {a.get('curr')}: {a.get('s')}" for a in summary.get('acc', []) if float(a.get('s') or 0) > 0]
+                            pos_lines = [f"• {p.get('i')}: {p.get('q')} шт (рыночная: ${p.get('mkt_price')})" for p in summary.get('pos', [])]
+                            reply = "💰 Баланс криптосчета:\n" + "\n".join(cash_lines) + "\n\n📊 Открытые позиции:\n" + "\n".join(pos_lines)
+                            send_telegram_msg(reply, chat_id)
+                        except Exception as e:
+                            send_telegram_msg(f"Ошибка проверки баланса: {e}", chat_id)
+                    else:
+                        # Ask DeepSeek with current bot context
+                        try:
+                            context = {
+                                "regime": CloudBotEngine.LATEST_REGIME,
+                                "benchmarks": CloudBotEngine.LATEST_BINANCE,
+                                "summary": engine.crypto_client.account_summary().get('result', {}).get('ps', {})
+                            }
+                            answer = ask_deepseek_chat(text, context)
+                            send_telegram_msg(answer, chat_id)
+                        except Exception as e:
+                            send_telegram_msg(f"Ошибка AI: {e}", chat_id)
+
+        except Exception as e:
+            time.sleep(3)
+        time.sleep(1)
+
 def main():
     t_web = threading.Thread(target=start_health_server, daemon=True)
     t_web.start()
 
     engine = CloudBotEngine()
+
+    t_tg = threading.Thread(target=telegram_polling_loop, args=(engine,), daemon=True)
+    t_tg.start()
+
     engine.start()
 
 if __name__ == '__main__':
