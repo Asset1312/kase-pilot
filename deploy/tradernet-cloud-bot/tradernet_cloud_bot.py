@@ -403,6 +403,12 @@ class CloudBotEngine:
                 if not bbp or not bap:
                     continue
 
+                spread_pct = ((bap - bbp) / bbp) * 100.0
+
+                # Turbo-Scalp Detection: if spread <= 0.25%, broker is giving institutional liquidity!
+                is_turbo_scalp = spread_pct <= 0.25
+                pair_tp_multiplier = 1.0015 if is_turbo_scalp else tp_multiplier
+
                 pos_info = positions.get(sym, {})
                 inv_qty = float(pos_info.get('q') or 0.0)
                 entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0.0)
@@ -414,9 +420,10 @@ class CloudBotEngine:
                 # 1. Manage holding position -> Math Take-Profit Sell
                 target_qty = float(cfg['qty'])
                 if inv_qty >= target_qty and not sell_orders:
-                    min_safe_sell = round(entry_price * tp_multiplier, cfg['decimals'])
+                    min_safe_sell = round(entry_price * pair_tp_multiplier, cfg['decimals'])
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    logger.info(f"[{sym}] Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f})")
+                    mode_str = "🚀 TURBO-SCALP" if is_turbo_scalp else "⚖️ REGULAR"
+                    logger.info(f"[{sym}] {mode_str} Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f}, Spread: {spread_pct:.3f}%)")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 3,
