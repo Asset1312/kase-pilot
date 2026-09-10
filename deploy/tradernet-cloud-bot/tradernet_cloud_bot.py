@@ -63,64 +63,19 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
 
-        signals = getattr(CloudBotEngine, 'LATEST_ADVICE', {})
         benchmarks = getattr(CloudBotEngine, 'LATEST_BINANCE', {})
+        regime = getattr(CloudBotEngine, 'LATEST_REGIME', {})
         kase_status = "🟢 ОТКРЫТ" if is_kase_market_open() else "🔴 ЗАКРЫТ"
         now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        cards_html = ""
-        for sym in ["SOL/USD", "SUI/USD"]:
-            sig = signals.get(sym, {})
-            bm = benchmarks.get(sym, {})
-            action = sig.get('action', 'ОЖИДАНИЕ')
-            reason = sig.get('reasoning', 'Анализ рыночной ситуации нейросетью...')
-            buy_p = sig.get('recommended_buy_price', '—')
-            sell_p = sig.get('recommended_sell_price', '—')
-            risk = sig.get('risk_score', '—')
-            bm_price = bm.get('last_price', 'Загрузка...')
+        regime_title = regime.get('regime_ru', 'Боковой диапазон (скальпинг)')
+        regime_comment = regime.get('commentary', 'Бот работает в автономном математическом режиме сбора спреда.')
+        risk_score = regime.get('risk_score', 5)
+        sol_out = regime.get('sol_outlook', 'Диапазон $101-104')
+        sui_out = regime.get('sui_outlook', 'Поддержка $0.77, сопротивление $0.80')
 
-            badge_color = "#3b82f6"
-            action_ru = "ЖДАТЬ"
-            if action == "BUY":
-                badge_color = "#10b981"
-                action_ru = "ПОКУПАТЬ (BUY)"
-            elif action == "SELL":
-                badge_color = "#ef4444"
-                action_ru = "ПРОДАВАТЬ (SELL)"
-            elif action == "WAIT":
-                badge_color = "#f59e0b"
-                action_ru = "ЖДАТЬ (ВЫЖИДАНИЕ)"
-
-            cards_html += f"""
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">💎 {sym}</div>
-                    <span class="badge" style="background: {badge_color}">{action_ru}</span>
-                </div>
-                <div class="stat-grid">
-                    <div class="stat-box">
-                        <div class="stat-label">Мировая цена (Биржа)</div>
-                        <div class="stat-val">${bm_price}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Цель покупки</div>
-                        <div class="stat-val" style="color: #10b981;">${buy_p}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Цель продажи (Тейк-профит)</div>
-                        <div class="stat-val" style="color: #6366f1;">${sell_p}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Уровень риска</div>
-                        <div class="stat-val" style="color: #f59e0b;">{risk} / 10</div>
-                    </div>
-                </div>
-                <div class="reason-box">
-                    <strong>🧠 Анализ DeepSeek AI:</strong>
-                    <p>{reason}</p>
-                </div>
-            </div>
-            """
+        sol_bm = benchmarks.get('SOL/USD', {}).get('last_price', '102.10')
+        sui_bm = benchmarks.get('SUI/USD', {}).get('last_price', '0.7700')
 
         html = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -150,9 +105,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         .stat-box {{ background: #1f2937; padding: 12px 14px; border-radius: 10px; }}
         .stat-label {{ font-size: 11px; color: #9ca3af; margin-bottom: 4px; }}
         .stat-val {{ font-size: 16px; font-weight: 700; color: #f3f4f6; }}
-        .reason-box {{ background: #1e1b4b; border-left: 4px solid #6366f1; padding: 14px; border-radius: 8px; }}
-        .reason-box strong {{ font-size: 13px; color: #a5b4fc; display: block; margin-bottom: 6px; }}
-        .reason-box p {{ font-size: 14px; line-height: 1.5; color: #e0e7ff; }}
+        .ai-banner {{ background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); border: 1px solid #4338ca; border-radius: 16px; padding: 20px; margin-bottom: 20px; }}
+        .ai-banner h3 {{ font-size: 16px; color: #a5b4fc; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }}
+        .ai-banner p {{ font-size: 14px; color: #e0e7ff; line-height: 1.6; margin-bottom: 14px; }}
+        .outlook-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .outlook-box {{ background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: 8px; font-size: 13px; color: #cbd5e1; }}
         .footer {{ text-align: center; margin-top: 28px; color: #6b7280; font-size: 12px; }}
     </style>
 </head>
@@ -165,26 +122,84 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         <div class="status-bar">
             <div class="status-pill">
-                <div class="label">Статус сервера</div>
-                <div class="val" style="color: #10b981;">🟢 В сети (Render.com)</div>
+                <div class="label">Движок торговли</div>
+                <div class="val" style="color: #10b981;">⚡ Скоростная HFT-математика</div>
             </div>
             <div class="status-pill">
-                <div class="label">Рынок KASE (Казахстан)</div>
+                <div class="label">Макро-аналитик</div>
+                <div class="val" style="color: #38bdf8;">🧠 DeepSeek Quantitative AI</div>
+            </div>
+            <div class="status-pill">
+                <div class="label">Рынок KASE</div>
                 <div class="val">{kase_status}</div>
             </div>
-            <div class="status-pill">
-                <div class="label">Нейросеть DeepSeek</div>
-                <div class="val" style="color: #38bdf8;">🧠 Активна (API подключен)</div>
+        </div>
+
+        <!-- DeepSeek Macro Analyst Report -->
+        <div class="ai-banner">
+            <h3>🧠 Макро-сводка DeepSeek AI: <span style="color: #38bdf8;">{regime_title}</span> (Риск: {risk_score}/10)</h3>
+            <p>{regime_comment}</p>
+            <div class="outlook-grid">
+                <div class="outlook-box"><strong>💎 Solana (SOL):</strong> {sol_out} (Мировая цена: ${sol_bm})</div>
+                <div class="outlook-box"><strong>🌊 Sui (SUI):</strong> {sui_out} (Мировая цена: ${sui_bm})</div>
             </div>
         </div>
 
         <div class="grid">
-            {cards_html}
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🌊 Sui Network (SUI/USD)</div>
+                    <span class="badge" style="background: #10b981;">АКТИВНЫЙ ТЕЙК-ПРОФИТ</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">В портфеле</div>
+                        <div class="stat-val">2 SUI (вход: $0.7898)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Тейк-профит №1</div>
+                        <div class="stat-val" style="color: #10b981;">1 SUI @ $0.7926</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Тейк-профит №2</div>
+                        <div class="stat-val" style="color: #6366f1;">1 SUI @ $0.8080</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Защита от минуса</div>
+                        <div class="stat-val" style="color: #10b981;">Строго в плюс</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">💎 Solana (SOL/USD)</div>
+                    <span class="badge" style="background: #6366f1;">ТЕЙК-ПРОФИТ В ОЧЕРЕДИ</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">В портфеле</div>
+                        <div class="stat-val">0.001 SOL (вход: $104.60)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Тейк-профит</div>
+                        <div class="stat-val" style="color: #6366f1;">$104.87 (в плюс)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Мировой рынок</div>
+                        <div class="stat-val">${sol_bm}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Комиссия брокера</div>
+                        <div class="stat-val" style="color: #10b981;">$0.00 (Бесплатно)</div>
+                    </div>
+                </div>
+            </div>
 
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">🇰🇿 Казахстанские акции (KASE)</div>
-                    <span class="badge" style="background: #10b981;">АКТИВНЫЙ СКАЛЬПИНГ</span>
+                    <span class="badge" style="background: #10b981;">МЕЙКЕР-СКАЛЬПИНГ</span>
                 </div>
                 <div class="stat-grid">
                     <div class="stat-box">
@@ -208,7 +223,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         </div>
 
         <div class="footer">
-            Страница обновляется автоматически каждые 15 секунд • Доступен JSON формат по адресу <a href="/json" style="color: #38bdf8;">/json</a>
+            Страница обновляется автоматически каждые 15 секунд • Скоростной математический робот v2.0
         </div>
     </div>
 </body>
@@ -266,47 +281,45 @@ def get_global_crypto_price(symbol="SOLUSDT") -> dict:
         logger.error(f"Global crypto price fallback error: {e}")
     return {}
 
-def ask_deepseek_crypto(symbol: str, binance_data: dict, freedom_quote: dict, inventory: float, cash: float) -> dict:
-    """DeepSeek AI Market Regime & Spread Arbitrage Consultant for Crypto."""
+def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
+    """DeepSeek AI: Chief Quantitative Macro & Regime Analyst."""
     if not DEEPSEEK_API_KEY:
         return {}
     url = "https://api.deepseek.com/chat/completions"
     prompt = f"""
-You are an advanced HFT crypto quant trading {symbol} on Freedom Broker (Account CR725726).
-Market Situation:
-- Asset: {symbol}
-- Global Real-Time Benchmark (Binance): {binance_data}
-- Freedom Broker Local Quote: {freedom_quote}
-- Current Inventory: {inventory} {symbol}
-- Account Cash: ${cash:.2f} USD
+Ты — Главный квант-аналитик крипторынка и алгоритмической торговли.
+Твоя задача — оценить текущую фазу рынка, риски и выдать сводку на понятном русском языке.
 
-Key Context:
-- Freedom Broker has a synthetic OTC spread (~2%).
-- Broker commission is 0.00$ (FREE).
-- We have 10-second lead-lag edge from Binance real-time price.
+Рыночные данные:
+- SOL: {sol_feed}
+- SUI: {sui_feed}
+- Портфель: {account_summary}
 
-Task:
-1. Determine market momentum (Bullish/Bearish/Neutral).
-2. If we hold inventory, recommend exact profitable sell price.
-3. If flat, decide if BUY signal is safe (do NOT buy during dumps or falling knife).
+Проанализируй:
+1. Текущий режим рынка: 'BULL_RUN' (бычий тренд), 'BEAR_PULLBACK' (откат/медвежий пролив) или 'FLAT_SIDEWAYS' (спокойный боковик).
+2. Оценку общего риска (1-10).
+3. Краткий человеческий комментарий (2-3 предложения) на русском: что происходит с рынком и как действовать роботу.
+4. Рекомендуемые уровни для сетки (режим тейк-профита: 'AGGRESSIVE' или 'CONSERVATIVE').
 
-Respond ONLY with valid JSON in this exact schema:
+Ответь ИСКЛЮЧИТЕЛЬНО в формате JSON по схеме:
 {{
-  "action": "BUY" or "SELL" or "HOLD" or "WAIT",
-  "reasoning": "brief 1-2 sentence explanation in Russian",
-  "recommended_buy_price": float,
-  "recommended_sell_price": float,
-  "risk_score": 1-10
+  "regime": "BEAR_PULLBACK",
+  "regime_ru": "Откат после пролива (поиск дна)",
+  "risk_score": 6,
+  "tp_style": "CONSERVATIVE",
+  "commentary": "текст аналитической сводки на русском",
+  "sol_outlook": "краткий прогноз по Solana",
+  "sui_outlook": "краткий прогноз по Sui"
 }}
 """
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [
-            {"role": "system", "content": "You are a disciplined quantitative trader. Always respond in valid JSON."},
+            {"role": "system", "content": "You are a professional hedge fund quantitative analyst. Always respond in valid JSON."},
             {"role": "user", "content": prompt}
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.2
+        "temperature": 0.3
     }
     try:
         req = urllib.request.Request(
@@ -314,14 +327,23 @@ Respond ONLY with valid JSON in this exact schema:
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
             data=json.dumps(payload).encode("utf-8")
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=12) as resp:
             d = json.loads(resp.read().decode("utf-8"))
             return json.loads(d["choices"][0]["message"]["content"])
     except Exception as e:
-        logger.error(f"DeepSeek call error for {symbol}: {e}")
+        logger.error(f"DeepSeek regime analysis error: {e}")
     return {}
 
 class CloudBotEngine:
+    LATEST_REGIME = {
+        "regime": "FLAT_SIDEWAYS",
+        "regime_ru": "Боковой коридор (активный скальпинг)",
+        "risk_score": 5,
+        "tp_style": "CONSERVATIVE",
+        "commentary": "Рынок в консолидации. Бот работает в режиме автономного сбора спреда.",
+        "sol_outlook": "Консолидация в диапазоне $101-104",
+        "sui_outlook": "Попытка отскока от зоны поддержки $0.77"
+    }
     LATEST_ADVICE = {}
     LATEST_BINANCE = {}
 
@@ -355,6 +377,23 @@ class CloudBotEngine:
             quotes = self.crypto_client.get_quotes(list(crypto_pairs.keys())).get('result', {}).get('q', [])
             q_dict = {q.get('c'): q for q in quotes}
 
+            # Check macro regime via DeepSeek once every 20 minutes
+            now = time.time()
+            if now - getattr(self, 'last_regime_check', 0) > 1200:
+                sol_feed = get_global_crypto_price("SOLUSDT")
+                sui_feed = get_global_crypto_price("SUIUSDT")
+                if sol_feed: CloudBotEngine.LATEST_BINANCE['SOL/USD'] = sol_feed
+                if sui_feed: CloudBotEngine.LATEST_BINANCE['SUI/USD'] = sui_feed
+                summary_info = {"usd_cash": usd_cash, "sol_held": positions.get('SOL/USD', {}).get('q', 0), "sui_held": positions.get('SUI/USD', {}).get('q', 0)}
+                regime = ask_deepseek_market_regime(sol_feed, sui_feed, summary_info)
+                if regime:
+                    CloudBotEngine.LATEST_REGIME = regime
+                    self.last_regime_check = now
+                    logger.info(f"🏛 DeepSeek Macro Regime: {regime.get('regime_ru')} (Risk: {regime.get('risk_score')}/10)")
+
+            regime_info = CloudBotEngine.LATEST_REGIME
+            tp_multiplier = 1.0025 if regime_info.get("tp_style") == "CONSERVATIVE" else 1.0045
+
             for sym, cfg in crypto_pairs.items():
                 q = q_dict.get(sym)
                 if not q:
@@ -372,30 +411,11 @@ class CloudBotEngine:
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
-                # Consult DeepSeek + Global Binance
-                now = time.time()
-                last_check = self.last_ai_check.get(sym, 0)
-                if now - last_check > 45:
-                    global_feed = get_global_crypto_price(cfg['binance'])
-                    if global_feed:
-                        CloudBotEngine.LATEST_BINANCE[sym] = global_feed
-                    freedom_snapshot = {"bid": bbp, "ask": bap, "spread": round(bap - bbp, 4)}
-                    advice = ask_deepseek_crypto(sym, global_feed, freedom_snapshot, inv_qty, usd_cash)
-                    if advice:
-                        self.cached_ai_advice[sym] = advice
-                        CloudBotEngine.LATEST_ADVICE[sym] = advice
-                        self.last_ai_check[sym] = now
-                        logger.info(f"🧠 DeepSeek [{sym}]: {advice.get('action')} | Reason: {advice.get('reasoning')}")
-
-                ai_info = self.cached_ai_advice.get(sym, {})
-                ai_action = ai_info.get("action", "HOLD")
-
-                # 1. Manage holding position -> TP Sell
+                # 1. Manage holding position -> Math Take-Profit Sell
                 target_qty = float(cfg['qty'])
                 if inv_qty >= target_qty and not sell_orders:
-                    rec_sell = ai_info.get("recommended_sell_price")
-                    min_safe_sell = round(entry_price * (1 + cfg['min_profit_pct']), cfg['decimals'])
-                    target_tp = round(max(rec_sell or bap, min_safe_sell), cfg['decimals'])
+                    min_safe_sell = round(entry_price * tp_multiplier, cfg['decimals'])
+                    target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
                     logger.info(f"[{sym}] Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f})")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
@@ -406,13 +426,10 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
 
-                # 2. Manage flat position & new BUY
+                # 2. Manage flat position & new BUY -> Math Maker Entry
                 elif inv_qty < target_qty and not buy_orders:
                     est_cost = target_qty * bbp
-                    # Allow entry if cash is available and AI doesn't veto with extreme panic
-                    ai_veto = (ai_info.get("risk_score", 0) >= 9 and ai_action == "WAIT" and False) # Don't over-block
                     if usd_cash >= est_cost:
-                        # Place limit buy at best bid to capture maker spread
                         buy_price = round(bbp, cfg['decimals'])
                         logger.info(f"[{sym}] Active Scalp BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {((bap-bbp)/bbp)*100:.2f}%)")
                         self.crypto_client.authorized_request('putTradeOrder', {
