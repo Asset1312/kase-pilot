@@ -573,14 +573,15 @@ def send_telegram_msg(text: str, chat_id: str = TELEGRAM_CHAT_ID):
     payload = {"chat_id": chat_id, "text": text}
     try:
         req = urllib.request.Request(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload).encode('utf-8'))
-        urllib.request.urlopen(req, timeout=5)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            logger.info(f"Telegram message delivered (status {r.getcode()})")
     except Exception as e:
         logger.error(f"Telegram send error: {e}")
 
 def ask_deepseek_chat(user_msg: str, bot_context: dict) -> str:
     """Chat with DeepSeek AI as trading assistant."""
     if not DEEPSEEK_API_KEY:
-        return "DeepSeek API ключ не настроен."
+        return "DeepSeek API ключ не настроен в переменных окружения."
     url = "https://api.deepseek.com/chat/completions"
     system_prompt = f"""
 Ты — персональный AI торговый ассистент трейдера Асета.
@@ -609,22 +610,24 @@ def ask_deepseek_chat(user_msg: str, bot_context: dict) -> str:
             d = json.loads(resp.read().decode("utf-8"))
             return d["choices"][0]["message"]["content"]
     except Exception as e:
+        logger.error(f"DeepSeek chat error: {e}")
         return f"Ошибка связи с DeepSeek: {e}"
 
 def telegram_polling_loop(engine: 'CloudBotEngine'):
     """Listen for incoming messages from Telegram."""
     if not TELEGRAM_BOT_TOKEN:
+        logger.warning("Telegram polling disabled: TELEGRAM_BOT_TOKEN is empty")
         return
     logger.info("📱 Telegram listener thread started for @asset_trader_ai_bot")
     offset = 0
     # Send start notification
-    send_telegram_msg("🟢 Твой облачный помощник Tradernet AI запущен и готов к общению! Напиши мне что угодно.")
+    send_telegram_msg("🟢 Твой облачный помощник Tradernet AI на связи! Напиши мне что угодно.")
 
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=10"
             req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 for upd in data.get('result', []):
                     offset = upd['update_id'] + 1
@@ -666,9 +669,11 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             answer = ask_deepseek_chat(text, context)
                             send_telegram_msg(answer, chat_id)
                         except Exception as e:
-                            send_telegram_msg(f"Ошибка AI: {e}", chat_id)
+                            logger.error(f"Telegram DeepSeek handling error: {e}")
+                            send_telegram_msg(f"Ошибка обработки: {e}", chat_id)
 
         except Exception as e:
+            logger.error(f"Telegram polling loop error: {e}")
             time.sleep(3)
         time.sleep(1)
 
