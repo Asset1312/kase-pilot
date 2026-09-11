@@ -72,15 +72,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         kase_status = "🟢 ОТКРЫТ" if is_kase_market_open() else "🔴 ЗАКРЫТ"
         now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        regime_title = regime.get('regime_ru', 'Боковой диапазон (скальпинг)')
+        regime_title = f"Режим: {regime.get('risk_mode', 'NORMAL')} ({regime.get('allowed_sides', 'LONG_ONLY')})"
         regime_comment = regime.get('commentary', 'Бот работает в автономном математическом режиме сбора спреда.')
         risk_score = regime.get('risk_score', 5)
-        sol_out = regime.get('sol_outlook', 'Диапазон $101-104')
-        sui_out = regime.get('sui_outlook', 'Поддержка $0.77, сопротивление $0.80')
+        sol_out = regime.get('sol_outlook', 'Диапазон $100-103')
+        sui_out = regime.get('sui_outlook', 'Поддержка $0.75, сопротивление $0.78')
 
-        sol_bm = benchmarks.get('SOL/USD', {}).get('last_price', '102.10')
-        sui_bm = benchmarks.get('SUI/USD', {}).get('last_price', '0.7700')
-        apt_bm = benchmarks.get('APT/USD', {}).get('last_price', '0.6230')
+        sol_bm = benchmarks.get('SOL/USD', {}).get('last_price', '101.00')
+        sui_bm = benchmarks.get('SUI/USD', {}).get('last_price', '0.7600')
 
         html = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -297,34 +296,49 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
 
 Рыночные данные:
 - SOL: {sol_feed}
-- SUI: {sui_feed}
-- Портфель: {account_summary}
+def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
+    """DeepSeek AI: Chief Quantitative Risk Supervisor (Cold Path)."""
+    if not DEEPSEEK_API_KEY:
+        return {}
+    url = "https://api.deepseek.com/chat/completions"
+    prompt = f"""
+Ты — Главный риск-офицер и количественный супервизор хедж-фонда (Risk Supervisor).
+Твоя задача — проанализировать телеметрию рынка и выдать строгую директиву риска (RiskDirective).
 
-Проанализируй:
-1. Текущий режим рынка: 'BULL_RUN' (бычий тренд), 'BEAR_PULLBACK' (откат/медвежий пролив) или 'FLAT_SIDEWAYS' (спокойный боковик).
-2. Оценку общего риска (1-10).
-3. Краткий человеческий комментарий (2-3 предложения) на русском: что происходит с рынком и как действовать роботу.
-4. Рекомендуемые уровни для сетки (режим тейк-профита: 'AGGRESSIVE' или 'CONSERVATIVE').
+Текущая телеметрия:
+- Solana (Binance): {sol_feed}
+- Sui (Binance): {sui_feed}
+- Портфель Tradernet: {account_summary}
 
-Ответь ИСКЛЮЧИТЕЛЬНО в формате JSON по схеме:
+Требования к директиве:
+1. 'risk_mode':
+   - 'NORMAL' (рынок адекватен, волатильность рабочая)
+   - 'DEFENSIVE' (рынок под давлением продавцов, снизить аппетит к риску)
+   - 'HALT' (панический слив, шторм, запретить любые новые покупки)
+2. 'allowed_sides': 'LONG_ONLY' или 'NONE' (если слив или аномалия).
+3. 'risk_score': число 1-10.
+4. 'commentary': краткая человеческая сводка (2 предложения) на русском для Telegram и дашборда.
+5. 'ttl_seconds': время жизни директивы (обычно 600 сек).
+
+Ответь ИСКЛЮЧИТЕЛЬНО в формате валидного JSON по схеме:
 {{
-  "regime": "BEAR_PULLBACK",
-  "regime_ru": "Откат после пролива (поиск дна)",
-  "risk_score": 6,
-  "tp_style": "CONSERVATIVE",
+  "risk_mode": "NORMAL",
+  "allowed_sides": "LONG_ONLY",
+  "risk_score": 5,
   "commentary": "текст аналитической сводки на русском",
-  "sol_outlook": "краткий прогноз по Solana",
-  "sui_outlook": "краткий прогноз по Sui"
+  "sol_outlook": "краткий ориентир по Solana",
+  "sui_outlook": "краткий ориентир по Sui",
+  "ttl_seconds": 600
 }}
 """
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [
-            {"role": "system", "content": "You are a professional hedge fund quantitative analyst. Always respond in valid JSON."},
+            {"role": "system", "content": "You are a strict risk management officer. Output valid JSON only."},
             {"role": "user", "content": prompt}
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.3
+        "temperature": 0.2
     }
     try:
         req = urllib.request.Request(
@@ -334,20 +348,23 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
         )
         with urllib.request.urlopen(req, timeout=12) as resp:
             d = json.loads(resp.read().decode("utf-8"))
-            return json.loads(d["choices"][0]["message"]["content"])
+            res = json.loads(d["choices"][0]["message"]["content"])
+            res["updated_at"] = time.time()
+            return res
     except Exception as e:
         logger.error(f"DeepSeek regime analysis error: {e}")
     return {}
 
 class CloudBotEngine:
     LATEST_REGIME = {
-        "regime": "FLAT_SIDEWAYS",
-        "regime_ru": "Боковой коридор (активный скальпинг)",
+        "risk_mode": "NORMAL",
+        "allowed_sides": "LONG_ONLY",
         "risk_score": 5,
-        "tp_style": "CONSERVATIVE",
-        "commentary": "Рынок в консолидации. Бот работает в режиме автономного сбора спреда.",
-        "sol_outlook": "Консолидация в диапазоне $101-104",
-        "sui_outlook": "Попытка отскока от зоны поддержки $0.77"
+        "commentary": "Рынок в рабочей фазе. Бот работает в режиме автономного сбора спреда.",
+        "sol_outlook": "Консолидация в диапазоне $100-103",
+        "sui_outlook": "Попытка отскока от зоны поддержки $0.75",
+        "ttl_seconds": 600,
+        "updated_at": time.time()
     }
     LATEST_ADVICE = {}
     LATEST_BINANCE = {}
@@ -394,10 +411,17 @@ class CloudBotEngine:
                 if regime:
                     CloudBotEngine.LATEST_REGIME = regime
                     self.last_regime_check = now
-                    logger.info(f"🏛 DeepSeek Macro Regime: {regime.get('regime_ru')} (Risk: {regime.get('risk_score')}/10)")
-
             regime_info = CloudBotEngine.LATEST_REGIME
-            tp_multiplier = 1.0025 if regime_info.get("tp_style") == "CONSERVATIVE" else 1.0045
+
+            # --- FAIL-SAFE 1: Dead Man's Switch (Протухание директивы) ---
+            directive_age = time.time() - float(regime_info.get("updated_at", 0))
+            is_directive_stale = directive_age > float(regime_info.get("ttl_seconds", 600))
+            if is_directive_stale:
+                logger.warning(f"⚠️ Dead Man's Switch Triggered! Directive is stale ({directive_age:.0f}s > {regime_info.get('ttl_seconds', 600)}s). Halting new entries.")
+
+            risk_mode = regime_info.get("risk_mode", "NORMAL")
+            allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
+            can_enter_new = (not is_directive_stale) and (risk_mode != "HALT") and (allowed_sides == "LONG_ONLY")
 
             for sym, cfg in crypto_pairs.items():
                 q = q_dict.get(sym)
@@ -410,10 +434,6 @@ class CloudBotEngine:
 
                 spread_pct = ((bap - bbp) / bbp) * 100.0
 
-                # Turbo-Scalp Detection: if spread <= 0.25%, broker is giving institutional liquidity!
-                is_turbo_scalp = spread_pct <= 0.25
-                pair_tp_multiplier = 1.0015 if is_turbo_scalp else tp_multiplier
-
                 pos_info = positions.get(sym, {})
                 inv_qty = float(pos_info.get('q') or 0.0)
                 entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0.0)
@@ -422,13 +442,21 @@ class CloudBotEngine:
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
-                # 1. Manage holding position -> Math Take-Profit Sell
+                # --- FAIL-SAFE 2: Time-Stop Tracking (Деградация торговой идеи) ---
+                if inv_qty >= float(cfg['qty']):
+                    if sym not in self.inventory_entry_time:
+                        self.inventory_entry_time[sym] = time.time()
+                else:
+                    self.inventory_entry_time.pop(sym, None)
+
+                # 1. Manage holding position -> Multi-level Take-Profit (+1.5R or Turbo)
                 target_qty = float(cfg['qty'])
                 if inv_qty >= target_qty and not sell_orders:
+                    # Turbo-scalp if spread <= 0.25%, else standard 1.5R target
+                    pair_tp_multiplier = 1.0015 if spread_pct <= 0.25 else 1.0035
                     min_safe_sell = round(entry_price * pair_tp_multiplier, cfg['decimals'])
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    mode_str = "🚀 TURBO-SCALP" if is_turbo_scalp else "⚖️ REGULAR"
-                    logger.info(f"[{sym}] {mode_str} Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f}, Spread: {spread_pct:.3f}%)")
+                    logger.info(f"[{sym}] Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f})")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 3,
@@ -438,12 +466,20 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
 
-                # 2. Manage flat position & new BUY -> Math Maker Entry
+                # 2. Manage flat position & new BUY -> Maker Entry with Risk Gates
                 elif inv_qty < target_qty and not buy_orders:
+                    # Gate 1: Check Dead Man's Switch & Risk Directive
+                    if not can_enter_new:
+                        continue
+
+                    # Gate 2: Microstructure filter (Do not buy if spread is unnaturally blown up > 2.5%)
+                    if spread_pct > 2.5:
+                        continue
+
                     est_cost = target_qty * bbp
                     if usd_cash >= est_cost:
                         buy_price = round(bbp, cfg['decimals'])
-                        logger.info(f"[{sym}] Active Scalp BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {((bap-bbp)/bbp)*100:.2f}%)")
+                        logger.info(f"[{sym}] Approved Post-Only Maker BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%)")
                         self.crypto_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
