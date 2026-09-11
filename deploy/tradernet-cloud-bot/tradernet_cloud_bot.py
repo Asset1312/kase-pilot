@@ -362,7 +362,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">Облигации БЦК (BCCIRB.KZ)</div>
-                        <div class="stat-val" style="color: #34d399;">85 шт (~700 ₸)</div>
+                        <div class="stat-val" style="color: #34d399;">50 шт (~410 ₸)</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">KM GOLD (KMGD.KZ)</div>
@@ -877,7 +877,7 @@ class CloudBotEngine:
             kase_configs = {
                 'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01},
                 'KZTO.KZ': {'qty': 1, 'min_spread_pct': 0.0020, 'min_step': 0.01},
-                'BCCIRB.KZ': {'qty': 85, 'min_spread_pct': 0.0020, 'min_step': 0.01},
+                'BCCIRB.KZ': {'qty': 50, 'min_spread_pct': 0.0020, 'min_step': 0.01},
                 'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01}
             }
 
