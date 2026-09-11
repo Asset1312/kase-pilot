@@ -881,6 +881,7 @@ class CloudBotEngine:
                 'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01}
             }
 
+            user_data = self.kase_client.get_user_data().get('OPQ', {})
             raw_positions = user_data.get('ps', {}).get('pos', [])
             positions = {}
             for p in raw_positions:
