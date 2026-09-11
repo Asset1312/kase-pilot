@@ -72,6 +72,59 @@ DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppgtY2I6-JQFiM-mgcnZ36U")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "455103299")
 
+# Tradernet 24/7 Multi-Pair Spread Radar & Anomaly Monitor
+TRADERNET_RADAR_TICKERS = [
+    'SUI/USD', 'SOL/USD', 'APT/USD', 'ATOM/USD',
+    'XLM/USD', 'CRV/USD', 'FIL/USD', 'TRX/USD',
+    'XRP/USD', 'ETC/USD'
+]
+LATEST_TRADERNET_SPREADS = {}
+LATEST_SPREAD_ANOMALIES = deque(maxlen=20)
+
+def tradernet_spread_scanner_loop():
+    logger.info("Starting Tradernet 24/7 Spread & Anomaly Radar loop...")
+    sui_order_tracked = True
+    while True:
+        try:
+            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            for ticker in TRADERNET_RADAR_TICKERS:
+                try:
+                    url = f"https://tradernet.com/api/getSecurityInfo?ticker={ticker}"
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        d = json.loads(resp.read().decode('utf-8'))
+                    bid = float(d.get('bbp') or 0)
+                    ask = float(d.get('bap') or 0)
+                    if bid > 0 and ask > 0 and ask >= bid:
+                        sp_abs = round(ask - bid, 5)
+                        sp_pct = round((sp_abs / ask) * 100.0, 3)
+                        LATEST_TRADERNET_SPREADS[ticker] = {
+                            "bid": bid,
+                            "ask": ask,
+                            "spread_abs": sp_abs,
+                            "spread_pct": sp_pct,
+                            "time": now_str
+                        }
+                        if sp_pct <= 1.20 and ticker != 'TRX/USD':
+                            anom = f"[{now_str}] 🔥 Сжатие спреда {ticker}: {sp_pct}% (Bid: {bid}, Ask: {ask})"
+                            LATEST_SPREAD_ANOMALIES.appendleft(anom)
+                            logger.info(anom)
+                        elif sp_pct >= 3.50 and ticker not in ['TRX/USD', 'XRP/USD']:
+                            anom = f"[{now_str}] ⚠️ Расширение спреда {ticker}: {sp_pct}% (Bid: {bid}, Ask: {ask})"
+                            LATEST_SPREAD_ANOMALIES.appendleft(anom)
+                            logger.info(anom)
+                        if ticker == 'SUI/USD' and sui_order_tracked:
+                            if abs(bid - 0.72) > 0.0001:
+                                anom = f"[{now_str}] 🎯 Изменение в стакане SUI/USD: лучший Bid {bid} (был 0.72)"
+                                LATEST_SPREAD_ANOMALIES.appendleft(anom)
+                                sui_order_tracked = False
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Spread radar error: {e}")
+        time.sleep(15)
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         mem_mb = get_process_memory_mb()
@@ -166,6 +219,26 @@ class HealthHandler(BaseHTTPRequestHandler):
             </tr>"""
         if not trade_rows_html:
             trade_rows_html = '<tr><td colspan="4" style="padding: 10px; text-align: center; color: #6b7280;">Сделки синхронизируются с брокером...</td></tr>'
+
+        spread_rows_html = ""
+        sorted_spreads = sorted(LATEST_TRADERNET_SPREADS.items(), key=lambda x: x[1].get('spread_pct', 999))
+        for t, sp in sorted_spreads:
+            badge_col = "#10b981" if sp['spread_pct'] <= 1.8 else ("#38bdf8" if sp['spread_pct'] <= 2.2 else "#f59e0b")
+            status_txt = "🔥 УЗКИЙ" if sp['spread_pct'] <= 1.8 else "НОРМА"
+            spread_rows_html += f"""<tr>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937; font-weight: 600; color: #38bdf8;">{t}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937;">${sp['bid']}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937;">${sp['ask']}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937; color: #9ca3af;">${sp['spread_abs']}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937; font-weight: 700; color: {badge_col};">{sp['spread_pct']}%</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1f2937;"><span style="background: rgba(56, 189, 248, 0.2); color: {badge_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px;">{status_txt}</span></td>
+            </tr>"""
+        if not spread_rows_html:
+            spread_rows_html = '<tr><td colspan="6" style="padding: 10px; text-align: center; color: #6b7280;">Инициализация радара спредов...</td></tr>'
+
+        anomalies_html = "".join([f"<div>{a}</div>" for a in list(LATEST_SPREAD_ANOMALIES)[:5]])
+        if not anomalies_html:
+            anomalies_html = "<div>Аномалий не зафиксировано, стаканы стабильны.</div>"
 
         html = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -274,6 +347,37 @@ class HealthHandler(BaseHTTPRequestHandler):
                         {trade_rows_html}
                     </tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- Tradernet 24/7 Spread & Anomaly Radar Card -->
+        <div class="card" style="border-color: #06b6d4; background: linear-gradient(180deg, #083344 0%, #0f172a 100%); margin-bottom: 20px;">
+            <div class="card-header">
+                <div class="card-title" style="color: #22d3ee;">📡 Радар спредов и аномалий стакана (Tradernet 24/7)</div>
+                <span class="badge" style="background: #0891b2;">10 ПАР ОНЛАЙН</span>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px; overflow-x: auto; margin-bottom: 12px;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+                    <thead>
+                        <tr style="color: #9ca3af; font-size: 11px; text-transform: uppercase;">
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Тикер</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Покупка (Bid)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Продажа (Ask)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Спред ($)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Спред (%)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #164e63;">Статус</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {spread_rows_html}
+                    </tbody>
+                </table>
+            </div>
+            <div style="font-size: 12px; color: #a5f3fc;">
+                <strong>⚡ Последние аномалии стакана:</strong>
+                <div style="margin-top: 6px; font-family: monospace; font-size: 11px; color: #cbd5e1; max-height: 80px; overflow-y: auto;">
+                    {anomalies_html}
+                </div>
             </div>
         </div>
 
@@ -1263,6 +1367,19 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(reply, chat_id)
                         except Exception as se:
                             send_telegram_msg(f"Ошибка получения данных крипто: {se}", chat_id)
+                    elif text.lower() in ['спред', 'спреды', 'радар', 'аномалии', '/spread']:
+                        try:
+                            lines = ["📡 **Радар спредов Tradernet 24/7:**\n"]
+                            sorted_sp = sorted(LATEST_TRADERNET_SPREADS.items(), key=lambda x: x[1].get('spread_pct', 999))
+                            for t, d in sorted_sp:
+                                lines.append(f"• **{t}**: Bid ${d['bid']} | Ask ${d['ask']} | Спред **{d['spread_pct']}%**")
+                            if LATEST_SPREAD_ANOMALIES:
+                                lines.append("\n⚡ **Последние аномалии:**")
+                                for a in list(LATEST_SPREAD_ANOMALIES)[:3]:
+                                    lines.append(f"• {a}")
+                            send_telegram_msg("\n".join(lines), chat_id)
+                        except Exception as e:
+                            send_telegram_msg(f"Ошибка радара спредов: {e}", chat_id)
                     elif text.lower() in ['доход', '/profit', 'профит', 'прибыль']:
                         try:
                             pnl = CloudBotEngine.REALIZED_PNL_STATS
@@ -1308,6 +1425,10 @@ def main():
 
     # Start High-Frequency Binance Lead-Lag WebSocket Radar
     LEAD_LAG_RADAR.start_background()
+
+    # Start Tradernet 24/7 Spread & Anomaly Radar
+    t_spread = threading.Thread(target=tradernet_spread_scanner_loop, daemon=True, name="SpreadRadarScanner")
+    t_spread.start()
 
     engine = CloudBotEngine()
 
