@@ -410,7 +410,7 @@ def is_kase_market_open() -> bool:
     if now.weekday() >= 5:
         return False
     start_time = datetime.time(10, 0, 0)
-    end_time = datetime.time(17, 0, 0)
+    end_time = datetime.time(17, 30, 0)
     return start_time <= now.time() <= end_time
 
 class BinanceLeadLagDetector:
