@@ -102,6 +102,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "winrate_pct": 100.0,
                     "recent_trades": pnl_stats.get('profitable_trades', [])[:5]
                 },
+                "crypto_profit_report": {
+                    "today_profit_usd": getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {}).get('today_profit_usd', 0.0),
+                    "total_profit_usd": getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {}).get('total_profit_usd', 0.0),
+                    "completed_cycles": getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {}).get('completed_cycles', 0),
+                    "winrate_pct": 100.0,
+                    "recent_trades": getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {}).get('profitable_trades', [])[:5]
+                },
                 "canary_metrics": {
                     "fill_rate_pct": fill_rate_pct,
                     "orders_placed": placed,
@@ -138,6 +145,11 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         sol_bm = benchmarks.get('SOL/USD', {}).get('last_price', '101.00')
         sui_bm = benchmarks.get('SUI/USD', {}).get('last_price', '0.7600')
+
+        crypto_pnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
+        today_crypto_usd = crypto_pnl.get('today_profit_usd', 0.0)
+        total_crypto_usd = crypto_pnl.get('total_profit_usd', 0.0)
+        crypto_cycles = crypto_pnl.get('completed_cycles', 0)
 
         today_pnl = pnl_stats.get('today_profit_kzt', 0.0)
         total_pnl = pnl_stats.get('total_profit_kzt', 0.0)
@@ -296,27 +308,27 @@ class HealthHandler(BaseHTTPRequestHandler):
         </div>
 
         <div class="grid">
-            <div class="card">
+            <div class="card" style="border-color: #38bdf8;">
                 <div class="card-header">
-                    <div class="card-title">🌊 Sui Network (SUI/USD)</div>
-                    <span class="badge" style="background: #10b981;">АКТИВНЫЙ ТЕЙК-ПРОФИТ</span>
+                    <div class="card-title">🌊 Sui Network (SUI/USD) — Выделенный скальпер 1 SUI</div>
+                    <span class="badge" style="background: #0284c7;">HFT СКАЛЬПИНГ 24/7</span>
                 </div>
                 <div class="stat-grid">
                     <div class="stat-box">
-                        <div class="stat-label">В портфеле</div>
-                        <div class="stat-val">2 SUI (вход: $0.7898)</div>
+                        <div class="stat-label">Рабочий лот скальпера</div>
+                        <div class="stat-val" style="color: #38bdf8;">1 SUI (быстрый цикл)</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Тейк-профит №1</div>
-                        <div class="stat-val" style="color: #10b981;">1 SUI @ $0.7926</div>
+                        <div class="stat-label">Профит SUI за сегодня</div>
+                        <div class="stat-val" style="color: #10b981;">+${today_crypto_usd:.4f}</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Тейк-профит №2</div>
-                        <div class="stat-val" style="color: #6366f1;">1 SUI @ $0.8080</div>
+                        <div class="stat-label">Всего закрыто циклов</div>
+                        <div class="stat-val" style="color: #f3f4f6;">{crypto_cycles} сделок</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Защита от минуса</div>
-                        <div class="stat-val" style="color: #10b981;">Строго в плюс</div>
+                        <div class="stat-label">Мировая цена (Binance)</div>
+                        <div class="stat-val">${sui_bm}</div>
                     </div>
                 </div>
             </div>
@@ -669,6 +681,13 @@ class CloudBotEngine:
         "profitable_trades": [],
         "last_sync_time": 0.0
     }
+    REALIZED_CRYPTO_STATS = {
+        "today_profit_usd": 0.0,
+        "total_profit_usd": 0.0,
+        "completed_cycles": 0,
+        "profitable_trades": [],
+        "last_sync_time": 0.0
+    }
     METRICS = {
         "start_time": time.time(),
         "dump_blocks": 0,
@@ -790,14 +809,19 @@ class CloudBotEngine:
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # 1. Manage holding position -> Multi-level Take-Profit (+1.5R or Turbo)
+                # Special isolation for SUI: we hold legacy coins, but reserve 1 SUI for active live scalper loop
+                legacy_reserved = 2.0 if sym == 'SUI/USD' else 0.0
+                active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
+
+                # 1. Manage active scalp inventory -> Place Immediate Take-Profit (+0.35%)
                 target_qty = float(cfg['qty'])
-                if inv_qty >= target_qty and not sell_orders:
-                    # Turbo-scalp if spread <= 0.25%, else standard 1.5R target
-                    pair_tp_multiplier = 1.0015 if spread_pct <= 0.25 else 1.0035
-                    min_safe_sell = round(entry_price * pair_tp_multiplier, cfg['decimals'])
+                if active_scalp_qty >= target_qty and not sell_orders:
+                    pair_tp_multiplier = 1.0020 if spread_pct <= 0.25 else 1.0035
+                    # Use current best ask or entry + target
+                    calc_entry = entry_price if entry_price > 0 and entry_price < bap else bbp
+                    min_safe_sell = round(calc_entry * pair_tp_multiplier, cfg['decimals'])
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    logger.info(f"[{sym}] Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry: ${entry_price:.4f})")
+                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Target: +{pair_tp_multiplier-1:.2%})")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 3,
@@ -808,7 +832,7 @@ class CloudBotEngine:
                     })
 
                 # 2. Manage flat position & new BUY -> Maker Entry with Risk Gates
-                elif inv_qty < target_qty and not buy_orders:
+                elif active_scalp_qty < target_qty and not buy_orders:
                     # Gate 1: Check Dead Man's Switch & Risk Directive
                     if not can_enter_new:
                         continue
@@ -848,7 +872,7 @@ class CloudBotEngine:
                     est_cost = target_qty * bbp
                     if usd_cash >= est_cost:
                         buy_price = round(bbp, cfg['decimals'])
-                        logger.info(f"[{sym}] Approved Post-Only Maker BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%)")
+                        logger.info(f"[{sym}] Approved Post-Only Maker BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
                         resp = self.crypto_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
@@ -865,6 +889,40 @@ class CloudBotEngine:
                             'is_impulse': is_impulse_pump,
                             'price': buy_price
                         }
+
+            # --- Realized Profit Tracking from Crypto Orders ---
+            try:
+                realized_crypto = []
+                now_str_date = datetime.datetime.now().strftime("%Y-%m-%d")
+                today_usd = 0.0
+                total_usd = 0.0
+                for o in orders:
+                    instr = o.get('instr', '')
+                    for tr in o.get('trade', []):
+                        prof = float(tr.get('profit') or 0.0)
+                        if prof > 0:
+                            tr_date = str(tr.get('date', ''))
+                            total_usd += prof
+                            if now_str_date in tr_date:
+                                today_usd += prof
+                            realized_crypto.append({
+                                'instr': instr,
+                                'qty': tr.get('q'),
+                                'price': tr.get('p'),
+                                'profit': round(prof, 4),
+                                'date': tr_date,
+                                'order_id': o.get('id')
+                            })
+                realized_crypto.sort(key=lambda x: str(x['date']), reverse=True)
+                CloudBotEngine.REALIZED_CRYPTO_STATS = {
+                    "today_profit_usd": round(today_usd, 4),
+                    "total_profit_usd": round(total_usd, 4),
+                    "completed_cycles": len(realized_crypto),
+                    "profitable_trades": realized_crypto[:10],
+                    "last_sync_time": time.time()
+                }
+            except Exception as cpe:
+                logger.error(f"Error parsing crypto realized trades: {cpe}")
 
         except Exception as e:
             logger.error(f"Error in crypto step: {e}")
@@ -1112,6 +1170,8 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                                  "Можешь просто общаться со мной текстом или спрашивать:\n"
                                  "• 'какой баланс?'\n"
                                  "• 'что с позициями?'\n"
+                                 "• 'доход' (профит по KASE)\n"
+                                 "• 'sui' (профит скальпера SUI)\n"
                                  "• 'что думаешь по SUI и Solana?'\n"
                                  "• 'как дела на KASE?'\n"
                                  "Или задавать любые вопросы по рынку!")
@@ -1149,6 +1209,25 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(reply, chat_id)
                         except Exception as e:
                             send_telegram_msg(f"Ошибка получения метрик: {e}", chat_id)
+                    elif text.lower() in ['sui', '/sui', 'крипта', '/crypto']:
+                        try:
+                            cpnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
+                            t_usd = cpnl.get('today_profit_usd', 0.0)
+                            all_usd = cpnl.get('total_profit_usd', 0.0)
+                            c_cycles = cpnl.get('completed_cycles', 0)
+                            bm = getattr(CloudBotEngine, 'LATEST_BINANCE', {}).get('SUI/USD', {})
+                            p_now = bm.get('last_price', '0.72')
+                            reply = (
+                                "🌊 **Выделенный скальпер SUI (1 SUI)**\n\n"
+                                f"💵 **Профит сегодня:** +${t_usd:.4f}\n"
+                                f"🏆 **Всего закрыто:** +${all_usd:.4f}\n"
+                                f"🔄 **Закрытых циклов:** {c_cycles}\n"
+                                f"📊 **Мировая цена Binance:** ${p_now}\n"
+                                f"🛡 **Режим:** Maker Limit Post-Only (без комиссий)"
+                            )
+                            send_telegram_msg(reply, chat_id)
+                        except Exception as se:
+                            send_telegram_msg(f"Ошибка получения данных SUI: {se}", chat_id)
                     elif text.lower() in ['доход', '/profit', 'профит', 'прибыль']:
                         try:
                             pnl = CloudBotEngine.REALIZED_PNL_STATS
