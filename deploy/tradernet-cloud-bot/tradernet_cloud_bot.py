@@ -357,12 +357,12 @@ class HealthHandler(BaseHTTPRequestHandler):
                         <div class="stat-val">3 акции в работе</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">KM GOLD (KMGD.KZ)</div>
-                        <div class="stat-val">25 акций в работе</div>
+                        <div class="stat-label">КазТрансОйл (KZTO.KZ)</div>
+                        <div class="stat-val" style="color: #60a5fa;">1 акция в работе</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Защита от застоя</div>
-                        <div class="stat-val" style="color: #10b981;">Включена (24h)</div>
+                        <div class="stat-label">KM GOLD (KMGD.KZ)</div>
+                        <div class="stat-val">25 акций в работе</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">Убыточные продажи</div>
@@ -872,6 +872,7 @@ class CloudBotEngine:
             # Active scalping configs for KASE
             kase_configs = {
                 'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01},
+                'KZTO.KZ': {'qty': 1, 'min_spread_pct': 0.0020, 'min_step': 0.01},
                 'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01}
             }
 
@@ -879,6 +880,12 @@ class CloudBotEngine:
             positions = {p.get('i'): p for p in user_data.get('ps', {}).get('pos', [])}
             orders_list = user_data.get('orders', {}).get('order', [])
             active_orders = [o for o in orders_list if o.get('stat') in [10, 2, 1]]
+
+            acc_list = user_data.get('ps', {}).get('acc', [])
+            kzt_cash = 0.0
+            for a in acc_list:
+                if a.get('curr') == 'KZT':
+                    kzt_cash = float(a.get('s') or 0.0)
 
             quotes = self.kase_client.get_quotes(list(kase_configs.keys())).get('result', {}).get('q', [])
             q_dict = {q.get('c'): q for q in quotes}
@@ -946,8 +953,9 @@ class CloudBotEngine:
                 elif curr_shares < cfg['qty'] and not buy_orders:
                     # Check spread profitability & volume liquidity
                     spread_pct = (bap - bbp) / bbp
-                    if spread_pct >= cfg['min_spread_pct']:
-                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%)")
+                    req_cost = cfg['qty'] * bbp
+                    if spread_pct >= cfg['min_spread_pct'] and kzt_cash >= req_cost:
+                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} KZT)")
                         self.kase_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
@@ -956,6 +964,7 @@ class CloudBotEngine:
                             'limit_price': round(bbp, 2),
                             'expiration_id': 1
                         })
+                        kzt_cash -= req_cost
 
             # --- Realized Profit Tracking from Orders ---
             try:
