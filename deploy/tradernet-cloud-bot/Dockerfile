@@ -1,9 +1,9 @@
-﻿FROM python:3.11-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
 # Install dependencies (tradernet-sdk)
-RUN pip install --no-cache-dir tradernet-sdk requests
+RUN pip install --no-cache-dir tradernet-sdk requests websockets
 
 # Copy application files
 COPY tradernet_cloud_bot.py /app/

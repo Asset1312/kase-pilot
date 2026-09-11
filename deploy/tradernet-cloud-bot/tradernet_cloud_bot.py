@@ -16,9 +16,18 @@ import datetime
 import logging
 import threading
 import urllib.request
+import asyncio
+from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tradernet
+
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -251,9 +260,147 @@ def is_kase_market_open() -> bool:
     end_time = datetime.time(17, 0, 0)
     return start_time <= now.time() <= end_time
 
+class BinanceLeadLagDetector:
+    """
+    High-Frequency Lead-Lag WebSocket detector tracking Binance aggTrade stream.
+    Detects latency arbitrage impulses (rapid +0.35%..+0.5% surge in 2-3s)
+    and dumps (sharp selloffs) to frontrun slow Tradernet OTC broker feeds.
+    """
+    def __init__(self, symbols=None):
+        if symbols is None:
+            symbols = ['solusdt', 'suiusdt']
+        self.symbols = [s.lower() for s in symbols]
+        self.trades = {s: deque(maxlen=2000) for s in self.symbols}
+        self.latest_prices = {s: 0.0 for s in self.symbols}
+        self.latest_ts = {s: 0.0 for s in self.symbols}
+        self.is_connected = False
+        self._lock = threading.Lock()
+
+    async def _listen(self):
+        import websockets
+        stream_path = "/".join([f"{s}@aggTrade" for s in self.symbols])
+        url = f"wss://stream.binance.com:9443/ws/{stream_path}"
+        while True:
+            try:
+                logger.info(f"📡 Connecting to Binance WebSocket: {url}...")
+                async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+                    self.is_connected = True
+                    logger.info("⚡ Binance WebSocket Lead-Lag feed CONNECTED successfully.")
+                    while True:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        # aggTrade payload: s=symbol, p=price, q=qty, m=isBuyerMaker, T=timestamp
+                        sym = data.get('s', '').lower()
+                        if sym in self.trades:
+                            p = float(data.get('p', 0))
+                            q = float(data.get('q', 0))
+                            is_buyer_maker = bool(data.get('m', False))  # True if sell aggressor, False if buy aggressor
+                            ts = float(data.get('T', 0)) / 1000.0
+
+                            with self._lock:
+                                self.trades[sym].append({
+                                    'p': p,
+                                    'q': q,
+                                    'buyer_maker': is_buyer_maker,
+                                    'ts': ts
+                                })
+                                self.latest_prices[sym] = p
+                                self.latest_ts[sym] = ts
+            except Exception as e:
+                self.is_connected = False
+                logger.warning(f"⚠️ Binance WebSocket disconnected ({e}). Reconnecting in 3s...")
+                await asyncio.sleep(3)
+
+    def start_background(self):
+        def _run_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._listen())
+
+        t = threading.Thread(target=_run_loop, daemon=True, name="BinanceLeadLagWS")
+        t.start()
+        return t
+
+    def get_market_impulse(self, symbol: str, window_sec: float = 3.0) -> dict:
+        """
+        Calculates price velocity (% change) and Cumulative Volume Delta (CVD)
+        over the specified rolling window (default 3.0 seconds).
+        Returns:
+            {
+                'impulse_pct': float,     # +0.45 means +0.45% move in window
+                'is_pump': bool,          # True if impulse >= +0.35% and positive volume
+                'is_dump': bool,          # True if impulse <= -0.35%
+                'cvd': float,             # buy volume - sell volume
+                'latest_price': float,
+                'is_fresh': bool          # Data received within last 5 seconds
+            }
+        """
+        sym = symbol.lower()
+        with self._lock:
+            latest_p = self.latest_prices.get(sym, 0.0)
+            latest_t = self.latest_ts.get(sym, 0.0)
+            trades_copy = list(self.trades.get(sym, []))
+
+        now = time.time()
+        is_fresh = (now - latest_t) <= 5.0 and latest_p > 0.0
+
+        if not trades_copy or not is_fresh:
+            return {
+                'impulse_pct': 0.0,
+                'is_pump': False,
+                'is_dump': False,
+                'cvd': 0.0,
+                'latest_price': latest_p,
+                'is_fresh': is_fresh
+            }
+
+        cutoff = trades_copy[-1]['ts'] - window_sec
+        recent_trades = [t for t in trades_copy if t['ts'] >= cutoff]
+        if len(recent_trades) < 2:
+            return {
+                'impulse_pct': 0.0,
+                'is_pump': False,
+                'is_dump': False,
+                'cvd': 0.0,
+                'latest_price': latest_p,
+                'is_fresh': is_fresh
+            }
+
+        first_p = recent_trades[0]['p']
+        last_p = recent_trades[-1]['p']
+        impulse_pct = ((last_p - first_p) / first_p) * 100.0
+
+        buy_vol = sum(t['q'] for t in recent_trades if not t['buyer_maker'])
+        sell_vol = sum(t['q'] for t in recent_trades if t['buyer_maker'])
+        cvd = buy_vol - sell_vol
+
+        is_pump = (impulse_pct >= 0.35) and (cvd > 0)
+        is_dump = (impulse_pct <= -0.35) or (cvd < 0 and impulse_pct <= -0.20)
+
+        return {
+            'impulse_pct': impulse_pct,
+            'is_pump': is_pump,
+            'is_dump': is_dump,
+            'cvd': cvd,
+            'latest_price': last_p,
+            'is_fresh': is_fresh
+        }
+
+# Global Lead-Lag Detector Instance
+LEAD_LAG_RADAR = BinanceLeadLagDetector()
+
 def get_global_crypto_price(symbol="SOLUSDT") -> dict:
-    """Fetch real-time global price from Binance or CoinGecko."""
-    # 1. Try Binance
+    """Fetch real-time global price from Binance Lead-Lag radar or HTTP fallback."""
+    radar_sym = symbol.lower()
+    if LEAD_LAG_RADAR.is_connected and LEAD_LAG_RADAR.latest_prices.get(radar_sym, 0.0) > 0:
+        p = LEAD_LAG_RADAR.latest_prices[radar_sym]
+        return {
+            "last_price": p,
+            "change_pct": 0.0,
+            "source": "Binance-WebSocket"
+        }
+
+    # 1. Try Binance REST
     url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
@@ -262,7 +409,7 @@ def get_global_crypto_price(symbol="SOLUSDT") -> dict:
             return {
                 "last_price": float(data['lastPrice']),
                 "change_pct": float(data['priceChangePercent']),
-                "source": "Binance"
+                "source": "Binance-REST"
             }
     except Exception:
         pass
@@ -285,17 +432,6 @@ def get_global_crypto_price(symbol="SOLUSDT") -> dict:
         logger.error(f"Global crypto price fallback error: {e}")
     return {}
 
-def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
-    """DeepSeek AI: Chief Quantitative Macro & Regime Analyst."""
-    if not DEEPSEEK_API_KEY:
-        return {}
-    url = "https://api.deepseek.com/chat/completions"
-    prompt = f"""
-Ты — Главный квант-аналитик крипторынка и алгоритмической торговли.
-Твоя задача — оценить текущую фазу рынка, риски и выдать сводку на понятном русском языке.
-
-Рыночные данные:
-- SOL: {sol_feed}
 def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
     """DeepSeek AI: Chief Quantitative Risk Supervisor (Cold Path)."""
     if not DEEPSEEK_API_KEY:
@@ -475,6 +611,18 @@ class CloudBotEngine:
                     # Gate 2: Microstructure filter (Do not buy if spread is unnaturally blown up > 2.5%)
                     if spread_pct > 2.5:
                         continue
+
+                    # Gate 3: Binance Lead-Lag Radar (Latency Arbitrage & Dump Filter)
+                    impulse = LEAD_LAG_RADAR.get_market_impulse(cfg['binance'])
+                    if impulse['is_fresh']:
+                        # Dump Filter: Never buy a falling knife if Binance is dumping or CVD negative
+                        if impulse['is_dump']:
+                            logger.info(f"[{sym}] 🛑 Entry skipped: Binance dump detected (Impulse: {impulse['impulse_pct']:.2f}%, CVD: {impulse['cvd']:.2f})")
+                            continue
+
+                        # Latency Arb Boost: If Binance is pumping (+0.35%), log lead-lag signal
+                        if impulse['is_pump']:
+                            logger.info(f"[{sym}] 🚀 Lead-Lag Latency Arbitrage Opportunity! Binance impulse: +{impulse['impulse_pct']:.2f}% (CVD: +{impulse['cvd']:.2f})")
 
                     est_cost = target_qty * bbp
                     if usd_cash >= est_cost:
@@ -716,6 +864,9 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
 def main():
     t_web = threading.Thread(target=start_health_server, daemon=True)
     t_web.start()
+
+    # Start High-Frequency Binance Lead-Lag WebSocket Radar
+    LEAD_LAG_RADAR.start_background()
 
     engine = CloudBotEngine()
 
