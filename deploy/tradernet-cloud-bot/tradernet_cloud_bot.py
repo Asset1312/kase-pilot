@@ -22,6 +22,26 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tradernet
 
+def get_process_memory_mb() -> float:
+    """Returns current process RSS memory in MB."""
+    try:
+        # On Linux (Docker/Render)
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    # Line looks like: VmRSS:     45120 kB
+                    parts = line.split()
+                    return round(float(parts[1]) / 1024.0, 2)
+    except Exception:
+        pass
+    try:
+        # Fallback via resource if on Unix
+        import resource
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
+    except Exception:
+        pass
+    return 0.0
+
 if sys.stdout.encoding != 'utf-8':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -54,6 +74,16 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "455103299")
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        mem_mb = get_process_memory_mb()
+        metrics = getattr(CloudBotEngine, 'METRICS', {})
+        placed = metrics.get('orders_placed', 0)
+        filled = metrics.get('orders_filled', 0)
+        cancelled = metrics.get('orders_cancelled_ttl', 0)
+        fill_rate_pct = round((filled / placed * 100.0), 1) if placed > 0 else 0.0
+        dump_blocks = metrics.get('dump_blocks', 0)
+        ds_lat = metrics.get('deepseek_last_latency_sec', 0.0)
+        ds_timeouts = metrics.get('deepseek_timeouts', 0)
+
         # Allow json endpoint via /json
         if self.path == '/json':
             self.send_response(200)
@@ -64,6 +94,17 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
                 "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
                 "deepseek_connected": bool(DEEPSEEK_API_KEY),
+                "canary_metrics": {
+                    "fill_rate_pct": fill_rate_pct,
+                    "orders_placed": placed,
+                    "orders_filled": filled,
+                    "orders_cancelled_ttl": cancelled,
+                    "dump_blocks": dump_blocks,
+                    "memory_rss_mb": mem_mb,
+                    "deepseek_latency_sec": ds_lat,
+                    "deepseek_timeouts": ds_timeouts,
+                    "uptime_seconds": round(time.time() - metrics.get('start_time', time.time()), 0)
+                },
                 "signals": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
                 "benchmarks": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
                 "timestamp": datetime.datetime.now().isoformat()
@@ -155,6 +196,36 @@ class HealthHandler(BaseHTTPRequestHandler):
             <div class="outlook-grid">
                 <div class="outlook-box"><strong>💎 Solana (SOL):</strong> {sol_out} (Мировая цена: ${sol_bm})</div>
                 <div class="outlook-box"><strong>🌊 Sui (SUI):</strong> {sui_out} (Мировая цена: ${sui_bm})</div>
+            </div>
+        </div>
+
+        <!-- Canary Run 24-48h Telemetry Card -->
+        <div class="card" style="border-color: #3b82f6; background: linear-gradient(180deg, #111827 0%, #0f172a 100%); margin-bottom: 20px;">
+            <div class="card-header">
+                <div class="card-title" style="color: #60a5fa;">📊 Канареечный запуск (Canary Run 24–48h)</div>
+                <span class="badge" style="background: #2563eb;">ТЕЛЕМЕТРИЯ 4 МЕТРИК</span>
+            </div>
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-label">1. Fill Rate лимиток</div>
+                    <div class="stat-val" style="color: #10b981;">{fill_rate_pct}% ({filled}/{placed})</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">TTL Отмены (>15с)</div>
+                    <div class="stat-val" style="color: #f59e0b;">{cancelled} заявок</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">2. Dump Protection</div>
+                    <div class="stat-val" style="color: #ef4444;">🛡️ {dump_blocks} отсечений</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">3. RAM Контейнера</div>
+                    <div class="stat-val" style="color: #38bdf8;">{mem_mb} MB (норма: 60-120)</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">4. Задержка DeepSeek</div>
+                    <div class="stat-val" style="color: #a855f7;">{ds_lat}s (таймаутов: {ds_timeouts})</div>
+                </div>
             </div>
         </div>
 
@@ -476,6 +547,7 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
         "response_format": {"type": "json_object"},
         "temperature": 0.2
     }
+    t0 = time.time()
     try:
         req = urllib.request.Request(
             url,
@@ -483,13 +555,29 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
             data=json.dumps(payload).encode("utf-8")
         )
         with urllib.request.urlopen(req, timeout=12) as resp:
+            elapsed = time.time() - t0
+            CloudBotEngine.METRICS["deepseek_last_latency_sec"] = round(elapsed, 2)
             d = json.loads(resp.read().decode("utf-8"))
             res = json.loads(d["choices"][0]["message"]["content"])
             res["updated_at"] = time.time()
+            logger.info(f"🧠 DeepSeek RiskDirective updated in {elapsed:.2f}s: mode={res.get('risk_mode')} score={res.get('risk_score')}/10")
             return res
     except Exception as e:
-        logger.error(f"DeepSeek regime analysis error: {e}")
-    return {}
+        elapsed = time.time() - t0
+        CloudBotEngine.METRICS["deepseek_timeouts"] = CloudBotEngine.METRICS.get("deepseek_timeouts", 0) + 1
+        logger.error(f"DeepSeek regime analysis error after {elapsed:.2f}s: {e}. Activating conservative DEFENSIVE fallback.")
+        # Fail-safe conservative fallback so bot never dies or enters blind mode
+        return {
+            "risk_mode": "DEFENSIVE",
+            "allowed_sides": "LONG_ONLY",
+            "risk_score": 7,
+            "commentary": f"Автономный консервативный fallback: временная задержка связи с DeepSeek ({elapsed:.1f}с). Торговля продолжается с повышенной осторожностью.",
+            "sol_outlook": "Осторожный режим",
+            "sui_outlook": "Осторожный режим",
+            "ttl_seconds": 600,
+            "updated_at": time.time(),
+            "is_fallback": True
+        }
 
 class CloudBotEngine:
     LATEST_REGIME = {
@@ -504,6 +592,18 @@ class CloudBotEngine:
     }
     LATEST_ADVICE = {}
     LATEST_BINANCE = {}
+    METRICS = {
+        "start_time": time.time(),
+        "dump_blocks": 0,
+        "impulse_entries": 0,
+        "orders_placed": 0,
+        "orders_filled": 0,
+        "orders_cancelled_ttl": 0,
+        "deepseek_last_latency_sec": 0.0,
+        "deepseek_timeouts": 0,
+        "last_dump_event": None,
+        "last_impulse_event": None
+    }
 
     def __init__(self):
         self.kase_client = tradernet.Tradernet(KASE_PUB_KEY, KASE_SEC_KEY)
@@ -511,6 +611,8 @@ class CloudBotEngine:
         self.last_ai_check = {}
         self.cached_ai_advice = {}
         self.inventory_entry_time = {}
+        self.active_resting_buys = {}  # {sym: {'id': order_id, 'placed_at': timestamp, 'is_impulse': bool, 'price': float}}
+        self.previous_inv = {}         # {sym: float(qty)}
 
     def run_crypto_step(self):
         try:
@@ -578,6 +680,32 @@ class CloudBotEngine:
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
+                # --- TELEMETRY: Check Fill of previous BUY orders ---
+                prev_qty = self.previous_inv.get(sym, inv_qty)
+                if inv_qty > prev_qty:
+                    filled_diff = inv_qty - prev_qty
+                    CloudBotEngine.METRICS["orders_filled"] += 1
+                    logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty})")
+                    self.active_resting_buys.pop(sym, None)
+                self.previous_inv[sym] = inv_qty
+
+                # --- TELEMETRY & TTL: Check Resting BUY orders age (TTL ~15s) ---
+                if sym in self.active_resting_buys and buy_orders:
+                    track_info = self.active_resting_buys[sym]
+                    age = time.time() - track_info.get('placed_at', time.time())
+                    # If resting > 15s or price has moved away, cancel to avoid stale fills
+                    if age >= 15.0:
+                        order_id = track_info.get('id')
+                        logger.info(f"[{sym}] ⏱ TTL Expired ({age:.1f}s > 15s) for resting BUY #{order_id}. Cancelling order.")
+                        try:
+                            self.crypto_client.cancel(order_id)
+                        except Exception as ce:
+                            logger.warning(f"Error cancelling stale order #{order_id}: {ce}")
+                        CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
+                        self.active_resting_buys.pop(sym, None)
+                elif not buy_orders and sym in self.active_resting_buys:
+                    self.active_resting_buys.pop(sym, None)
+
                 # --- FAIL-SAFE 2: Time-Stop Tracking (Деградация торговой идеи) ---
                 if inv_qty >= float(cfg['qty']):
                     if sym not in self.inventory_entry_time:
@@ -614,21 +742,37 @@ class CloudBotEngine:
 
                     # Gate 3: Binance Lead-Lag Radar (Latency Arbitrage & Dump Filter)
                     impulse = LEAD_LAG_RADAR.get_market_impulse(cfg['binance'])
+                    is_impulse_pump = False
                     if impulse['is_fresh']:
                         # Dump Filter: Never buy a falling knife if Binance is dumping or CVD negative
                         if impulse['is_dump']:
+                            CloudBotEngine.METRICS["dump_blocks"] += 1
+                            CloudBotEngine.METRICS["last_dump_event"] = {
+                                "sym": sym,
+                                "impulse_pct": impulse['impulse_pct'],
+                                "cvd": impulse['cvd'],
+                                "time": time.time()
+                            }
                             logger.info(f"[{sym}] 🛑 Entry skipped: Binance dump detected (Impulse: {impulse['impulse_pct']:.2f}%, CVD: {impulse['cvd']:.2f})")
                             continue
 
                         # Latency Arb Boost: If Binance is pumping (+0.35%), log lead-lag signal
                         if impulse['is_pump']:
+                            is_impulse_pump = True
+                            CloudBotEngine.METRICS["impulse_entries"] += 1
+                            CloudBotEngine.METRICS["last_impulse_event"] = {
+                                "sym": sym,
+                                "impulse_pct": impulse['impulse_pct'],
+                                "cvd": impulse['cvd'],
+                                "time": time.time()
+                            }
                             logger.info(f"[{sym}] 🚀 Lead-Lag Latency Arbitrage Opportunity! Binance impulse: +{impulse['impulse_pct']:.2f}% (CVD: +{impulse['cvd']:.2f})")
 
                     est_cost = target_qty * bbp
                     if usd_cash >= est_cost:
                         buy_price = round(bbp, cfg['decimals'])
                         logger.info(f"[{sym}] Approved Post-Only Maker BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%)")
-                        self.crypto_client.authorized_request('putTradeOrder', {
+                        resp = self.crypto_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
                             'order_type_id': 2,
@@ -636,6 +780,14 @@ class CloudBotEngine:
                             'limit_price': buy_price,
                             'expiration_id': 1
                         })
+                        CloudBotEngine.METRICS["orders_placed"] += 1
+                        order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                        self.active_resting_buys[sym] = {
+                            'id': order_id,
+                            'placed_at': time.time(),
+                            'is_impulse': is_impulse_pump,
+                            'price': buy_price
+                        }
 
         except Exception as e:
             logger.error(f"Error in crypto step: {e}")
@@ -842,6 +994,30 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(reply, chat_id)
                         except Exception as e:
                             send_telegram_msg(f"Ошибка проверки баланса: {e}", chat_id)
+                    elif text.lower() in ['метрики', '/metrics', 'статистика', '/stats']:
+                        try:
+                            m = CloudBotEngine.METRICS
+                            mem = get_process_memory_mb()
+                            p = m.get('orders_placed', 0)
+                            f = m.get('orders_filled', 0)
+                            c = m.get('orders_cancelled_ttl', 0)
+                            fr = round((f / p * 100.0), 1) if p > 0 else 0.0
+                            upt = round((time.time() - m.get('start_time', time.time())) / 3600.0, 1)
+                            reply = (
+                                "📊 **Канареечный запуск (Canary Run 24-48h)**\n\n"
+                                f"1️⃣ **Fill Rate лимиток:** {fr}% ({f} исп. из {p})\n"
+                                f"   ⏱ Отменено по TTL (>15s): {c}\n"
+                                f"   🚀 Импульсных входов по Binance: {m.get('impulse_entries', 0)}\n\n"
+                                f"2️⃣ **Dump Protection:** {m.get('dump_blocks', 0)} заблокировано\n"
+                                f"   🛡 Защита от падающего ножа сработала успешно\n\n"
+                                f"3️⃣ **RAM Контейнера:** {mem} MB (норма: 60–120 MB)\n"
+                                f"   ⏳ Аптайм сессии: {upt} ч\n\n"
+                                f"4️⃣ **DeepSeek Cold Path:** {m.get('deepseek_last_latency_sec', 0)}s\n"
+                                f"   ⚠️ Таймаутов/Fallback: {m.get('deepseek_timeouts', 0)}"
+                            )
+                            send_telegram_msg(reply, chat_id)
+                        except Exception as e:
+                            send_telegram_msg(f"Ошибка получения метрик: {e}", chat_id)
                     else:
                         # Ask DeepSeek with current bot context
                         try:
