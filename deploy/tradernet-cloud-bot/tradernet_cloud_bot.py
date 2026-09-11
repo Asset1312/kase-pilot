@@ -333,22 +333,22 @@ class HealthHandler(BaseHTTPRequestHandler):
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" style="border-color: #818cf8;">
                 <div class="card-header">
-                    <div class="card-title">💎 Solana (SOL/USD)</div>
-                    <span class="badge" style="background: #6366f1;">ТЕЙК-ПРОФИТ В ОЧЕРЕДИ</span>
+                    <div class="card-title">💎 Solana (SOL/USD) — Скальпер 0.001 SOL</div>
+                    <span class="badge" style="background: #4f46e5;">HFT СКАЛЬПИНГ 24/7</span>
                 </div>
                 <div class="stat-grid">
                     <div class="stat-box">
-                        <div class="stat-label">В портфеле</div>
-                        <div class="stat-val">0.001 SOL (вход: $104.60)</div>
+                        <div class="stat-label">Рабочий лот скальпера</div>
+                        <div class="stat-val" style="color: #a5b4fc;">0.001 SOL (~$0.10)</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Тейк-профит</div>
-                        <div class="stat-val" style="color: #6366f1;">$104.87 (в плюс)</div>
+                        <div class="stat-label">Режим исполнения</div>
+                        <div class="stat-val" style="color: #38bdf8;">Maker Limit (+0.20-0.35%)</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">Мировой рынок</div>
+                        <div class="stat-label">Мировой рынок (Binance)</div>
                         <div class="stat-val">${sol_bm}</div>
                     </div>
                     <div class="stat-box">
@@ -607,7 +607,7 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
 2. 'allowed_sides': 'LONG_ONLY' или 'NONE' (если слив или аномалия).
 3. 'risk_score': число 1-10.
 4. 'commentary': краткая человеческая сводка (2 предложения) на русском для Telegram и дашборда.
-5. 'ttl_seconds': время жизни директивы (обычно 600 сек).
+5. 'ttl_seconds': время жизни директивы (обычно 1200 сек).
 
 Ответь ИСКЛЮЧИТЕЛЬНО в формате валидного JSON по схеме:
 {{
@@ -617,7 +617,7 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
   "commentary": "текст аналитической сводки на русском",
   "sol_outlook": "краткий ориентир по Solana",
   "sui_outlook": "краткий ориентир по Sui",
-  "ttl_seconds": 600
+  "ttl_seconds": 1200
 }}
 """
     payload = {
@@ -656,7 +656,7 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
             "commentary": f"Автономный консервативный fallback: временная задержка связи с DeepSeek ({elapsed:.1f}с). Торговля продолжается с повышенной осторожностью.",
             "sol_outlook": "Осторожный режим",
             "sui_outlook": "Осторожный режим",
-            "ttl_seconds": 600,
+            "ttl_seconds": 1200,
             "updated_at": time.time(),
             "is_fallback": True
         }
@@ -669,7 +669,7 @@ class CloudBotEngine:
         "commentary": "Рынок в рабочей фазе. Бот работает в режиме автономного сбора спреда.",
         "sol_outlook": "Консолидация в диапазоне $100-103",
         "sui_outlook": "Попытка отскока от зоны поддержки $0.75",
-        "ttl_seconds": 600,
+        "ttl_seconds": 1200,
         "updated_at": time.time()
     }
     LATEST_ADVICE = {}
@@ -733,9 +733,9 @@ class CloudBotEngine:
             quotes = self.crypto_client.get_quotes(list(crypto_pairs.keys())).get('result', {}).get('q', [])
             q_dict = {q.get('c'): q for q in quotes}
 
-            # Check macro regime via DeepSeek once every 20 minutes
+            # Check macro regime via DeepSeek once every 5 minutes (300s)
             now = time.time()
-            if now - getattr(self, 'last_regime_check', 0) > 1200:
+            if now - getattr(self, 'last_regime_check', 0) > 300:
                 sol_feed = get_global_crypto_price("SOLUSDT")
                 sui_feed = get_global_crypto_price("SUIUSDT")
                 if sol_feed: CloudBotEngine.LATEST_BINANCE['SOL/USD'] = sol_feed
@@ -749,9 +749,9 @@ class CloudBotEngine:
 
             # --- FAIL-SAFE 1: Dead Man's Switch (Протухание директивы) ---
             directive_age = time.time() - float(regime_info.get("updated_at", 0))
-            is_directive_stale = directive_age > float(regime_info.get("ttl_seconds", 600))
+            is_directive_stale = directive_age > float(regime_info.get("ttl_seconds", 1200))
             if is_directive_stale:
-                logger.warning(f"⚠️ Dead Man's Switch Triggered! Directive is stale ({directive_age:.0f}s > {regime_info.get('ttl_seconds', 600)}s). Halting new entries.")
+                logger.warning(f"⚠️ Dead Man's Switch Triggered! Directive is stale ({directive_age:.0f}s > {regime_info.get('ttl_seconds', 1200)}s). Halting new entries.")
 
             risk_mode = regime_info.get("risk_mode", "NORMAL")
             allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
@@ -809,7 +809,8 @@ class CloudBotEngine:
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # Special isolation for SUI: we hold legacy coins, but reserve 1 SUI for active live scalper loop
+                # Special isolation for SUI: we hold legacy 2 SUI, but reserve 1 SUI for active live scalper loop
+                # For SOL: we trade 0.001 SOL actively in turnover
                 legacy_reserved = 2.0 if sym == 'SUI/USD' else 0.0
                 active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
 
@@ -882,6 +883,7 @@ class CloudBotEngine:
                             'expiration_id': 1
                         })
                         CloudBotEngine.METRICS["orders_placed"] += 1
+                        usd_cash -= est_cost  # Reserve cash for next pair in loop
                         order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
                         self.active_resting_buys[sym] = {
                             'id': order_id,
@@ -1209,14 +1211,14 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(reply, chat_id)
                         except Exception as e:
                             send_telegram_msg(f"Ошибка получения метрик: {e}", chat_id)
-                    elif text.lower() in ['sui', '/sui', 'крипта', '/crypto']:
+                    elif text.lower() in ['sui', '/sui']:
                         try:
                             cpnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
                             t_usd = cpnl.get('today_profit_usd', 0.0)
                             all_usd = cpnl.get('total_profit_usd', 0.0)
                             c_cycles = cpnl.get('completed_cycles', 0)
                             bm = getattr(CloudBotEngine, 'LATEST_BINANCE', {}).get('SUI/USD', {})
-                            p_now = bm.get('last_price', '0.72')
+                            p_now = bm.get('last_price', '0.76')
                             reply = (
                                 "🌊 **Выделенный скальпер SUI (1 SUI)**\n\n"
                                 f"💵 **Профит сегодня:** +${t_usd:.4f}\n"
@@ -1228,6 +1230,39 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(reply, chat_id)
                         except Exception as se:
                             send_telegram_msg(f"Ошибка получения данных SUI: {se}", chat_id)
+                    elif text.lower() in ['sol', '/sol']:
+                        try:
+                            bm = getattr(CloudBotEngine, 'LATEST_BINANCE', {}).get('SOL/USD', {})
+                            p_now = bm.get('last_price', '101.5')
+                            reply = (
+                                "💎 **Выделенный скальпер Solana (0.001 SOL)**\n\n"
+                                f"📦 **Рабочий объем:** 0.001 SOL (~$0.10)\n"
+                                f"📊 **Мировая цена Binance:** ${p_now}\n"
+                                f"🛡 **Режим:** Maker Limit (+0.20-0.35% чистый профит)\n"
+                                f"⚡ **Комиссия:** $0.00 (Бесплатно)"
+                            )
+                            send_telegram_msg(reply, chat_id)
+                        except Exception as se:
+                            send_telegram_msg(f"Ошибка получения данных SOL: {se}", chat_id)
+                    elif text.lower() in ['крипта', '/crypto']:
+                        try:
+                            cpnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
+                            t_usd = cpnl.get('today_profit_usd', 0.0)
+                            all_usd = cpnl.get('total_profit_usd', 0.0)
+                            c_cycles = cpnl.get('completed_cycles', 0)
+                            sui_bm = getattr(CloudBotEngine, 'LATEST_BINANCE', {}).get('SUI/USD', {}).get('last_price', '0.76')
+                            sol_bm = getattr(CloudBotEngine, 'LATEST_BINANCE', {}).get('SOL/USD', {}).get('last_price', '101.5')
+                            reply = (
+                                "🚀 **Крипто-скальперы 24/7 (CR725726)**\n\n"
+                                f"🌊 **SUI (1 SUI):** Binance ${sui_bm}\n"
+                                f"💎 **SOL (0.001 SOL):** Binance ${sol_bm}\n"
+                                f"💵 **Профит сегодня:** +${t_usd:.4f}\n"
+                                f"🏆 **Всего закрыто:** +${all_usd:.4f} ({c_cycles} сделок)\n"
+                                f"🛡 **Комиссия Freedom:** $0.00"
+                            )
+                            send_telegram_msg(reply, chat_id)
+                        except Exception as se:
+                            send_telegram_msg(f"Ошибка получения данных крипто: {se}", chat_id)
                     elif text.lower() in ['доход', '/profit', 'профит', 'прибыль']:
                         try:
                             pnl = CloudBotEngine.REALIZED_PNL_STATS
