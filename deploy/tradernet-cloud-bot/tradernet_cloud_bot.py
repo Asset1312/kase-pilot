@@ -1033,18 +1033,24 @@ class CloudBotEngine:
                     self.active_resting_buys.pop(sym, None)
                 self.previous_inv[sym] = inv_qty
 
-                # --- TELEMETRY & TTL: Check Resting BUY orders age (TTL ~15s) ---
+                # --- TELEMETRY & TTL: Check Resting BUY orders with Spread Blowout Protection ---
                 if sym in self.active_resting_buys and buy_orders:
                     track_info = self.active_resting_buys[sym]
                     age = time.time() - track_info.get('placed_at', time.time())
-                    # If resting > 15s or price has moved away, cancel to avoid stale fills
-                    if age >= 15.0:
+                    # 🛡️ Instant Cancellation Gates:
+                    # 1. Spread suddenly blew out (> 1.75%) -> opportunity disappeared
+                    # 2. Best Bid moved away from our placed order price
+                    # 3. Order is older than 15 seconds (TTL expiration)
+                    is_spread_blown_out = spread_pct > 1.75
+                    price_moved_away = abs(bbp - track_info.get('price', bbp)) > 0.0001
+                    if is_spread_blown_out or price_moved_away or age >= 15.0:
                         order_id = track_info.get('id')
-                        logger.info(f"[{sym}] ⏱ TTL Expired ({age:.1f}s > 15s) for resting BUY #{order_id}. Cancelling order.")
+                        reason = f"Расширение спреда ({spread_pct:.2f}%)" if is_spread_blown_out else ("Сдвиг цен стакана" if price_moved_away else f"Таймаут TTL ({age:.0f}с)")
+                        logger.info(f"[{sym}] 🛡️ Авто-отмена приказа #{order_id}: {reason}. Защита капитала активна.")
                         try:
                             self.crypto_client.cancel(order_id)
                         except Exception as ce:
-                            logger.warning(f"Error cancelling stale order #{order_id}: {ce}")
+                            logger.warning(f"Error cancelling order #{order_id}: {ce}")
                         CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
                         self.active_resting_buys.pop(sym, None)
                 elif not buy_orders and sym in self.active_resting_buys:
