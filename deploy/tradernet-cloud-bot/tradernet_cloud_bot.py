@@ -951,8 +951,18 @@ class CloudBotEngine:
     def run_crypto_step(self):
         try:
             crypto_pairs = {
+                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 5},
+                'CRV/USD': {'binance': 'CRVUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_profit_pct': 0.0075, 'decimals': 5},
+                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_profit_pct': 0.0075, 'decimals': 4},
+                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 5},
+                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_profit_pct': 0.0025, 'decimals': 2},
-                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0035, 'decimals': 4}
+                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_profit_pct': 0.0075, 'decimals': 5}
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
@@ -1129,6 +1139,19 @@ class CloudBotEngine:
                             'is_impulse': is_impulse_pump,
                             'price': buy_price
                         }
+                        try:
+                            send_telegram_msg(
+                                f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
+                                f"Монета: **{sym}**\n"
+                                f"Операция: **Лимитная покупка (BUY)**\n"
+                                f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
+                                f"Цена: **${buy_price}**\n"
+                                f"Спред при входе: **{spread_pct:.2f}%**\n"
+                                f"№ приказа: `{order_id}`",
+                                TELEGRAM_CHAT_ID
+                            )
+                        except Exception:
+                            pass
 
             # --- Realized Profit Tracking from Crypto Orders ---
             try:
