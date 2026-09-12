@@ -1080,43 +1080,28 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
 
-                # 2. Manage flat position & new BUY -> Maker Entry with Risk Gates
-                elif active_scalp_qty < target_qty and not buy_orders:
-                    # Gate 1: Check Dead Man's Switch & Risk Directive
-                    if not can_enter_new:
-                        continue
-
-                    # Gate 2: Microstructure filter (Do not buy if spread is unnaturally blown up > 2.5%)
-                    if spread_pct > 2.5:
-                        continue
-
-                    # Gate 3: Binance Lead-Lag Radar (Latency Arbitrage & Dump Filter)
-                    impulse = LEAD_LAG_RADAR.get_market_impulse(cfg['binance'])
-                    is_impulse_pump = False
-                    if impulse['is_fresh']:
-                        # Dump Filter: Never buy a falling knife if Binance is dumping or CVD negative
-                        if impulse['is_dump']:
-                            CloudBotEngine.METRICS["dump_blocks"] += 1
-                            CloudBotEngine.METRICS["last_dump_event"] = {
-                                "sym": sym,
-                                "impulse_pct": impulse['impulse_pct'],
-                                "cvd": impulse['cvd'],
-                                "time": time.time()
-                            }
-                            logger.info(f"[{sym}] 🛑 Entry skipped: Binance dump detected (Impulse: {impulse['impulse_pct']:.2f}%, CVD: {impulse['cvd']:.2f})")
+                # 2. Manage flat position & new BUY -> High-Speed Spread Snapback Engine
+                elif (active_scalp_qty < target_qty or spread_pct <= 1.25) and not buy_orders:
+                    # High-Speed Priority: If spread is compressed (<= 1.25% or <= 1.6% for CRV),
+                    # we trade on pure order-book math WITHOUT waiting for external LLM!
+                    is_spread_compressed = spread_pct <= (1.25 if sym != 'CRV/USD' else 1.60)
+                    
+                    if not is_spread_compressed:
+                        # For normal wide spreads, apply standard macro check
+                        if not can_enter_new or spread_pct > 2.5:
                             continue
 
-                        # Latency Arb Boost: If Binance is pumping (+0.35%), log lead-lag signal
-                        if impulse['is_pump']:
+                    # Lead-Lag Radar check (non-blocking)
+                    impulse = LEAD_LAG_RADAR.get_market_impulse(cfg.get('binance', ''))
+                    is_impulse_pump = False
+                    if impulse.get('is_fresh'):
+                        if impulse.get('is_dump') and not is_spread_compressed:
+                            CloudBotEngine.METRICS["dump_blocks"] += 1
+                            logger.info(f"[{sym}] 🛑 Entry skipped: Binance dump detected")
+                            continue
+                        if impulse.get('is_pump'):
                             is_impulse_pump = True
                             CloudBotEngine.METRICS["impulse_entries"] += 1
-                            CloudBotEngine.METRICS["last_impulse_event"] = {
-                                "sym": sym,
-                                "impulse_pct": impulse['impulse_pct'],
-                                "cvd": impulse['cvd'],
-                                "time": time.time()
-                            }
-                            logger.info(f"[{sym}] 🚀 Lead-Lag Latency Arbitrage Opportunity! Binance impulse: +{impulse['impulse_pct']:.2f}% (CVD: +{impulse['cvd']:.2f})")
 
                     est_cost = target_qty * bbp
                     if usd_cash >= est_cost:
