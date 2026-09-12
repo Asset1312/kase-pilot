@@ -74,9 +74,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "455103299")
 
 # Tradernet 24/7 Multi-Pair Spread Radar & Anomaly Monitor
 TRADERNET_RADAR_TICKERS = [
-    'SUI/USD', 'SOL/USD', 'APT/USD', 'ATOM/USD',
-    'XLM/USD', 'CRV/USD', 'FIL/USD', 'TRX/USD',
-    'XRP/USD', 'ETC/USD'
+    'UNI/USD', 'SUI/USD', 'FET/USD', 'CRV/USD',
+    'TON/USD', 'DOT/USD', 'ADA/USD', 'NEAR/USD',
+    'APT/USD', 'ATOM/USD', 'SOL/USD', 'XLM/USD',
+    'FIL/USD', 'ETC/USD', 'XRP/USD', 'TRX/USD'
 ]
 LATEST_TRADERNET_SPREADS = {}
 LATEST_SPREAD_ANOMALIES = deque(maxlen=20)
@@ -115,9 +116,9 @@ def tradernet_spread_scanner_loop():
                             "spread_pct": sp_pct,
                             "time": now_str
                         }
-                        # Spread Snapback Hunter Engine (SUI/USD, CRV/USD)
-                        target_threshold = 1.20 if ticker == 'SUI/USD' else 1.50
-                        if sp_pct <= target_threshold and ticker in ['SUI/USD', 'CRV/USD']:
+                        # Spread Snapback Hunter Engine (SUI, UNI, CRV, FET, DOT)
+                        target_threshold = 1.20 if ticker in ['SUI/USD', 'UNI/USD'] else 1.50
+                        if sp_pct <= target_threshold and ticker in ['SUI/USD', 'UNI/USD', 'CRV/USD', 'FET/USD', 'DOT/USD']:
                             anom = f"[{now_str}] 🔥 Сжатие спреда {ticker}: {sp_pct}% (Bid: {bid}, Ask: {ask})"
                             LATEST_SPREAD_ANOMALIES.appendleft(anom)
                             logger.info(anom)
