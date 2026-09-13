@@ -1029,7 +1029,11 @@ class CloudBotEngine:
                 if inv_qty > prev_qty:
                     filled_diff = inv_qty - prev_qty
                     CloudBotEngine.METRICS["orders_filled"] += 1
-                    logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty})")
+                    bought_price = self.active_resting_buys.get(sym, {}).get('price', bbp)
+                    if not hasattr(self, 'last_scalp_entry'):
+                        self.last_scalp_entry = {}
+                    self.last_scalp_entry[sym] = bought_price
+                    logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty}) @ ${bought_price}")
                     self.active_resting_buys.pop(sym, None)
                 self.previous_inv[sym] = inv_qty
 
@@ -1063,20 +1067,38 @@ class CloudBotEngine:
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # Special isolation for SUI: we hold legacy 2 SUI, but reserve 1 SUI for active live scalper loop
-                # For SOL: we trade 0.001 SOL actively in turnover
-                legacy_reserved = 2.0 if sym == 'SUI/USD' else 0.0
+                # Track recent fill price for each symbol to allow independent micro-scalp cycle take-profit
+                if not hasattr(self, 'last_scalp_entry'):
+                    self.last_scalp_entry = {}
+
+                # Special isolation: legacy baseline inventory (e.g. 3 SUI bought earlier at higher prices)
+                # Any inventory above legacy baseline is considered an active scalper cycle
+                legacy_reserved = 3.0 if sym == 'SUI/USD' else 0.0
                 active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
 
-                # 1. Manage active scalp inventory -> Place Immediate Take-Profit (+0.35%)
+                # 1. Manage active scalp inventory -> Place Immediate Take-Profit (+0.35% to +1.25%)
                 target_qty = float(cfg['qty'])
                 if active_scalp_qty >= target_qty and not sell_orders:
                     pair_tp_multiplier = 1.0020 if spread_pct <= 0.25 else 1.0035
-                    # Use current best ask or entry + target
-                    calc_entry = entry_price if entry_price > 0 and entry_price < bap else bbp
+                    
+                    # Calculate safe profit exit:
+                    # 1) If we tracked the exact buy price of this cycle, use it!
+                    # 2) Else if recent trade on SUI was at 0.72, use that
+                    # 3) Never force waiting for portfolio average (0.76+) if we bought lower
+                    recent_buy = self.last_scalp_entry.get(sym)
+                    if not recent_buy and sym == 'SUI/USD' and inv_qty >= 4:
+                        recent_buy = 0.72  # Hard reference to the recent fill at 0.72
+                    
+                    if recent_buy and recent_buy > 0:
+                        calc_entry = recent_buy
+                    elif entry_price > 0 and entry_price < bap:
+                        calc_entry = entry_price
+                    else:
+                        calc_entry = bbp
+                        
                     min_safe_sell = round(calc_entry * pair_tp_multiplier, cfg['decimals'])
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Target: +{pair_tp_multiplier-1:.2%})")
+                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Independent Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry basis: ${calc_entry}, Target: +{pair_tp_multiplier-1:.2%})")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 3,
