@@ -20,6 +20,7 @@ import asyncio
 import math
 from typing import Optional
 from collections import deque
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import tradernet
 from latency_telemetry_worker import LatencyBenchmarkEngine
 
@@ -1122,6 +1123,7 @@ class CloudBotEngine:
         self.cached_ai_advice = {}
         self.inventory_entry_time = {}
         self.active_resting_buys = {}  # {sym: {'id': order_id, 'placed_at': timestamp, 'is_impulse': bool, 'price': float}}
+        self.active_kase_buys = {}     # {sym: {'id': order_id, 'placed_at': timestamp, 'price': float, 'last_cancel_time': float}}
         self.previous_inv = {}         # {sym: float(qty)}
         self.pair_cooldowns = {}       # {sym: expire_timestamp} for broker reject protection
 
@@ -1626,7 +1628,66 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
 
-                # Case B: We have no active BUY order and no inventory -> place resting BUY at best bid
+                # Case B: Check resting BUY orders (Stale Order Pegger, Drift Check & TTL)
+                if buy_orders:
+                    for bo in buy_orders:
+                        bo_id = bo.get('id')
+                        bo_price = float(bo.get('p') or 0.0)
+                        
+                        # Register in active_kase_buys if not tracked
+                        if sym not in self.active_kase_buys or self.active_kase_buys[sym].get('id') != bo_id:
+                            self.active_kase_buys[sym] = {
+                                'id': bo_id,
+                                'placed_at': time.time(),
+                                'price': bo_price,
+                                'last_cancel_time': 0.0
+                            }
+                        
+                        track_info = self.active_kase_buys[sym]
+                        now_ts = time.time()
+                        order_age = now_ts - track_info.get('placed_at', now_ts)
+                        last_cancel = track_info.get('last_cancel_time', 0.0)
+                        can_cancel = (now_ts - last_cancel) >= 45.0  # 🛡️ Anti-spam: max 1 cancel/re-peg per 45s
+
+                        # Condition 1: Drift Check (Best Bid moved away >= 0.15% or >= 2 steps)
+                        drift_pct = ((bbp - bo_price) / bo_price) if bo_price > 0 else 0.0
+                        min_step = cfg.get('min_step', 0.01)
+                        is_price_drifted = (drift_pct >= 0.0015) or ((bbp - bo_price) >= (2 * min_step))
+
+                        # Condition 2: KASE TTL (5-7 minutes without fill -> cancel to release locked KZT)
+                        is_ttl_expired = order_age >= 360.0  # 6 minutes TTL
+
+                        # Condition 3: Spread Blowout/Collapse (spread compressed below min_profit or negative)
+                        spread_pct = (bap - bbp) / bbp if bbp > 0 else 0.0
+                        is_spread_invalid = spread_pct < cfg['min_spread_pct']
+
+                        if can_cancel and (is_price_drifted or is_ttl_expired or is_spread_invalid):
+                            reason = (
+                                f"Рыночный дрейф (Заявка: {bo_price:.2f} ₸, Best Bid: {bbp:.2f} ₸, отставание: +{drift_pct*100:.2f}%)"
+                                if is_price_drifted else (
+                                    f"Истек KASE TTL ({order_age/60:.1f} мин без исполнения)"
+                                    if is_ttl_expired else f"Схлопывание спреда ({spread_pct*100:.2f}% < {cfg['min_spread_pct']*100:.2f}%)"
+                                )
+                            )
+                            logger.info(f"[{sym}] 🔄 [KASE ORDER PEGGER] Отзываем неактуальную заявку #{bo_id}: {reason}")
+                            try:
+                                self.kase_client.cancel(bo_id)
+                                track_info['last_cancel_time'] = now_ts
+                                self.active_kase_buys.pop(sym, None)
+                                # Send Telegram notification
+                                send_telegram_msg(
+                                    f"🔄 **[KASE: РЕ-ПЕГГИНГ / ОТЗЫВ ЗАЯВКИ]**\n\n"
+                                    f"Инструмент: **{sym}**\n"
+                                    f"Причина: {reason}\n"
+                                    f"Старый ордер #{bo_id}: {cfg['qty']} шт @ {bo_price:.2f} ₸\n"
+                                    f"Текущий Best Bid: **{bbp:.2f} ₸** | Best Ask: **{bap:.2f} ₸**\n"
+                                    f"💡 *Капитал освобожден для актуальной перестановки.*",
+                                    TELEGRAM_CHAT_ID
+                                )
+                            except Exception as ce:
+                                logger.warning(f"[{sym}] Ошибка отзыва заявки KASE #{bo_id}: {ce}")
+
+                # Case C: We have no active BUY order and no inventory -> place resting BUY at best bid
                 elif curr_shares < cfg['qty'] and not buy_orders:
                     # 🛡️ 1. Защитный гейт по минимальному депозиту KZT
                     min_required_kzt = cfg.get('min_free_kzt', 0.0)
@@ -1642,7 +1703,7 @@ class CloudBotEngine:
                     spread_pct = (bap - bbp) / bbp
                     if spread_pct >= cfg['min_spread_pct'] and kzt_cash >= req_cost:
                         logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} KZT)")
-                        self.kase_client.authorized_request('putTradeOrder', {
+                        resp = self.kase_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 1,
                             'order_type_id': 2,
@@ -1650,6 +1711,13 @@ class CloudBotEngine:
                             'limit_price': round(bbp, 2),
                             'expiration_id': 1
                         })
+                        new_oid = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                        self.active_kase_buys[sym] = {
+                            'id': new_oid,
+                            'placed_at': time.time(),
+                            'price': round(bbp, 2),
+                            'last_cancel_time': 0.0
+                        }
                         kzt_cash -= req_cost
 
             # --- Realized Profit Tracking from Orders ---
