@@ -1055,9 +1055,9 @@ class CloudBotEngine:
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
-                # Special isolation: 3 SUI legacy holding, 0.001 SOL legacy holding
-                legacy_reserved = 3.0 if sym == 'SUI/USD' else (0.001 if sym == 'SOL/USD' and inv_qty >= 0.002 else 0.0)
-                active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
+                # Ladder inventory calculation: quantity not yet committed to active sell orders
+                total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
+                unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
                 target_qty = float(cfg['qty'])
 
                 # 🛡️ 2. Affordability Gate: verify required cash with $0.02 safety buffer
@@ -1073,7 +1073,7 @@ class CloudBotEngine:
                     'baseline': baseline,
                     'compression_pct': compression_pct,
                     'inv_qty': inv_qty,
-                    'active_scalp_qty': active_scalp_qty,
+                    'unsold_inventory': unsold_inventory,
                     'target_qty': target_qty,
                     'entry_price': entry_price,
                     'sym_orders': sym_orders,
@@ -1094,7 +1094,7 @@ class CloudBotEngine:
                 spread_pct = item['spread_pct']
                 baseline = item['baseline']
                 inv_qty = item['inv_qty']
-                active_scalp_qty = item['active_scalp_qty']
+                unsold_inventory = item['unsold_inventory']
                 target_qty = item['target_qty']
                 entry_price = item['entry_price']
                 sell_orders = item['sell_orders']
@@ -1141,29 +1141,65 @@ class CloudBotEngine:
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # 1. Manage active scalp inventory -> Dynamic Snapback Mean Reversion Take-Profit
-                if active_scalp_qty >= target_qty and not sell_orders:
+                # --- 1. Multi-Level Ladder Take-Profit Execution (Лесенка) ---
+                # Calculate total quantity currently committed to active resting SELL orders
+                total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
+                unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
+
+                if unsold_inventory >= target_qty:
+                    # Multi-level lot cost detection:
+                    # For SUI/USD with 4 coins: ladder levels correspond to purchases [0.72, 0.7555, 0.7797, 0.80]
+                    # The unsold lot gets assigned its specific purchase rung
                     recent_buy = getattr(self, 'last_scalp_entry', {}).get(sym)
-                    if not recent_buy and sym == 'SUI/USD' and inv_qty >= 4:
-                        recent_buy = 0.72
-                    calc_entry = recent_buy if (recent_buy and recent_buy > 0) else (entry_price if (entry_price > 0 and entry_price < bap) else bbp)
+                    if sym == 'SUI/USD':
+                        # Known SUI ladder purchase tiers
+                        sui_ladder_entries = [0.72, 0.7555, 0.7797, 0.80]
+                        # Determine how many sell orders already placed
+                        orders_count = len(sell_orders)
+                        if orders_count < len(sui_ladder_entries):
+                            calc_entry = sui_ladder_entries[orders_count]
+                        else:
+                            calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
+                    else:
+                        calc_entry = recent_buy if (recent_buy and recent_buy > 0) else (entry_price if (entry_price > 0 and entry_price < bap) else bbp)
 
                     # Dynamic Snapback Formula: TP = calc_entry * (1 + (Baseline - CurrentSpread)/200)
-                    snapback_premium = max(0.0030, (baseline - spread_pct) / 200.0)
+                    snapback_premium = max(0.0050, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
+                    
+                    # For the lowest/active lot (e.g. 0.72), allow selling at current best ask if it satisfies min_safe_sell
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Dynamic Snapback SELL: {cfg['qty']} @ ${target_tp} (Entry: ${calc_entry}, Target: +{snapback_premium*100:.2f}%)")
-                    self.crypto_client.authorized_request('putTradeOrder', {
-                        'instr_name': sym,
-                        'action_id': 3,
-                        'order_type_id': 2,
-                        'qty': cfg['qty'],
-                        'limit_price': target_tp,
-                        'expiration_id': 1
-                    })
+                    logger.info(f"[{sym}] 🪜 Лесенка (Ladder Step): Выставляем SELL {target_qty} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
+                    
+                    try:
+                        resp = self.crypto_client.authorized_request('putTradeOrder', {
+                            'instr_name': sym,
+                            'action_id': 3,
+                            'order_type_id': 2,
+                            'qty': cfg['qty'],
+                            'limit_price': target_tp,
+                            'expiration_id': 1
+                        })
+                        CloudBotEngine.METRICS["orders_placed"] += 1
+                        order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                        try:
+                            send_telegram_msg(
+                                f"🪜 **[ЛЕСЕНКА: ВЫСТАВЛЕН ТЕЙК-ПРОФИТ]**\n\n"
+                                f"Монета: **{sym}**\n"
+                                f"Операция: **Лимитная продажа (SELL)**\n"
+                                f"Объем: **{cfg['qty']}**\n"
+                                f"Цена выхода: **${target_tp}**\n"
+                                f"Себестоимость лота: **${calc_entry}** (+{((target_tp/calc_entry)-1)*100:.2f}%)\n"
+                                f"№ приказа: `{order_id}`",
+                                TELEGRAM_CHAT_ID
+                            )
+                        except Exception:
+                            pass
+                    except Exception as err:
+                        logger.error(f"[{sym}] Ошибка выставления лесенки SELL: {err}")
 
-                # 2. Manage flat position & new BUY -> Adaptive Snapback Entry with Adverse Selection Guard
-                elif active_scalp_qty < target_qty and not buy_orders and is_affordable:
+                # --- 2. Flat / Liquid Inventory & Maker BUY -> Adaptive Snapback Entry ---
+                elif unsold_inventory < target_qty and not buy_orders and is_affordable:
                     # Adaptive trigger: spread compressed by >= 25% or spread <= 1.55%
                     is_spread_compressed = (spread_pct <= (baseline * 0.75)) or (spread_pct <= 1.55)
 
