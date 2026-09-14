@@ -981,7 +981,6 @@ class CloudBotEngine:
                 'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 5},
-                'CRV/USD': {'binance': 'CRVUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
                 'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_profit_pct': 0.0075, 'decimals': 5},
