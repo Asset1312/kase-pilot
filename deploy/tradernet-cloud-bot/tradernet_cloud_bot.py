@@ -18,13 +18,15 @@ import threading
 import urllib.request
 import asyncio
 from collections import deque
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
 import tradernet
 from latency_telemetry_worker import LatencyBenchmarkEngine
 
-# Initialize high-frequency Bybit vs Tradernet Delta-t Latency Benchmark
-LATENCY_ENGINE = LatencyBenchmarkEngine(symbol_bybit="SUIUSDT", threshold_pct=0.25)
+# Bybit Kazakhstan Regional Configuration
+BYBIT_DOMAIN = os.environ.get("BYBIT_API_DOMAIN", "api.bybit.kz")
+BYBIT_WS_URL = os.environ.get("BYBIT_WS_URL", "wss://stream.bybit.kz/v5/public/spot")
+
+# Initialize high-frequency Bybit.kz vs Tradernet Delta-t Latency Benchmark
+LATENCY_ENGINE = LatencyBenchmarkEngine(symbol_bybit="SUIUSDT", threshold_pct=0.25, ws_url=BYBIT_WS_URL)
 
 def get_process_memory_mb() -> float:
     """Returns current process RSS memory in MB."""

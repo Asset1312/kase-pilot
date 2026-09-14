@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import time
 import logging
@@ -8,9 +8,10 @@ import websockets
 logger = logging.getLogger("LatencyTelemetry")
 
 class LatencyBenchmarkEngine:
-    def __init__(self, symbol_bybit="SUIUSDT", threshold_pct=0.25):
+    def __init__(self, symbol_bybit="SUIUSDT", threshold_pct=0.25, ws_url="wss://stream.bybit.kz/v5/public/spot"):
         self.symbol_bybit = symbol_bybit
         self.threshold_pct = threshold_pct
+        self.ws_url = ws_url
         
         # Состояние мирового рынка
         self.last_bybit_mid = None
@@ -58,7 +59,7 @@ class LatencyBenchmarkEngine:
 
     async def run_bybit_stream(self, get_tradernet_mid_func):
         """Подключение к публичному WebSocket Bybit v5."""
-        url = "wss://stream.bybit.com/v5/public/spot"
+        url = self.ws_url
         subscribe_payload = {
             "op": "subscribe",
             "args": [f"tickers.{self.symbol_bybit}"]
@@ -110,6 +111,8 @@ class LatencyBenchmarkEngine:
             return {
                 "samples_count": 0,
                 "status": "COLLECTING_DATA",
+                "endpoint": self.ws_url,
+                "latest_bybit_price": self.last_bybit_mid,
                 "median_ms": None,
                 "p90_ms": None,
                 "p95_ms": None,
@@ -126,6 +129,8 @@ class LatencyBenchmarkEngine:
         return {
             "samples_count": n,
             "status": "ACTIVE",
+            "endpoint": self.ws_url,
+            "latest_bybit_price": self.last_bybit_mid,
             "median_ms": round(p50, 1),
             "p90_ms": round(p90, 1),
             "p95_ms": round(p95, 1),
