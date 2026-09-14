@@ -21,6 +21,10 @@ from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tradernet
+from latency_telemetry_worker import LatencyBenchmarkEngine
+
+# Initialize high-frequency Bybit vs Tradernet Delta-t Latency Benchmark
+LATENCY_ENGINE = LatencyBenchmarkEngine(symbol_bybit="SUIUSDT", threshold_pct=0.25)
 
 def get_process_memory_mb() -> float:
     """Returns current process RSS memory in MB."""
@@ -107,6 +111,8 @@ def tradernet_spread_scanner_loop():
                     bid = float(d.get('bbp') or 0)
                     ask = float(d.get('bap') or 0)
                     if bid > 0 and ask > 0 and ask >= bid:
+                        if ticker == 'SUI/USD':
+                            LATENCY_ENGINE.register_tradernet_quote(bid, ask)
                         sp_abs = round(ask - bid, 5)
                         sp_pct = round((sp_abs / ask) * 100.0, 3)
                         LATEST_TRADERNET_SPREADS[ticker] = {
@@ -269,6 +275,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 },
                 "signals": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
                 "benchmarks": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
+                "mm_latency_benchmark": LATENCY_ENGINE.get_latency_report(),
                 "timestamp": datetime.datetime.now().isoformat()
             }
             self.wfile.write(json.dumps(status, indent=2, ensure_ascii=False).encode('utf-8'))
@@ -1038,6 +1045,9 @@ class CloudBotEngine:
                 if not bbp or not bap or bap <= bbp:
                     continue
 
+                if sym == 'SUI/USD':
+                    LATENCY_ENGINE.register_tradernet_quote(bbp, bap)
+
                 # 🛡️ 1. Stale Quote Detector: discard quotes not updated in last 12s
                 q_utime = float(q.get('utime') or 0)
                 if q_utime > 0 and (now_ts - q_utime) > 12.0:
@@ -1597,7 +1607,8 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                                 f"   🚀 Импульсных входов: {m.get('impulse_entries', 0)}\n"
                                 f"2️⃣ **Dump Protection:** {m.get('dump_blocks', 0)} заблокировано\n"
                                 f"3️⃣ **RAM:** {mem} MB | Аптайм: {upt} ч\n"
-                                f"4️⃣ **DeepSeek Latency:** {m.get('deepseek_last_latency_sec', 0)}s"
+                                f"4️⃣ **DeepSeek Latency:** {m.get('deepseek_last_latency_sec', 0)}s\n"
+                                f"5️⃣ **Bybit MM Δt Radar:** {LATENCY_ENGINE.get_latency_report().get('samples_count', 0)} импульсов (Медиана: {LATENCY_ENGINE.get_latency_report().get('median_ms', 'сбор')} мс, Окно ликвидности: {LATENCY_ENGINE.get_latency_report().get('tradable_windows_pct', 0)}%)"
                             )
                             send_telegram_msg(reply, chat_id)
                         except Exception as e:
@@ -1739,6 +1750,22 @@ def main():
     # Start Tradernet 24/7 Spread & Anomaly Radar
     t_spread = threading.Thread(target=tradernet_spread_scanner_loop, daemon=True, name="SpreadRadarScanner")
     t_spread.start()
+
+    # Start High-Frequency Bybit WebSocket Latency Benchmark Worker
+    def _run_bybit_latency_ws():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        def get_current_tradernet_mid():
+            sp = LATEST_TRADERNET_SPREADS.get('SUI/USD', {})
+            bid = float(sp.get('bid') or 0.0)
+            ask = float(sp.get('ask') or 0.0)
+            return (bid + ask) / 2.0 if (bid > 0 and ask > 0) else 0.0
+
+        loop.run_until_complete(LATENCY_ENGINE.run_bybit_stream(get_current_tradernet_mid))
+
+    t_bybit = threading.Thread(target=_run_bybit_latency_ws, daemon=True, name="BybitLatencyWS")
+    t_bybit.start()
 
     engine = CloudBotEngine()
 
