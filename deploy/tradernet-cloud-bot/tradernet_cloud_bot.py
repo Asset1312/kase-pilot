@@ -157,7 +157,14 @@ TRADERNET_RADAR_TICKERS = [
     'APT/USD', 'ATOM/USD', 'SOL/USD', 'XLM/USD',
     'FIL/USD', 'ETC/USD', 'XRP/USD', 'TRX/USD'
 ]
+
+# KASE Stock & Bond Spread Radar
+KASE_RADAR_TICKERS = [
+    'AIRA.KZ', 'KZTO.KZ', 'BCCIRB.KZ', 'KMGD.KZ',
+    'HSBK.KZ', 'CCBN.KZ', 'KEGC.KZ', 'KZTK.KZ', 'KSPI.KZ'
+]
 LATEST_TRADERNET_SPREADS = {}
+LATEST_KASE_SPREADS = {}
 LATEST_SPREAD_ANOMALIES = deque(maxlen=20)
 
 # Spread Snapback Hunter State & Analytics
@@ -171,11 +178,37 @@ HUNTER_STATS = {
 ACTIVE_ANOMALY_TRADES = {}
 
 def tradernet_spread_scanner_loop():
-    logger.info("Starting Tradernet 24/7 Spread & Anomaly Radar loop...")
+    logger.info("Starting Tradernet 24/7 Spread & Anomaly Radar loop (Crypto + KASE)...")
     sui_order_tracked = True
     while True:
         try:
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
+
+            # 1. KASE Equities & Bonds Spread Radar Scan
+            for k_ticker in KASE_RADAR_TICKERS:
+                try:
+                    url = f"https://tradernet.com/api/getSecurityInfo?ticker={k_ticker}"
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        kd = json.loads(resp.read().decode('utf-8'))
+                    k_bid = float(kd.get('bbp') or 0)
+                    k_ask = float(kd.get('bap') or 0)
+                    k_last = float(kd.get('ltp') or 0)
+                    if k_bid > 0 and k_ask > 0 and k_ask >= k_bid:
+                        k_sp_abs = round(k_ask - k_bid, 4)
+                        k_sp_pct = round((k_sp_abs / k_bid) * 100.0, 3)
+                        LATEST_KASE_SPREADS[k_ticker] = {
+                            "bid": k_bid,
+                            "ask": k_ask,
+                            "last": k_last,
+                            "spread_abs": k_sp_abs,
+                            "spread_pct": k_sp_pct,
+                            "time": now_str
+                        }
+                except Exception:
+                    pass
+
+            # 2. Crypto OTC Spread Radar Scan
             for ticker in TRADERNET_RADAR_TICKERS:
                 try:
                     url = f"https://tradernet.com/api/getSecurityInfo?ticker={ticker}"
@@ -350,6 +383,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "signals": getattr(CloudBotEngine, 'LATEST_ADVICE', {}),
                 "benchmarks": getattr(CloudBotEngine, 'LATEST_BINANCE', {}),
                 "mm_latency_benchmark": LATENCY_ENGINE.get_latency_report(),
+                "kase_spreads": LATEST_KASE_SPREADS,
+                "crypto_spreads": LATEST_TRADERNET_SPREADS,
                 "timestamp": datetime.datetime.now().isoformat()
             }
             self.wfile.write(json.dumps(status, indent=2, ensure_ascii=False).encode('utf-8'))
@@ -410,6 +445,22 @@ class HealthHandler(BaseHTTPRequestHandler):
             </tr>"""
         if not spread_rows_html:
             spread_rows_html = '<tr><td colspan="6" style="padding: 10px; text-align: center; color: #6b7280;">Инициализация радара спредов...</td></tr>'
+
+        kase_rows_html = ""
+        sorted_kase = sorted(LATEST_KASE_SPREADS.items(), key=lambda x: x[1].get('spread_pct', 999), reverse=True)
+        for kt, ksp in sorted_kase:
+            k_col = "#10b981" if ksp['spread_pct'] >= 0.35 else ("#38bdf8" if ksp['spread_pct'] >= 0.20 else "#9ca3af")
+            k_status = "🔥 ПРИБЫЛЬНЫЙ" if ksp['spread_pct'] >= 0.35 else ("НОРМА" if ksp['spread_pct'] >= 0.20 else "ПЛОСКИЙ")
+            kase_rows_html += f"""<tr>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b; font-weight: 600; color: #facc15;">{kt}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b;">{ksp['bid']} ₸</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b;">{ksp['ask']} ₸</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b; color: #9ca3af;">{ksp['spread_abs']} ₸</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b; font-weight: 700; color: {k_col};">{ksp['spread_pct']}%</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #1e293b;"><span style="background: rgba(250, 204, 21, 0.15); color: {k_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px;">{k_status}</span></td>
+            </tr>"""
+        if not kase_rows_html:
+            kase_rows_html = '<tr><td colspan="6" style="padding: 10px; text-align: center; color: #6b7280;">Инициализация радара KASE...</td></tr>'
 
         hunter_spotted = HUNTER_STATS.get("anomalies_spotted", 0)
         hunter_cycles = HUNTER_STATS.get("completed_cycles", 0)
@@ -585,8 +636,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         <!-- Tradernet 24/7 Spread & Anomaly Radar Card -->
         <div class="card" style="border-color: #06b6d4; background: linear-gradient(180deg, #083344 0%, #0f172a 100%); margin-bottom: 20px;">
             <div class="card-header">
-                <div class="card-title" style="color: #22d3ee;">📡 Радар спредов и аномалий стакана (Tradernet 24/7)</div>
-                <span class="badge" style="background: #0891b2;">10 ПАР ОНЛАЙН</span>
+                <div class="card-title" style="color: #22d3ee;">📡 Радар спредов и аномалий стакана (Crypto OTC 24/7)</div>
+                <span class="badge" style="background: #0891b2;">14 ПАР ОНЛАЙН</span>
             </div>
             <div style="background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px; overflow-x: auto; margin-bottom: 12px;">
                 <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
@@ -610,6 +661,31 @@ class HealthHandler(BaseHTTPRequestHandler):
                 <div style="margin-top: 6px; font-family: monospace; font-size: 11px; color: #cbd5e1; max-height: 80px; overflow-y: auto;">
                     {anomalies_html}
                 </div>
+            </div>
+        </div>
+
+        <!-- KASE Spread & Liquidity Radar Card -->
+        <div class="card" style="border-color: #eab308; background: linear-gradient(180deg, #422006 0%, #0f172a 100%); margin-bottom: 20px;">
+            <div class="card-header">
+                <div class="card-title" style="color: #fde047;">🇰🇿 Радар спредов KASE (Акции и Облигации Казахстана)</div>
+                <span class="badge" style="background: #ca8a04;">9 АКТИВОВ KASE</span>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px; overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+                    <thead>
+                        <tr style="color: #9ca3af; font-size: 11px; text-transform: uppercase;">
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Тикер</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Покупка (Bid)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Продажа (Ask)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Спред (₸)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Спред (%)</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #854d0e;">Мейкер-статус</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {kase_rows_html}
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -1829,7 +1905,7 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(f"Ошибка снайпера: {e}", chat_id)
                     elif text.lower() in ['спред', 'спреды', 'радар', 'аномалии', '/spread']:
                         try:
-                            lines = ["📡 **Радар спредов Tradernet 24/7:**\n"]
+                            lines = ["📡 **Радар спредов Crypto OTC 24/7:**\n"]
                             sorted_sp = sorted(LATEST_TRADERNET_SPREADS.items(), key=lambda x: x[1].get('spread_pct', 999))
                             for t, d in sorted_sp:
                                 lines.append(f"• **{t}**: Bid ${d['bid']} | Ask ${d['ask']} | Спред **{d['spread_pct']}%**")
@@ -1840,6 +1916,16 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg("\n".join(lines), chat_id)
                         except Exception as e:
                             send_telegram_msg(f"Ошибка радара спредов: {e}", chat_id)
+                    elif text.lower() in ['касе', '/kase', 'радар касе', 'спреды касе']:
+                        try:
+                            lines = ["🇰🇿 **Радар спредов KASE (Акции и Облигации):**\n"]
+                            sorted_k = sorted(LATEST_KASE_SPREADS.items(), key=lambda x: x[1].get('spread_pct', 999), reverse=True)
+                            for kt, kd in sorted_k:
+                                k_status = "🔥 ПРИБЫЛЬНЫЙ" if kd['spread_pct'] >= 0.35 else ("НОРМА" if kd['spread_pct'] >= 0.20 else "ПЛОСКИЙ")
+                                lines.append(f"• **{kt}**: Bid {kd['bid']} ₸ | Ask {kd['ask']} ₸ | Спред **{kd['spread_pct']}%** ({k_status})")
+                            send_telegram_msg("\n".join(lines), chat_id)
+                        except Exception as e:
+                            send_telegram_msg(f"Ошибка радара KASE: {e}", chat_id)
                     elif text.lower() in ['доход', '/profit', 'профит', 'прибыль']:
                         try:
                             pnl = CloudBotEngine.REALIZED_PNL_STATS
