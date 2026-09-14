@@ -116,34 +116,39 @@ def tradernet_spread_scanner_loop():
                             "spread_pct": sp_pct,
                             "time": now_str
                         }
-                        # Spread Snapback Hunter Engine (SUI, UNI, CRV, FET, DOT)
-                        target_threshold = 1.20 if ticker in ['SUI/USD', 'UNI/USD'] else 1.50
-                        if sp_pct <= target_threshold and ticker in ['SUI/USD', 'UNI/USD', 'CRV/USD', 'FET/USD', 'DOT/USD']:
-                            anom = f"[{now_str}] 🔥 Сжатие спреда {ticker}: {sp_pct}% (Bid: {bid}, Ask: {ask})"
+                        # Spread Snapback Hunter Engine with Adaptive Threshold & Formulaic TP
+                        baseline = 2.05 if ticker not in ['XRP/USD', 'TRX/USD'] else 4.0
+                        # Adaptive compression threshold: >= 25% tighter than baseline (e.g. <= 1.55% for 2.05% baseline)
+                        adaptive_threshold = round(baseline * 0.75, 2)
+                        if sp_pct <= adaptive_threshold and ticker not in ['TRX/USD', 'XRP/USD']:
+                            anom = f"[{now_str}] 🔥 Сжатие спреда {ticker}: {sp_pct}% (норма {baseline}%, сжатие {round((1-sp_pct/baseline)*100)}%)"
                             LATEST_SPREAD_ANOMALIES.appendleft(anom)
                             logger.info(anom)
                             
-                            # Trigger Entry into Snapback Cycle
+                            # Trigger Entry into Snapback Cycle with Mean Reversion formula
                             if ticker not in ACTIVE_ANOMALY_TRADES:
-                                tp_target = round(ask * 1.0125, 5)
+                                # TP = Entry * (1 + (Baseline - CurrentSpread)/200)
+                                snapback_premium = max(0.0035, (baseline - sp_pct) / 200.0)
+                                tp_target = round(ask * (1.0 + snapback_premium), 5)
                                 ACTIVE_ANOMALY_TRADES[ticker] = {
                                     "entry_price": ask,
                                     "entry_time": time.time(),
                                     "entry_time_str": now_str,
                                     "tp_target": tp_target,
-                                    "entry_spread_pct": sp_pct
+                                    "entry_spread_pct": sp_pct,
+                                    "baseline_spread": baseline
                                 }
                                 HUNTER_STATS["anomalies_spotted"] += 1
-                                hunter_msg = f"[{now_str}] 🎯 СНАЙПЕР: Вход по {ticker} @ {ask}$ (сжатие {sp_pct}%). Тейк-цель: {tp_target}$ (+1.25%)"
+                                hunter_msg = f"[{now_str}] 🎯 СНАЙПЕР: Вход по {ticker} @ {ask}$ (сжатие {sp_pct}%). Snapback TP: {tp_target}$ (+{snapback_premium*100:.2f}%)"
                                 LATEST_SPREAD_ANOMALIES.appendleft(hunter_msg)
                                 logger.info(hunter_msg)
                                 try:
                                     send_telegram_msg(
-                                        f"🎯 **[Снайпер аномалий] ВХОД В ЦИКЛ**\n\n"
+                                        f"🎯 **[Снайпер аномалий] ВХОД В СЖАТИЕ СПРЕДА**\n\n"
                                         f"Монета: **{ticker}**\n"
-                                        f"Цена входа: **{ask} $**\n"
-                                        f"Сжатие спреда: **{sp_pct}%** (норма ~2.0%)\n"
-                                        f"Целевой тейк-профит: **{tp_target} $** (+1.25% на восстановлении стакана)",
+                                        f"Цена: **{ask} $**\n"
+                                        f"Сжатие: **{sp_pct}%** (база {baseline}%)\n"
+                                        f"Целевой Snapback TP: **{tp_target} $** (+{snapback_premium*100:.2f}% на нормализации)",
                                         TELEGRAM_CHAT_ID
                                     )
                                 except Exception:
@@ -1005,16 +1010,27 @@ class CloudBotEngine:
             allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
             can_enter_new = (not is_directive_stale) and (risk_mode != "HALT") and (allowed_sides == "LONG_ONLY")
 
+            # Candidate Collection & Ranking (Spread Compression & Affordability)
+            candidates = []
+            now_ts = time.time()
+
             for sym, cfg in crypto_pairs.items():
                 q = q_dict.get(sym)
                 if not q:
                     continue
                 bbp = float(q.get('bbp') or 0)
                 bap = float(q.get('bap') or 0)
-                if not bbp or not bap:
+                if not bbp or not bap or bap <= bbp:
+                    continue
+
+                # 🛡️ 1. Stale Quote Detector: discard quotes not updated in last 12s
+                q_utime = float(q.get('utime') or 0)
+                if q_utime > 0 and (now_ts - q_utime) > 12.0:
                     continue
 
                 spread_pct = ((bap - bbp) / bbp) * 100.0
+                baseline = 2.05 if sym not in ['TRX/USD', 'XRP/USD'] else 4.0
+                compression_pct = round(((baseline - spread_pct) / baseline) * 100.0, 1)
 
                 pos_info = positions.get(sym, {})
                 inv_qty = float(pos_info.get('q') or 0.0)
@@ -1023,6 +1039,53 @@ class CloudBotEngine:
                 sym_orders = [o for o in active_orders if o.get('instr') == sym]
                 sell_orders = [o for o in sym_orders if o.get('oper') == 3]
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
+
+                # Special isolation: 3 SUI legacy holding, 0.001 SOL legacy holding
+                legacy_reserved = 3.0 if sym == 'SUI/USD' else (0.001 if sym == 'SOL/USD' and inv_qty >= 0.002 else 0.0)
+                active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
+                target_qty = float(cfg['qty'])
+
+                # 🛡️ 2. Affordability Gate: verify required cash with $0.02 safety buffer
+                est_cost = target_qty * bbp
+                is_affordable = (est_cost <= (usd_cash - 0.02))
+
+                candidates.append({
+                    'sym': sym,
+                    'cfg': cfg,
+                    'bbp': bbp,
+                    'bap': bap,
+                    'spread_pct': spread_pct,
+                    'baseline': baseline,
+                    'compression_pct': compression_pct,
+                    'inv_qty': inv_qty,
+                    'active_scalp_qty': active_scalp_qty,
+                    'target_qty': target_qty,
+                    'entry_price': entry_price,
+                    'sym_orders': sym_orders,
+                    'sell_orders': sell_orders,
+                    'buy_orders': buy_orders,
+                    'est_cost': est_cost,
+                    'is_affordable': is_affordable
+                })
+
+            # Sort candidates by highest spread compression first (best opportunities first)
+            candidates.sort(key=lambda c: c['compression_pct'], reverse=True)
+
+            for item in candidates:
+                sym = item['sym']
+                cfg = item['cfg']
+                bbp = item['bbp']
+                bap = item['bap']
+                spread_pct = item['spread_pct']
+                baseline = item['baseline']
+                inv_qty = item['inv_qty']
+                active_scalp_qty = item['active_scalp_qty']
+                target_qty = item['target_qty']
+                entry_price = item['entry_price']
+                sell_orders = item['sell_orders']
+                buy_orders = item['buy_orders']
+                est_cost = item['est_cost']
+                is_affordable = item['is_affordable']
 
                 # --- TELEMETRY: Check Fill of previous BUY orders ---
                 prev_qty = self.previous_inv.get(sym, inv_qty)
@@ -1041,11 +1104,7 @@ class CloudBotEngine:
                 if sym in self.active_resting_buys and buy_orders:
                     track_info = self.active_resting_buys[sym]
                     age = time.time() - track_info.get('placed_at', time.time())
-                    # 🛡️ Instant Cancellation Gates:
-                    # 1. Spread suddenly blew out (> 1.75%) -> opportunity disappeared
-                    # 2. Best Bid moved away from our placed order price
-                    # 3. Order is older than 15 seconds (TTL expiration)
-                    is_spread_blown_out = spread_pct > 1.75
+                    is_spread_blown_out = spread_pct > (baseline * 0.90)
                     price_moved_away = abs(bbp - track_info.get('price', bbp)) > 0.0001
                     if is_spread_blown_out or price_moved_away or age >= 15.0:
                         order_id = track_info.get('id')
@@ -1060,45 +1119,25 @@ class CloudBotEngine:
                 elif not buy_orders and sym in self.active_resting_buys:
                     self.active_resting_buys.pop(sym, None)
 
-                # --- FAIL-SAFE 2: Time-Stop Tracking (Деградация торговой идеи) ---
-                if inv_qty >= float(cfg['qty']):
+                # --- FAIL-SAFE 2: Time-Stop Tracking ---
+                if inv_qty >= target_qty:
                     if sym not in self.inventory_entry_time:
                         self.inventory_entry_time[sym] = time.time()
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # Track recent fill price for each symbol to allow independent micro-scalp cycle take-profit
-                if not hasattr(self, 'last_scalp_entry'):
-                    self.last_scalp_entry = {}
-
-                # Special isolation: legacy baseline inventory (e.g. 3 SUI bought earlier at higher prices)
-                # Any inventory above legacy baseline is considered an active scalper cycle
-                legacy_reserved = 3.0 if sym == 'SUI/USD' else 0.0
-                active_scalp_qty = max(0.0, inv_qty - legacy_reserved)
-
-                # 1. Manage active scalp inventory -> Place Immediate Take-Profit (+0.35% to +1.25%)
-                target_qty = float(cfg['qty'])
+                # 1. Manage active scalp inventory -> Dynamic Snapback Mean Reversion Take-Profit
                 if active_scalp_qty >= target_qty and not sell_orders:
-                    pair_tp_multiplier = 1.0020 if spread_pct <= 0.25 else 1.0035
-                    
-                    # Calculate safe profit exit:
-                    # 1) If we tracked the exact buy price of this cycle, use it!
-                    # 2) Else if recent trade on SUI was at 0.72, use that
-                    # 3) Never force waiting for portfolio average (0.76+) if we bought lower
-                    recent_buy = self.last_scalp_entry.get(sym)
+                    recent_buy = getattr(self, 'last_scalp_entry', {}).get(sym)
                     if not recent_buy and sym == 'SUI/USD' and inv_qty >= 4:
-                        recent_buy = 0.72  # Hard reference to the recent fill at 0.72
-                    
-                    if recent_buy and recent_buy > 0:
-                        calc_entry = recent_buy
-                    elif entry_price > 0 and entry_price < bap:
-                        calc_entry = entry_price
-                    else:
-                        calc_entry = bbp
-                        
-                    min_safe_sell = round(calc_entry * pair_tp_multiplier, cfg['decimals'])
+                        recent_buy = 0.72
+                    calc_entry = recent_buy if (recent_buy and recent_buy > 0) else (entry_price if (entry_price > 0 and entry_price < bap) else bbp)
+
+                    # Dynamic Snapback Formula: TP = calc_entry * (1 + (Baseline - CurrentSpread)/200)
+                    snapback_premium = max(0.0030, (baseline - spread_pct) / 200.0)
+                    min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Independent Take-Profit SELL: {cfg['qty']} @ ${target_tp} (Entry basis: ${calc_entry}, Target: +{pair_tp_multiplier-1:.2%})")
+                    logger.info(f"[{sym}] 🚀 Scalper Cycle: Submitting Dynamic Snapback SELL: {cfg['qty']} @ ${target_tp} (Entry: ${calc_entry}, Target: +{snapback_premium*100:.2f}%)")
                     self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 3,
@@ -1108,66 +1147,87 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
 
-                # 2. Manage flat position & new BUY -> High-Speed Spread Snapback Engine
-                elif (active_scalp_qty < target_qty or spread_pct <= 1.25) and not buy_orders:
-                    # High-Speed Priority: If spread is compressed (<= 1.25% or <= 1.6% for CRV),
-                    # we trade on pure order-book math WITHOUT waiting for external LLM!
-                    is_spread_compressed = spread_pct <= (1.25 if sym != 'CRV/USD' else 1.60)
-                    
+                # 2. Manage flat position & new BUY -> Adaptive Snapback Entry with Adverse Selection Guard
+                elif active_scalp_qty < target_qty and not buy_orders and is_affordable:
+                    # Adaptive trigger: spread compressed by >= 25% or spread <= 1.55%
+                    is_spread_compressed = (spread_pct <= (baseline * 0.75)) or (spread_pct <= 1.55)
+
                     if not is_spread_compressed:
-                        # For normal wide spreads, apply standard macro check
                         if not can_enter_new or spread_pct > 2.5:
                             continue
 
-                    # Lead-Lag Radar check (non-blocking)
+                    # 🛡️ 3. Adverse Selection Guard: Lead-Lag Radar on Binance
                     impulse = LEAD_LAG_RADAR.get_market_impulse(cfg.get('binance', ''))
                     is_impulse_pump = False
                     if impulse.get('is_fresh'):
-                        if impulse.get('is_dump') and not is_spread_compressed:
+                        # Veto on Toxic Flow: Never buy if Binance is dumping or CVD negative
+                        if impulse.get('is_dump') or impulse.get('impulse_pct', 0.0) <= -0.15:
                             CloudBotEngine.METRICS["dump_blocks"] += 1
-                            logger.info(f"[{sym}] 🛑 Entry skipped: Binance dump detected")
+                            logger.info(f"[{sym}] 🛑 Entry skipped: Adverse Selection Guard (Binance impulse: {impulse.get('impulse_pct', 0.0):.2f}%, CVD: {impulse.get('cvd', 0.0):.2f})")
                             continue
                         if impulse.get('is_pump'):
                             is_impulse_pump = True
                             CloudBotEngine.METRICS["impulse_entries"] += 1
 
-                    est_cost = target_qty * bbp
-                    if usd_cash >= est_cost:
-                        buy_price = round(bbp, cfg['decimals'])
-                        logger.info(f"[{sym}] Approved Post-Only Maker BUY: {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
-                        resp = self.crypto_client.authorized_request('putTradeOrder', {
-                            'instr_name': sym,
-                            'action_id': 1,
-                            'order_type_id': 2,
-                            'qty': cfg['qty'],
-                            'limit_price': buy_price,
-                            'expiration_id': 1
-                        })
-                        CloudBotEngine.METRICS["orders_placed"] += 1
-                        usd_cash -= est_cost  # Reserve cash for next pair in loop
-                        order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                        self.active_resting_buys[sym] = {
-                            'id': order_id,
-                            'placed_at': time.time(),
-                            'is_impulse': is_impulse_pump,
-                            'price': buy_price
-                        }
-                        try:
-                            send_telegram_msg(
-                                f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
-                                f"Монета: **{sym}**\n"
-                                f"Операция: **Лимитная покупка (BUY)**\n"
-                                f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
-                                f"Цена: **${buy_price}**\n"
-                                f"Спред при входе: **{spread_pct:.2f}%**\n"
-                                f"№ приказа: `{order_id}`",
-                                TELEGRAM_CHAT_ID
-                            )
-                        except Exception:
-                            pass
+                    buy_price = round(bbp, cfg['decimals'])
+                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
+                    resp = self.crypto_client.authorized_request('putTradeOrder', {
+                        'instr_name': sym,
+                        'action_id': 1,
+                        'order_type_id': 2,
+                        'qty': cfg['qty'],
+                        'limit_price': buy_price,
+                        'expiration_id': 1
+                    })
+                    CloudBotEngine.METRICS["orders_placed"] += 1
+                    usd_cash -= est_cost  # Reserve cash for next pair in loop
+                    order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                    self.active_resting_buys[sym] = {
+                        'id': order_id,
+                        'placed_at': time.time(),
+                        'is_impulse': is_impulse_pump,
+                        'price': buy_price
+                    }
+                    try:
+                        send_telegram_msg(
+                            f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
+                            f"Монета: **{sym}**\n"
+                            f"Операция: **Лимитная покупка (BUY)**\n"
+                            f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
+                            f"Цена: **${buy_price}**\n"
+                            f"Сжатие спреда: **{spread_pct:.2f}%** (норма {baseline}%)\n"
+                            f"№ приказа: `{order_id}`",
+                            TELEGRAM_CHAT_ID
+                        )
+                    except Exception:
+                        pass
 
-            # --- Realized Profit Tracking from Crypto Orders ---
+            # --- Realized Profit Tracking (with Tradernet API get_trades_history sync) ---
             try:
+                now_sync = time.time()
+                if now_sync - getattr(self, 'last_trades_history_sync', 0) > 300:
+                    try:
+                        dt_start = datetime.date.today() - datetime.timedelta(days=7)
+                        hist_res = self.crypto_client.get_trades_history(start=dt_start, limit=50)
+                        hist_trades = hist_res.get('result', {}).get('trades', [])
+                        if hist_trades:
+                            h_today = 0.0
+                            h_total = 0.0
+                            today_s = datetime.date.today().isoformat()
+                            for ht in hist_trades:
+                                p_val = float(ht.get('profit') or 0.0)
+                                if p_val > 0:
+                                    h_total += p_val
+                                    if str(ht.get('date', '')).startswith(today_s):
+                                        h_today += p_val
+                            if h_total > 0:
+                                CloudBotEngine.REALIZED_CRYPTO_STATS["total_profit_usd"] = round(h_total, 4)
+                                CloudBotEngine.REALIZED_CRYPTO_STATS["today_profit_usd"] = round(h_today, 4)
+                                CloudBotEngine.REALIZED_CRYPTO_STATS["completed_cycles"] = len([t for t in hist_trades if float(t.get('profit') or 0) > 0])
+                                self.last_trades_history_sync = now_sync
+                    except Exception as h_err:
+                        logger.warning(f"Tradernet get_trades_history sync notice: {h_err}")
+
                 realized_crypto = []
                 now_str_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 today_usd = 0.0
@@ -1190,13 +1250,14 @@ class CloudBotEngine:
                                 'order_id': o.get('id')
                             })
                 realized_crypto.sort(key=lambda x: str(x['date']), reverse=True)
-                CloudBotEngine.REALIZED_CRYPTO_STATS = {
-                    "today_profit_usd": round(today_usd, 4),
-                    "total_profit_usd": round(total_usd, 4),
-                    "completed_cycles": len(realized_crypto),
-                    "profitable_trades": realized_crypto[:10],
-                    "last_sync_time": time.time()
-                }
+                if total_usd > 0 or not CloudBotEngine.REALIZED_CRYPTO_STATS.get("total_profit_usd"):
+                    CloudBotEngine.REALIZED_CRYPTO_STATS = {
+                        "today_profit_usd": round(today_usd, 4),
+                        "total_profit_usd": round(total_usd, 4),
+                        "completed_cycles": len(realized_crypto),
+                        "profitable_trades": realized_crypto[:10],
+                        "last_sync_time": time.time()
+                    }
             except Exception as cpe:
                 logger.error(f"Error parsing crypto realized trades: {cpe}")
 
