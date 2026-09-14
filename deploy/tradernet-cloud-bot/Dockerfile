@@ -6,7 +6,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir tradernet-sdk requests websockets
 
 # Copy application files
-COPY tradernet_cloud_bot.py /app/
+COPY . /app/
 
 # Environment defaults
 ENV PYTHONUNBUFFERED=1
