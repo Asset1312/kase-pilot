@@ -1460,10 +1460,11 @@ class CloudBotEngine:
         try:
             # Active scalping configs for KASE
             kase_configs = {
-                'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01},
-                'KZTO.KZ': {'qty': 1, 'min_spread_pct': 0.0020, 'min_step': 0.01},
-                'BCCIRB.KZ': {'qty': 50, 'min_spread_pct': 0.0020, 'min_step': 0.01},
-                'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01}
+                'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'KZTO.KZ': {'qty': 1, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'BCCIRB.KZ': {'qty': 50, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'CCBN.KZ': {'qty': 1, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 10000.0}
             }
 
             user_data = self.kase_client.get_user_data().get('OPQ', {})
@@ -1551,9 +1552,18 @@ class CloudBotEngine:
 
                 # Case B: We have no active BUY order and no inventory -> place resting BUY at best bid
                 elif curr_shares < cfg['qty'] and not buy_orders:
-                    # Check spread profitability & volume liquidity
-                    spread_pct = (bap - bbp) / bbp
+                    # 🛡️ 1. Защитный гейт по минимальному депозиту KZT
+                    min_required_kzt = cfg.get('min_free_kzt', 0.0)
+                    if kzt_cash < min_required_kzt:
+                        continue
+
+                    # 🛡️ 2. Проверка Affordability: стоимость лота не должна превышать 50% доступного кэша KZT (для дорогих бумаг)
                     req_cost = cfg['qty'] * bbp
+                    if min_required_kzt > 0 and req_cost > (kzt_cash * 0.50):
+                        continue
+
+                    # 🛡️ 3. Проверка минимального спреда
+                    spread_pct = (bap - bbp) / bbp
                     if spread_pct >= cfg['min_spread_pct'] and kzt_cash >= req_cost:
                         logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} KZT)")
                         self.kase_client.authorized_request('putTradeOrder', {
