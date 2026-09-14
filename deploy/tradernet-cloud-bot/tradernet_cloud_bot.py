@@ -17,9 +17,81 @@ import logging
 import threading
 import urllib.request
 import asyncio
+import math
+from typing import Optional
 from collections import deque
 import tradernet
 from latency_telemetry_worker import LatencyBenchmarkEngine
+
+def extract_best_ask_qty(quote: dict) -> Optional[float]:
+    """Извлечение глубины верхнего уровня стакана Tradernet."""
+    raw_qty = (
+        quote.get("bas")
+        or quote.get("bap_q")
+        or quote.get("ask_qty")
+        or quote.get("x_min_lot_q")
+    )
+    if raw_qty is None:
+        return None
+    try:
+        val = float(raw_qty)
+        return val if val > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+def calculate_clip_size(
+    price: float,
+    free_cash: float,
+    bap_q: Optional[float] = None,
+    max_alloc_pct: float = 0.35,
+    min_lot: float = 1.0,
+    lot_step: float = 1.0,
+    lot_decimals: int = 0,
+) -> float:
+    """
+    Расчет безопасного размера клипа с учетом:
+    - Ценового тира монеты
+    - Потолка аллокации от свободного кэша (по умолчанию 35%)
+    - Book Depth Guard (не более 60% видимого Best Ask)
+    - Квантования под шаг лота брокера (целый или дробный)
+    """
+    if price <= 0 or free_cash <= 0:
+        return 0.0
+
+    # 1. Базовый целевой объем по стоимости (~$1.50 - $3.00 на клип)
+    if price < 0.50:
+        target_cost = 2.00  # Дешевые (XLM, ADA): ~5-10 монет
+    elif price < 2.00:
+        target_cost = 2.50  # Средние (SUI, APT): ~2-3 монеты
+    else:
+        target_cost = max(price * min_lot, 3.50)  # Дорогие (DOT, NEAR, SOL)
+
+    target_qty = target_cost / price
+
+    # 2. Hard Cap по свободному капиталу (с буфером $0.05 на проскальзывание)
+    available_pool = max(0.0, (free_cash * max_alloc_pct) - 0.05)
+    max_affordable_qty = available_pool / price
+    qty = min(target_qty, max_affordable_qty)
+
+    # 3. Book Depth Guard: забираем не более 60% объема маркетмейкера
+    if bap_q is not None and bap_q > 0:
+        depth_limit = bap_q * 0.60
+        if depth_limit >= min_lot:
+            qty = min(qty, depth_limit)
+
+    # 4. Квантование под шаг лота (lot_step)
+    if qty < min_lot:
+        # Проверяем, проходит ли хотя бы 1 минимальный лот
+        if (min_lot * price) <= available_pool:
+            qty = min_lot
+        else:
+            return 0.0
+    else:
+        steps = math.floor(round(qty / lot_step, 6))
+        qty = steps * lot_step
+
+    return round(qty, lot_decimals)
+
 
 # Bybit Kazakhstan Regional Configuration
 BYBIT_DOMAIN = os.environ.get("BYBIT_API_DOMAIN", "api.bybit.kz")
@@ -980,17 +1052,17 @@ class CloudBotEngine:
     def run_crypto_step(self):
         try:
             crypto_pairs = {
-                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 5},
-                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_profit_pct': 0.0075, 'decimals': 5},
-                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_profit_pct': 0.0075, 'decimals': 5},
-                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_profit_pct': 0.0075, 'decimals': 4},
-                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_profit_pct': 0.0025, 'decimals': 2},
-                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_profit_pct': 0.0075, 'decimals': 5}
+                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
+                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
+                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
+                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
+                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0025, 'decimals': 2},
+                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5}
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
@@ -1064,6 +1136,8 @@ class CloudBotEngine:
                 baseline = 2.05 if sym not in ['TRX/USD', 'XRP/USD'] else 4.0
                 compression_pct = round(((baseline - spread_pct) / baseline) * 100.0, 1)
 
+                bap_depth = extract_best_ask_qty(q)
+
                 pos_info = positions.get(sym, {})
                 inv_qty = float(pos_info.get('q') or 0.0)
                 entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0.0)
@@ -1075,10 +1149,27 @@ class CloudBotEngine:
                 # Ladder inventory calculation: quantity not yet committed to active sell orders
                 total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
                 unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
-                target_qty = float(cfg['qty'])
 
-                # 🛡️ 2. Affordability Gate: verify required cash with $0.10 margin safety buffer
-                est_cost = target_qty * bbp
+                # Dynamic Clip Sizing with Book Depth Guard, Capital Cap (35%), and Lot Step Quantization
+                min_lot = float(cfg.get('min_qty', 1.0))
+                lot_step = float(cfg.get('lot_step', 1.0))
+                lot_decimals = int(cfg.get('lot_decimals', 0))
+
+                clip_qty = calculate_clip_size(
+                    price=bbp,
+                    free_cash=usd_cash,
+                    bap_q=bap_depth,
+                    max_alloc_pct=0.35,
+                    min_lot=min_lot,
+                    lot_step=lot_step,
+                    lot_decimals=lot_decimals,
+                )
+
+                # Fallback to min_lot if clip_qty is zero but sufficient cash exists
+                if clip_qty <= 0:
+                    continue
+
+                est_cost = round(clip_qty * bbp, 4)
                 is_affordable = (est_cost <= (usd_cash - 0.10))
 
                 candidates.append({
@@ -1091,7 +1182,10 @@ class CloudBotEngine:
                     'compression_pct': compression_pct,
                     'inv_qty': inv_qty,
                     'unsold_inventory': unsold_inventory,
-                    'target_qty': target_qty,
+                    'clip_qty': clip_qty,
+                    'min_lot': min_lot,
+                    'lot_step': lot_step,
+                    'lot_decimals': lot_decimals,
                     'entry_price': entry_price,
                     'sym_orders': sym_orders,
                     'sell_orders': sell_orders,
@@ -1112,7 +1206,10 @@ class CloudBotEngine:
                 baseline = item['baseline']
                 inv_qty = item['inv_qty']
                 unsold_inventory = item['unsold_inventory']
-                target_qty = item['target_qty']
+                clip_qty = item['clip_qty']
+                min_lot = item['min_lot']
+                lot_step = item['lot_step']
+                lot_decimals = item['lot_decimals']
                 entry_price = item['entry_price']
                 sell_orders = item['sell_orders']
                 buy_orders = item['buy_orders']
@@ -1152,7 +1249,7 @@ class CloudBotEngine:
                     self.active_resting_buys.pop(sym, None)
 
                 # --- FAIL-SAFE 2: Time-Stop Tracking ---
-                if inv_qty >= target_qty:
+                if inv_qty >= min_lot:
                     if sym not in self.inventory_entry_time:
                         self.inventory_entry_time[sym] = time.time()
                 else:
@@ -1163,7 +1260,15 @@ class CloudBotEngine:
                 total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
                 unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
 
-                if unsold_inventory >= target_qty:
+                if unsold_inventory >= min_lot:
+                    # Clip-sized exit: do not dump entire balance if book depth is narrow
+                    sell_clip = min(unsold_inventory, max(clip_qty, min_lot))
+                    # Quantize sell_clip
+                    if sell_clip >= lot_step:
+                        sell_clip = round(math.floor(round(sell_clip / lot_step, 6)) * lot_step, lot_decimals)
+                    else:
+                        sell_clip = min_lot
+
                     # Multi-level lot cost detection:
                     # For SUI/USD with 4 coins: ladder levels correspond to purchases [0.72, 0.7555, 0.7797, 0.80]
                     # The unsold lot gets assigned its specific purchase rung
@@ -1193,14 +1298,14 @@ class CloudBotEngine:
                     if target_tp < min_safe_sell:
                         target_tp = min_safe_sell
 
-                    logger.info(f"[{sym}] 🪜 Лесенка (Ladder Step): Выставляем SELL {target_qty} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
+                    logger.info(f"[{sym}] 🪜 Лесенка (Ladder Step): Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
                     
                     try:
                         resp = self.crypto_client.authorized_request('putTradeOrder', {
                             'instr_name': sym,
                             'action_id': 3,
                             'order_type_id': 2,
-                            'qty': cfg['qty'],
+                            'qty': sell_clip if lot_decimals > 0 else int(sell_clip),
                             'limit_price': target_tp,
                             'expiration_id': 1
                         })
@@ -1211,7 +1316,7 @@ class CloudBotEngine:
                                 f"🪜 **[ЛЕСЕНКА: ВЫСТАВЛЕН ТЕЙК-ПРОФИТ]**\n\n"
                                 f"Монета: **{sym}**\n"
                                 f"Операция: **Лимитная продажа (SELL)**\n"
-                                f"Объем: **{cfg['qty']}**\n"
+                                f"Объем: **{sell_clip}**\n"
                                 f"Цена выхода: **${target_tp}**\n"
                                 f"Себестоимость лота: **${calc_entry}** (+{((target_tp/calc_entry)-1)*100:.2f}%)\n"
                                 f"№ приказа: `{order_id}`",
@@ -1223,7 +1328,7 @@ class CloudBotEngine:
                         logger.error(f"[{sym}] Ошибка выставления лесенки SELL: {err}")
 
                 # --- 2. Flat / Liquid Inventory & Maker BUY -> Adaptive Snapback Entry ---
-                elif unsold_inventory < target_qty and not buy_orders and is_affordable:
+                elif unsold_inventory < min_lot and not buy_orders and is_affordable:
                     # Adaptive trigger: spread compressed by >= 25% or spread <= 1.55%
                     is_spread_compressed = (spread_pct <= (baseline * 0.75)) or (spread_pct <= 1.55)
 
@@ -1245,12 +1350,12 @@ class CloudBotEngine:
                             CloudBotEngine.METRICS["impulse_entries"] += 1
 
                     buy_price = round(bbp, cfg['decimals'])
-                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {cfg['qty']} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
+                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
                     resp = self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 1,
                         'order_type_id': 2,
-                        'qty': cfg['qty'],
+                        'qty': clip_qty if lot_decimals > 0 else int(clip_qty),
                         'limit_price': buy_price,
                         'expiration_id': 1
                     })
@@ -1265,14 +1370,15 @@ class CloudBotEngine:
                             'id': order_id,
                             'placed_at': time.time(),
                             'is_impulse': is_impulse_pump,
-                            'price': buy_price
+                            'price': buy_price,
+                            'qty': clip_qty
                         }
                         try:
                             send_telegram_msg(
                                 f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
                                 f"Монета: **{sym}**\n"
                                 f"Операция: **Лимитная покупка (BUY)**\n"
-                                f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
+                                f"Объем: **{clip_qty}** (~${est_cost:.2f})\n"
                                 f"Цена: **${buy_price}**\n"
                                 f"Сжатие спреда: **{spread_pct:.2f}%** (норма {baseline}%)\n"
                                 f"№ приказа: `{order_id}`",
