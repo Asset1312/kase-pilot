@@ -994,10 +994,11 @@ class CloudBotEngine:
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
             acc_list = user_summary.get('acc', [])
-            usd_cash = 1.58
+            usd_cash = 0.0
             for a in acc_list:
                 if a.get('curr') == 'USD':
-                    usd_cash = float(a.get('s') or 1.58)
+                    # 'open_limit' / 'free_money' / 's' - broker's real unencumbered balance
+                    usd_cash = float(a.get('open_limit') or a.get('free_money') or a.get('s') or 0.0)
             CloudBotEngine.LATEST_USD_CASH = usd_cash
 
             pos_list = user_summary.get('pos', [])
@@ -1253,9 +1254,10 @@ class CloudBotEngine:
                         'expiration_id': 1
                     })
                     order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                    is_accepted = bool(order_id) and (resp.get('error') is None)
                     err_msg = resp.get('error') or resp.get('result', {}).get('msg') or resp.get('errMsg')
                     
-                    if order_id:
+                    if is_accepted:
                         CloudBotEngine.METRICS["orders_placed"] += 1
                         usd_cash -= est_cost  # Reserve cash for next pair in loop
                         self.active_resting_buys[sym] = {
@@ -1278,8 +1280,8 @@ class CloudBotEngine:
                         except Exception:
                             pass
                     else:
-                        # Broker Rejected Order (e.g. margin/collateral or min lot constraint)
-                        cooldown_sec = 300.0  # 5 minutes silence for this pair
+                        # Broker Rejected Order (e.g. margin/collateral or critical risk limit)
+                        cooldown_sec = 600.0  # 10 minutes silence for this pair
                         self.pair_cooldowns[sym] = time.time() + cooldown_sec
                         logger.warning(f"[{sym}] ⚠️ Брокер отклонил приказ BUY ({err_msg or 'недостаточно обеспечения/реджект'}). Пауза {cooldown_sec/60:.0f} мин.")
 
