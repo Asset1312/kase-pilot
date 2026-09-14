@@ -973,6 +973,7 @@ class CloudBotEngine:
         self.inventory_entry_time = {}
         self.active_resting_buys = {}  # {sym: {'id': order_id, 'placed_at': timestamp, 'is_impulse': bool, 'price': float}}
         self.previous_inv = {}         # {sym: float(qty)}
+        self.pair_cooldowns = {}       # {sym: expire_timestamp} for broker reject protection
 
     def run_crypto_step(self):
         try:
@@ -1037,6 +1038,10 @@ class CloudBotEngine:
             now_ts = time.time()
 
             for sym, cfg in crypto_pairs.items():
+                # 🛡️ Reject / Margin Cooldown Filter: prevent spamming broker on rejected orders
+                if now_ts < self.pair_cooldowns.get(sym, 0):
+                    continue
+
                 q = q_dict.get(sym)
                 if not q:
                     continue
@@ -1070,9 +1075,9 @@ class CloudBotEngine:
                 unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
                 target_qty = float(cfg['qty'])
 
-                # 🛡️ 2. Affordability Gate: verify required cash with $0.02 safety buffer
+                # 🛡️ 2. Affordability Gate: verify required cash with $0.10 margin safety buffer
                 est_cost = target_qty * bbp
-                is_affordable = (est_cost <= (usd_cash - 0.02))
+                is_affordable = (est_cost <= (usd_cash - 0.10))
 
                 candidates.append({
                     'sym': sym,
@@ -1240,28 +1245,36 @@ class CloudBotEngine:
                         'limit_price': buy_price,
                         'expiration_id': 1
                     })
-                    CloudBotEngine.METRICS["orders_placed"] += 1
-                    usd_cash -= est_cost  # Reserve cash for next pair in loop
                     order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                    self.active_resting_buys[sym] = {
-                        'id': order_id,
-                        'placed_at': time.time(),
-                        'is_impulse': is_impulse_pump,
-                        'price': buy_price
-                    }
-                    try:
-                        send_telegram_msg(
-                            f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
-                            f"Монета: **{sym}**\n"
-                            f"Операция: **Лимитная покупка (BUY)**\n"
-                            f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
-                            f"Цена: **${buy_price}**\n"
-                            f"Сжатие спреда: **{spread_pct:.2f}%** (норма {baseline}%)\n"
-                            f"№ приказа: `{order_id}`",
-                            TELEGRAM_CHAT_ID
-                        )
-                    except Exception:
-                        pass
+                    err_msg = resp.get('error') or resp.get('result', {}).get('msg') or resp.get('errMsg')
+                    
+                    if order_id:
+                        CloudBotEngine.METRICS["orders_placed"] += 1
+                        usd_cash -= est_cost  # Reserve cash for next pair in loop
+                        self.active_resting_buys[sym] = {
+                            'id': order_id,
+                            'placed_at': time.time(),
+                            'is_impulse': is_impulse_pump,
+                            'price': buy_price
+                        }
+                        try:
+                            send_telegram_msg(
+                                f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
+                                f"Монета: **{sym}**\n"
+                                f"Операция: **Лимитная покупка (BUY)**\n"
+                                f"Объем: **{cfg['qty']}** (~${est_cost:.2f})\n"
+                                f"Цена: **${buy_price}**\n"
+                                f"Сжатие спреда: **{spread_pct:.2f}%** (норма {baseline}%)\n"
+                                f"№ приказа: `{order_id}`",
+                                TELEGRAM_CHAT_ID
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # Broker Rejected Order (e.g. margin/collateral or min lot constraint)
+                        cooldown_sec = 300.0  # 5 minutes silence for this pair
+                        self.pair_cooldowns[sym] = time.time() + cooldown_sec
+                        logger.warning(f"[{sym}] ⚠️ Брокер отклонил приказ BUY ({err_msg or 'недостаточно обеспечения/реджект'}). Пауза {cooldown_sec/60:.0f} мин.")
 
             # --- Realized Profit Tracking (with Tradernet API get_trades_history sync) ---
             try:
