@@ -1176,14 +1176,21 @@ class CloudBotEngine:
                         else:
                             calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
                     else:
-                        calc_entry = recent_buy if (recent_buy and recent_buy > 0) else (entry_price if (entry_price > 0 and entry_price < bap) else bbp)
+                        # For other pairs, strictly use real balance entry_price or last executed scalp fill
+                        calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
+                        if not calc_entry or calc_entry <= 0:
+                            calc_entry = entry_price if entry_price > 0 else bbp
 
-                    # Dynamic Snapback Formula: TP = calc_entry * (1 + (Baseline - CurrentSpread)/200)
+                    # 🛡️ NEVER_SELL_AT_LOSS HARD GATE:
+                    # Minimum safe profit: at least +0.50% or dynamic mean-reversion snapback
                     snapback_premium = max(0.0050, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     
-                    # For the lowest/active lot (e.g. 0.72), allow selling at current best ask if it satisfies min_safe_sell
+                    # Ensure limit price is NEVER lower than min_safe_sell (even if bap is lower)
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
+                    if target_tp < min_safe_sell:
+                        target_tp = min_safe_sell
+
                     logger.info(f"[{sym}] 🪜 Лесенка (Ladder Step): Выставляем SELL {target_qty} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
                     
                     try:
