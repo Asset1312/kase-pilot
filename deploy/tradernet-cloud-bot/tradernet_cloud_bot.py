@@ -241,8 +241,8 @@ def tradernet_spread_scanner_loop():
                             
                             # Trigger Entry into Snapback Cycle with Mean Reversion formula
                             if ticker not in ACTIVE_ANOMALY_TRADES:
-                                # TP = Entry * (1 + (Baseline - CurrentSpread)/200)
-                                snapback_premium = max(0.0035, (baseline - sp_pct) / 200.0)
+                                # TP = Entry * (1 + max(1.25%, (Baseline - CurrentSpread)/200))
+                                snapback_premium = max(0.0125, (baseline - sp_pct) / 200.0)
                                 tp_target = round(ask * (1.0 + snapback_premium), 5)
                                 ACTIVE_ANOMALY_TRADES[ticker] = {
                                     "entry_price": ask,
@@ -1130,17 +1130,17 @@ class CloudBotEngine:
     def run_crypto_step(self):
         try:
             crypto_pairs = {
-                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
-                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
-                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5},
-                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0075, 'decimals': 4},
-                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0080, 'decimals': 2},
-                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0075, 'decimals': 5}
+                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0125, 'decimals': 2},
+                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5}
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
@@ -1366,8 +1366,8 @@ class CloudBotEngine:
                         calc_entry = entry_price if entry_price > 0 else bbp
 
                     # 🛡️ NEVER_SELL_AT_LOSS HARD GATE:
-                    # Minimum safe profit: at least +0.75% (or cfg min_profit_pct) to fully cover broker commissions
-                    min_floor = max(0.0075, cfg.get('min_profit_pct', 0.0075))
+                    # Minimum safe profit: at least +1.25% (or cfg min_profit_pct) to fully cover broker commissions
+                    min_floor = max(0.0125, cfg.get('min_profit_pct', 0.0125))
                     snapback_premium = max(min_floor, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     
