@@ -387,11 +387,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
+            usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0)
+            uncommitted_c = getattr(CloudBotEngine, 'UNCOMMITTED_USD_CASH', usd_c)
+            committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
             status = {
                 "status": "online",
                 "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
-                "usd_cash": getattr(CloudBotEngine, 'LATEST_USD_CASH', 1.58),
-                "balance_usd": getattr(CloudBotEngine, 'LATEST_USD_CASH', 1.58),
+                "usd_cash": usd_c,
+                "balance_usd": usd_c,
+                "uncommitted_usd_cash": round(uncommitted_c, 2),
+                "committed_buy_margin": round(committed_m, 2),
                 "trades_sync_status": getattr(CloudBotEngine, 'TRADES_SYNC_STATUS', "OK (7d Tradernet History)"),
                 "radar_status": "CONNECTED" if getattr(LEAD_LAG_RADAR, 'is_connected', False) else "ONLINE (Fallback)",
                 "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
@@ -470,6 +475,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         today_crypto_usd = crypto_pnl.get('today_profit_usd', 0.0)
         total_crypto_usd = crypto_pnl.get('total_profit_usd', 0.0)
         crypto_cycles = crypto_pnl.get('completed_cycles', 0)
+        usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0)
+        uncommitted_c = getattr(CloudBotEngine, 'UNCOMMITTED_USD_CASH', usd_c)
+        committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
 
         today_pnl = pnl_stats.get('today_profit_kzt', 0.0)
         total_pnl = pnl_stats.get('total_profit_kzt', 0.0)
@@ -596,6 +604,10 @@ class HealthHandler(BaseHTTPRequestHandler):
             <div class="status-pill">
                 <div class="label">Рынок KASE</div>
                 <div class="val">{kase_status}</div>
+            </div>
+            <div class="status-pill">
+                <div class="label">Крипто-депозит USD</div>
+                <div class="val" style="color: #34d399;">${usd_c:.2f} <span style="font-size: 11px; color: #9ca3af; font-weight: normal;">(Свободно: ${uncommitted_c:.2f} | В ордерах: ${committed_m:.2f})</span></div>
             </div>
         </div>
 
@@ -1134,7 +1146,9 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
         }
 
 class CloudBotEngine:
-    LATEST_USD_CASH = 1.58
+    LATEST_USD_CASH = 0.0
+    UNCOMMITTED_USD_CASH = 0.0
+    COMMITTED_BUY_MARGIN = 0.0
     TRADES_SYNC_STATUS = "OK (7d Tradernet History)"
     LATEST_REGIME = {
         "risk_mode": "NORMAL",
@@ -1211,13 +1225,27 @@ class CloudBotEngine:
                 if a.get('curr') == 'USD':
                     # 'open_limit' / 'free_money' / 's' - broker's real unencumbered balance
                     usd_cash = float(a.get('open_limit') or a.get('free_money') or a.get('s') or 0.0)
-            CloudBotEngine.LATEST_USD_CASH = usd_cash
 
             pos_list = user_summary.get('pos', [])
             positions = {p.get('i'): p for p in pos_list}
 
             orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
             active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
+
+            # 🛡️ Worst-Case Collateral Guard:
+            # Tradernet reserves collateral assuming worst-case scenario where ALL open resting BUY orders fill.
+            committed_buy_margin = sum(
+                float(o.get('leaves_qty') or o.get('rem_qty') or o.get('q') or 0.0) * float(o.get('p') or 0.0)
+                for o in active_orders
+                if o.get('oper') == 1
+            )
+            # Broker margin safety buffer ($0.25) to prevent rejection on worst-case execution
+            MARGIN_SAFETY_BUFFER = 0.25
+            uncommitted_usd_cash = max(0.0, usd_cash - committed_buy_margin)
+
+            CloudBotEngine.LATEST_USD_CASH = usd_cash
+            CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
+            CloudBotEngine.COMMITTED_BUY_MARGIN = committed_buy_margin
 
             quotes = self.crypto_client.get_quotes(list(crypto_pairs.keys())).get('result', {}).get('q', [])
             q_dict = {q.get('c'): q for q in quotes}
@@ -1296,7 +1324,7 @@ class CloudBotEngine:
 
                 clip_qty = calculate_clip_size(
                     price=bbp,
-                    free_cash=usd_cash,
+                    free_cash=uncommitted_usd_cash,
                     bap_q=bap_depth,
                     max_alloc_pct=0.35,
                     min_lot=min_lot,
@@ -1309,7 +1337,7 @@ class CloudBotEngine:
                     continue
 
                 est_cost = round(clip_qty * bbp, 4)
-                is_affordable = (est_cost <= (usd_cash - 0.10))
+                is_affordable = (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
 
                 candidates.append({
                     'sym': sym,
@@ -1466,9 +1494,11 @@ class CloudBotEngine:
                     snapback_premium = max(min_floor, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     
-                    # 💰 ABSOLUTE PROFIT FLOOR: At least +$0.025 net profit per closed clip (eliminates 0.00$ broker reporting)
+                    # 💰 ABSOLUTE PROFIT FLOOR: At least +$0.025 net profit per closed clip (eliminates 0.00$ broker reporting).
+                    # For single micro-lots (like 1 SUI @ ~$0.72), floor is +$0.0099 (allowing clean $0.7299 exit).
+                    abs_profit_target = 0.0099 if (sym == 'SUI/USD' and sell_clip <= 1.0) else 0.025
                     if sell_clip > 0:
-                        min_price_for_abs_profit = round(calc_entry + (0.025 / sell_clip), cfg['decimals'])
+                        min_price_for_abs_profit = round(calc_entry + (abs_profit_target / sell_clip), cfg['decimals'])
                         if min_price_for_abs_profit > min_safe_sell:
                             min_safe_sell = min_price_for_abs_profit
 
@@ -1530,7 +1560,7 @@ class CloudBotEngine:
                             CloudBotEngine.METRICS["impulse_entries"] += 1
 
                     buy_price = round(bbp, cfg['decimals'])
-                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Cash: ${usd_cash:.2f})")
+                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Free Uncommitted: ${uncommitted_usd_cash:.2f}, Gross Cash: ${usd_cash:.2f})")
                     resp = self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 1,
@@ -1545,7 +1575,10 @@ class CloudBotEngine:
                     
                     if is_accepted:
                         CloudBotEngine.METRICS["orders_placed"] += 1
-                        usd_cash -= est_cost  # Reserve cash for next pair in loop
+                        uncommitted_usd_cash = max(0.0, uncommitted_usd_cash - est_cost)
+                        usd_cash = max(0.0, usd_cash - est_cost)
+                        CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
+                        CloudBotEngine.LATEST_USD_CASH = usd_cash
                         self.active_resting_buys[sym] = {
                             'id': order_id,
                             'placed_at': time.time(),
@@ -1943,6 +1976,8 @@ class CloudBotEngine:
                     lot_decimals = cfg['lot_decimals']
                     actionable_qty = math.floor(round(unhedged_qty / lot_step, 6)) * lot_step
                     actionable_qty = round(actionable_qty, lot_decimals)
+                    if sym == 'SUI/USD':
+                        actionable_qty = min(1.0, actionable_qty)
 
                     if actionable_qty >= min_lot:
                         WATCHDOG_STATS["unhedged_lots_rescued"] = WATCHDOG_STATS.get("unhedged_lots_rescued", 0) + 1
@@ -1957,6 +1992,13 @@ class CloudBotEngine:
 
                         min_floor = max(0.0125, cfg.get('min_profit_pct', 0.0125))
                         min_safe_sell = round(entry_p * (1.0 + min_floor), cfg['decimals'])
+                        
+                        abs_profit_target = 0.0099 if (sym == 'SUI/USD' and actionable_qty <= 1.0) else 0.025
+                        if actionable_qty > 0:
+                            min_price_for_abs_profit = round(entry_p + (abs_profit_target / actionable_qty), cfg['decimals'])
+                            if min_price_for_abs_profit > min_safe_sell:
+                                min_safe_sell = min_price_for_abs_profit
+
                         tp_price = round(max(bap, min_safe_sell), cfg['decimals'])
 
                         try:
@@ -2219,11 +2261,13 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             fr = round((f / p * 100.0), 1) if p > 0 else 0.0
                             upt = round((time.time() - m.get('start_time', time.time())) / 3600.0, 1)
                             cpnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
-                            usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 1.58)
+                            usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0)
+                            uncommitted_c = getattr(CloudBotEngine, 'UNCOMMITTED_USD_CASH', usd_c)
+                            committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
                             sync_st = getattr(CloudBotEngine, 'TRADES_SYNC_STATUS', 'OK (Tradernet 7d)')
                             reply = (
                                 "📊 **ТЕЛЕМЕТРИЯ TRADERNET И КРИПТО-СКАЛЬПЕРА**\n\n"
-                                f"💵 **Свободный баланс:** ${usd_c:.2f}\n"
+                                f"💵 **Депозит USD:** ${usd_c:.2f} (Свободно: ${uncommitted_c:.2f}, В ордерах: ${committed_m:.2f})\n"
                                 f"🔄 **Синхронизация сделок:** {sync_st}\n"
                                 f"📦 **История за 7 дней:** {cpnl.get('completed_cycles', 0)} сделок\n"
                                 f"💰 **Реализованный P&L:** +${cpnl.get('total_profit_usd', 0.0):.4f}\n"
