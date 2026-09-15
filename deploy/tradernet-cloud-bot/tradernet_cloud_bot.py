@@ -1221,9 +1221,11 @@ class CloudBotEngine:
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
             acc_list = user_summary.get('acc', [])
             usd_cash = 0.0
+            pure_cash_balance = 0.0
             for a in acc_list:
                 if a.get('curr') == 'USD':
-                    # 'open_limit' / 'free_money' / 's' - broker's real unencumbered balance
+                    # 's' is the real cash balance on account; 'open_limit' might include broker margin facility
+                    pure_cash_balance = float(a.get('s') or 0.0)
                     usd_cash = float(a.get('open_limit') or a.get('free_money') or a.get('s') or 0.0)
 
             pos_list = user_summary.get('pos', [])
@@ -1232,18 +1234,24 @@ class CloudBotEngine:
             orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
             active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
 
-            # 🛡️ Worst-Case Collateral Guard:
-            # Tradernet reserves collateral assuming worst-case scenario where ALL open resting BUY orders fill.
+            # 🛡️ STRICT ZERO-BORROWING MARGIN POLICY:
+            # Under NO circumstances will the bot use margin lending or leverage.
+            # Only 100% owned, unborrowed cash balance can be used.
+            effective_own_cash = min(pure_cash_balance, usd_cash)
+
+            # Worst-Case Collateral Guard:
+            # Sum of all open resting BUY orders
             committed_buy_margin = sum(
                 float(o.get('leaves_qty') or o.get('rem_qty') or o.get('q') or 0.0) * float(o.get('p') or 0.0)
                 for o in active_orders
                 if o.get('oper') == 1
             )
-            # Broker margin safety buffer ($0.25) to prevent rejection on worst-case execution
-            MARGIN_SAFETY_BUFFER = 0.25
-            uncommitted_usd_cash = max(0.0, usd_cash - committed_buy_margin)
+            
+            # Require at least $3.00 safety buffer of 100% OWN CASH
+            MARGIN_SAFETY_BUFFER = 3.00
+            uncommitted_usd_cash = max(0.0, effective_own_cash - committed_buy_margin)
 
-            CloudBotEngine.LATEST_USD_CASH = usd_cash
+            CloudBotEngine.LATEST_USD_CASH = effective_own_cash
             CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
             CloudBotEngine.COMMITTED_BUY_MARGIN = committed_buy_margin
 
@@ -1599,7 +1607,14 @@ class CloudBotEngine:
                             CloudBotEngine.METRICS["impulse_entries"] += 1
 
                     buy_price = round(bbp, cfg['decimals'])
-                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Free Uncommitted: ${uncommitted_usd_cash:.2f}, Gross Cash: ${usd_cash:.2f})")
+                    
+                    # 🛡️ REDUNDANT HARD ZERO-BORROWING ASSERTION:
+                    # Double check that we NEVER borrow broker funds right before order dispatch!
+                    if effective_own_cash <= 1.0 or uncommitted_usd_cash < (est_cost + 1.0):
+                        logger.warning(f"[{sym}] 🛑 ЗАПРЕТ ЗАЁМНЫХ СРЕДСТВ: Попытка входа заблокирована. Своих средств: ${effective_own_cash:.2f}, Требуется: ${est_cost:.2f}. Режим REDUCE-ONLY.")
+                        continue
+
+                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Free Uncommitted: ${uncommitted_usd_cash:.2f}, Gross Own Cash: ${effective_own_cash:.2f})")
                     resp = self.crypto_client.authorized_request('putTradeOrder', {
                         'instr_name': sym,
                         'action_id': 1,
