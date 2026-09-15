@@ -178,6 +178,19 @@ HUNTER_STATS = {
 }
 ACTIVE_ANOMALY_TRADES = {}
 
+# Institutional Watchdog & Supervisor State
+LAST_MAIN_LOOP_HEARTBEAT = time.monotonic()
+LAST_AI_AUDIT_TS = 0.0
+AI_RESTART_COOLDOWN_SEC = 1800  # Max 1 AI-driven restart per 30 minutes
+WATCHDOG_STATS = {
+    "reconciliations_run": 0,
+    "unhedged_lots_rescued": 0,
+    "last_run_ts": 0.0,
+    "last_ai_health_score": 100,
+    "last_ai_status": "HEALTHY",
+    "last_ai_reason": "Система инициализирована"
+}
+
 def tradernet_spread_scanner_loop():
     logger.info("Starting Tradernet 24/7 Spread & Anomaly Radar loop (Crypto + KASE)...")
     sui_order_tracked = True
@@ -323,6 +336,24 @@ def tradernet_spread_scanner_loop():
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        global LAST_MAIN_LOOP_HEARTBEAT
+
+        # 1. Deterministic Hot Path Health-Check for Render Container
+        if self.path in ("/healthz", "/health"):
+            stall_duration = time.monotonic() - LAST_MAIN_LOOP_HEARTBEAT
+            if stall_duration > 90.0:
+                # Main trading thread stalled/deadlocked: send 500 so Render native supervisor restarts container
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(f"STALLED: loop inactive for {stall_duration:.1f}s".encode("utf-8"))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+
         mem_mb = get_process_memory_mb()
         metrics = getattr(CloudBotEngine, 'METRICS', {})
         placed = metrics.get('orders_placed', 0)
@@ -386,6 +417,15 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "mm_latency_benchmark": LATENCY_ENGINE.get_latency_report(),
                 "kase_spreads": LATEST_KASE_SPREADS,
                 "crypto_spreads": LATEST_TRADERNET_SPREADS,
+                "watchdog_supervisor": {
+                    "stall_seconds": round(time.monotonic() - LAST_MAIN_LOOP_HEARTBEAT, 1),
+                    "reconciliations_run": WATCHDOG_STATS.get("reconciliations_run", 0),
+                    "unhedged_lots_rescued": WATCHDOG_STATS.get("unhedged_lots_rescued", 0),
+                    "last_run_seconds_ago": round(time.time() - WATCHDOG_STATS.get("last_run_ts", time.time()), 0) if WATCHDOG_STATS.get("last_run_ts") else None,
+                    "last_ai_health_score": WATCHDOG_STATS.get("last_ai_health_score", 100),
+                    "last_ai_status": WATCHDOG_STATS.get("last_ai_status", "HEALTHY"),
+                    "last_ai_reason": WATCHDOG_STATS.get("last_ai_reason", "N/A")
+                },
                 "timestamp": datetime.datetime.now().isoformat()
             }
             self.wfile.write(json.dumps(status, indent=2, ensure_ascii=False).encode('utf-8'))
@@ -1128,6 +1168,8 @@ class CloudBotEngine:
         self.pair_cooldowns = {}       # {sym: expire_timestamp} for broker reject protection
 
     def run_crypto_step(self):
+        global LAST_MAIN_LOOP_HEARTBEAT
+        LAST_MAIN_LOOP_HEARTBEAT = time.monotonic()
         try:
             crypto_pairs = {
                 'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
@@ -1533,6 +1575,8 @@ class CloudBotEngine:
             logger.error(f"Error in crypto step: {e}")
 
     def run_kase_step(self):
+        global LAST_MAIN_LOOP_HEARTBEAT
+        LAST_MAIN_LOOP_HEARTBEAT = time.monotonic()
         if not is_kase_market_open():
             return
         try:
@@ -1757,11 +1801,224 @@ class CloudBotEngine:
         except Exception as e:
             logger.error(f"Error in KASE step: {e}")
 
+    def run_inventory_reconciliation_watchdog(self):
+        """
+        1. Детерминированный фоновый ревизор инвентаря (Hot Path, 0 внешних зависимостей).
+        Каждые 180 секунд сверяет реальный портфель с активными ордерами на продажу.
+        Если обнаружена незащищенная монета (как было с UNI/SUI), немедленно выставляет парный Take-Profit.
+        """
+        logger.info("🛡️ [WATCHDOG] Ревизор инвентаря запущен (интервал 180 сек)...")
+        time.sleep(60)  # Даем основному циклу сделать первый прогон
+        while True:
+            try:
+                time.sleep(180)
+                WATCHDOG_STATS["reconciliations_run"] = WATCHDOG_STATS.get("reconciliations_run", 0) + 1
+                WATCHDOG_STATS["last_run_ts"] = time.time()
+                
+                # Запрашиваем актуальный портфель и ордера напрямую у брокера
+                user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
+                pos_list = user_summary.get('pos', [])
+                positions = {p.get('i'): p for p in pos_list}
+                
+                orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
+                active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
+
+                crypto_configs = {
+                    'UNI/USD': {'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'SUI/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'FET/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                    'DOT/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'TON/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'ADA/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                    'NEAR/USD': {'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'APT/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
+                    'ATOM/USD': {'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
+                    'SOL/USD': {'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0125, 'decimals': 2},
+                    'XLM/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5}
+                }
+
+                quotes_res = self.crypto_client.get_quotes(list(crypto_configs.keys())).get('result', {}).get('q', [])
+                quotes_dict = {q.get('c'): q for q in quotes_res}
+
+                for sym, cfg in crypto_configs.items():
+                    pos_info = positions.get(sym, {})
+                    inv_qty = float(pos_info.get('q') or 0.0)
+                    min_lot = cfg['min_qty']
+                    if inv_qty < min_lot:
+                        continue
+
+                    # Проверяем объем в активных ордерах на продажу
+                    sym_orders = [o for o in active_orders if o.get('instr') == sym]
+                    sell_orders = [o for o in sym_orders if o.get('oper') == 3]
+                    placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
+
+                    unhedged_qty = inv_qty - placed_sell_qty
+                    lot_step = cfg['lot_step']
+                    lot_decimals = cfg['lot_decimals']
+                    actionable_qty = math.floor(round(unhedged_qty / lot_step, 6)) * lot_step
+                    actionable_qty = round(actionable_qty, lot_decimals)
+
+                    if actionable_qty >= min_lot:
+                        WATCHDOG_STATS["unhedged_lots_rescued"] = WATCHDOG_STATS.get("unhedged_lots_rescued", 0) + 1
+                        logger.warning(f"⚠️ [WATCHDOG ALERT] Обнаружен нехеджированный остаток {sym}: {actionable_qty} шт без Take-Profit! Авто-восстановление...")
+
+                        q = quotes_dict.get(sym, {})
+                        bbp = float(q.get('bbp') or 0.0)
+                        bap = float(q.get('bap') or 0.0)
+                        entry_p = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or bbp)
+                        if sym == 'SUI/USD':
+                            entry_p = sorted([0.72, 0.7555, 0.7797, 0.80])[0]
+
+                        min_floor = max(0.0125, cfg.get('min_profit_pct', 0.0125))
+                        min_safe_sell = round(entry_p * (1.0 + min_floor), cfg['decimals'])
+                        tp_price = round(max(bap, min_safe_sell), cfg['decimals'])
+
+                        try:
+                            resp = self.crypto_client.authorized_request('putTradeOrder', {
+                                'instr_name': sym,
+                                'action_id': 3,
+                                'order_type_id': 2,
+                                'qty': actionable_qty if lot_decimals > 0 else int(actionable_qty),
+                                'limit_price': tp_price,
+                                'expiration_id': 1
+                            })
+                            new_oid = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                            logger.info(f"✅ [WATCHDOG] Take-Profit успешно восстановлен для {sym}: {actionable_qty} шт @ ${tp_price} (Order #{new_oid})")
+                            send_telegram_msg(
+                                f"🛡️ **[WATCHDOG: АВТО-ВОССТАНОВЛЕНИЕ ОРДЕРА]**\n\n"
+                                f"Инструмент: **{sym}**\n"
+                                f"Объем без приказа: **{actionable_qty}** шт\n"
+                                f"Выставлен Take-Profit SELL: **${tp_price}** (Entry: ${entry_p})\n"
+                                f"№ приказа: `{new_oid}`\n"
+                                f"💡 *Алгоритм самостоятельно устранил рассинхрон без участия трейдера.*"
+                            )
+                        except Exception as w_err:
+                            logger.error(f"[WATCHDOG] Ошибка авто-выставления TP для {sym}: {w_err}")
+            except Exception as e:
+                logger.error(f"[WATCHDOG] Ошибка ревизора инвентаря: {e}")
+
+    def run_deepseek_ai_supervisor(self):
+        """
+        2. Когнитивный супервизор DeepSeek (Cold Path, аудит каждые 30 минут).
+        Анализирует динамику системы, выявляет скрытые аномалии и санкционирует graceful restart при необходимости.
+        """
+        logger.info("🧠 [AI SUPERVISOR] Когнитивный супервизор DeepSeek запущен (интервал 1800 сек)...")
+        time.sleep(300)  # Первый аудит через 5 минут после старта
+        global LAST_AI_AUDIT_TS
+        while True:
+            try:
+                time.sleep(1800)
+                if not DEEPSEEK_API_KEY:
+                    continue
+
+                stall_sec = time.monotonic() - LAST_MAIN_LOOP_HEARTBEAT
+                metrics = getattr(CloudBotEngine, 'METRICS', {})
+                pnl = getattr(CloudBotEngine, 'REALIZED_PNL_STATS', {})
+                crypto_pnl = getattr(CloudBotEngine, 'REALIZED_CRYPTO_STATS', {})
+
+                telemetry = {
+                    "loop_stall_seconds": round(stall_sec, 1),
+                    "is_kase_market_open": is_kase_market_open(),
+                    "crypto_profit_report": crypto_pnl,
+                    "kase_profit_report": pnl,
+                    "orders_placed": metrics.get("orders_placed", 0),
+                    "orders_filled": metrics.get("orders_filled", 0),
+                    "orders_cancelled_ttl": metrics.get("orders_cancelled_ttl", 0),
+                    "watchdog_rescues": WATCHDOG_STATS.get("unhedged_lots_rescued", 0),
+                    "usd_cash": getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0),
+                    "memory_mb": get_process_memory_mb()
+                }
+
+                prompt = f"""
+Ты — Главный системный супервизор алгоритмического торгового бота (Tradernet / KASE Multi-Asset Cloud Bot).
+Твоя задача — объективно оценить работоспособность и здоровье торговой системы по снимку телеметрии:
+{json.dumps(telemetry, ensure_ascii=False, indent=2)}
+
+Правила оценки:
+1. 'status':
+   - 'HEALTHY' (все подсистемы в норме, цикл активен, рынок в рабочем режиме).
+   - 'WARNING' (есть задержки или реджекты, но система восстанавливается).
+   - 'RESTART_REQUIRED' (торговый цикл замер: stall_seconds > 300 при открытом рынке, либо критический сбой шлюза).
+2. 'health_score': 0-100.
+3. 'reason': краткое объяснение вердикта на русском (до 25 слов).
+4. 'recommendation': рекомендация по управлению позициями.
+
+Ответь ИСКЛЮЧИТЕЛЬНО в формате JSON:
+{{
+  "status": "HEALTHY",
+  "health_score": 95,
+  "reason": "Цикл активен, задержек нет, баланс в норме",
+  "recommendation": "Продолжать сбор спреда"
+}}
+"""
+                url = "https://api.deepseek.com/chat/completions"
+                payload = {
+                    "model": DEEPSEEK_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are an institutional trading systems reliability engineer."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"}
+                }
+
+                req = urllib.request.Request(
+                    url,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    data=json.dumps(payload).encode("utf-8")
+                )
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    d = json.loads(resp.read().decode("utf-8"))
+                    res = json.loads(d["choices"][0]["message"]["content"])
+
+                status = res.get("status", "HEALTHY")
+                score = res.get("health_score", 100)
+                reason = res.get("reason", "N/A")
+
+                WATCHDOG_STATS["last_ai_health_score"] = score
+                WATCHDOG_STATS["last_ai_status"] = status
+                WATCHDOG_STATS["last_ai_reason"] = reason
+
+                logger.info(f"🧠 [AI SUPERVISOR AUDIT] Статус: {status} ({score}/100) | Причина: {reason}")
+
+                now_ts = time.monotonic()
+                if status == "RESTART_REQUIRED":
+                    if (now_ts - LAST_AI_AUDIT_TS) > AI_RESTART_COOLDOWN_SEC:
+                        LAST_AI_AUDIT_TS = now_ts
+                        send_telegram_msg(
+                            f"🚨 **[AI SUPERVISOR: ДИПСИК ТРЕБУЕТ ПЕРЕЗАПУСК]**\n\n"
+                            f"Оценка надежности: **{score}/100**\n"
+                            f"Причина: {reason}\n"
+                            f"🔄 *Инициирован санкционированный перезапуск контейнера...*",
+                            TELEGRAM_CHAT_ID
+                        )
+                        time.sleep(3)
+                        os._exit(1)
+                    else:
+                        logger.warning("[AI SUPERVISOR] Перезапуск отклонен фильтром Anti-Flapping Cooldown (30м).")
+                elif status == "WARNING" and score < 70:
+                    send_telegram_msg(
+                        f"⚠️ **[AI SUPERVISOR: ЗАМЕЧАНИЕ ПО ЗДОРОВЬЮ БОТА]**\n\n"
+                        f"Оценка: **{score}/100** ({status})\n"
+                        f"Детали: {reason}\n"
+                        f"Рекомендация: {res.get('recommendation', 'Мониторинг продолжается')}",
+                        TELEGRAM_CHAT_ID
+                    )
+            except Exception as e:
+                logger.error(f"[AI SUPERVISOR] Ошибка когнитивного аудита: {e}")
+
     def start(self):
         logger.info("=" * 65)
         logger.info("🚀 Tradernet AI Cloud Bot (DeepSeek + Global Arb) Started")
         logger.info("Crypto: SOL/USD (AI-Driven) | KASE: ASBN, HSBK, KMGD")
         logger.info("=" * 65)
+
+        # Start Autonomous Background Supervisors
+        t_watchdog = threading.Thread(target=self.run_inventory_reconciliation_watchdog, daemon=True, name="InventoryWatchdog")
+        t_watchdog.start()
+
+        t_ai_supervisor = threading.Thread(target=self.run_deepseek_ai_supervisor, daemon=True, name="DeepSeekSupervisor")
+        t_ai_supervisor.start()
 
         while True:
             try:
