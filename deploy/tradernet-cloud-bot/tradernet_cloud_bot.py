@@ -1580,13 +1580,13 @@ class CloudBotEngine:
         if not is_kase_market_open():
             return
         try:
-            # Active scalping configs for KASE
+            # Active scalping configs for KASE with Sub-Grid Multi-Tier support
             kase_configs = {
-                'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'KZTO.KZ': {'qty': 2, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'BCCIRB.KZ': {'qty': 50, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'CCBN.KZ': {'qty': 1, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 10000.0}
+                'AIRA.KZ': {'qty': 3, 'max_tiers': 2, 'tier_drop_pct': 0.015, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'KZTO.KZ': {'qty': 2, 'max_tiers': 2, 'tier_drop_pct': 0.015, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'BCCIRB.KZ': {'qty': 50, 'max_tiers': 2, 'tier_drop_pct': 0.010, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'KMGD.KZ': {'qty': 25, 'max_tiers': 2, 'tier_drop_pct': 0.012, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'CCBN.KZ': {'qty': 1, 'max_tiers': 1, 'tier_drop_pct': 0.020, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 10000.0}
             }
 
             user_data = self.kase_client.get_user_data().get('OPQ', {})
@@ -1749,38 +1749,46 @@ class CloudBotEngine:
                             except Exception as ce:
                                 logger.warning(f"[{sym}] Ошибка отзыва заявки KASE #{bo_id}: {ce}")
 
-                # Case C: We have no active BUY order and no inventory -> place resting BUY at best bid
-                elif curr_shares < cfg['qty'] and not buy_orders:
-                    # 🛡️ 1. Защитный гейт по минимальному депозиту KZT
-                    min_required_kzt = cfg.get('min_free_kzt', 0.0)
-                    if kzt_cash < min_required_kzt:
-                        continue
+                # Case C: Multi-Tier Sub-Grid Entry (Buy 1st tier if flat, or 2nd tier if dipped >= tier_drop_pct)
+                elif not buy_orders:
+                    max_tiers = cfg.get('max_tiers', 1)
+                    lot_qty = cfg['qty']
+                    current_tiers = math.ceil(curr_shares / lot_qty) if lot_qty > 0 else 0
 
-                    # 🛡️ 2. Проверка Affordability: стоимость лота не должна превышать 50% доступного кэша KZT (для дорогих бумаг)
-                    req_cost = cfg['qty'] * bbp
-                    if min_required_kzt > 0 and req_cost > (kzt_cash * 0.50):
-                        continue
+                    if current_tiers < max_tiers:
+                        # 🛡️ Gate 1: Check Drop Filter for Tier 2+
+                        can_enter_tier = True
+                        if current_tiers > 0:
+                            tier_drop_pct = cfg.get('tier_drop_pct', 0.012)
+                            required_drop_price = entry_price * (1.0 - tier_drop_pct)
+                            if bbp > required_drop_price:
+                                can_enter_tier = False
 
-                    # 🛡️ 3. Проверка минимального спреда
-                    spread_pct = (bap - bbp) / bbp
-                    if spread_pct >= cfg['min_spread_pct'] and kzt_cash >= req_cost:
-                        logger.info(f"[{sym}] Placing Maker BUY: {cfg['qty']} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} KZT)")
-                        resp = self.kase_client.authorized_request('putTradeOrder', {
-                            'instr_name': sym,
-                            'action_id': 1,
-                            'order_type_id': 2,
-                            'qty': cfg['qty'],
-                            'limit_price': round(bbp, 2),
-                            'expiration_id': 1
-                        })
-                        new_oid = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                        self.active_kase_buys[sym] = {
-                            'id': new_oid,
-                            'placed_at': time.time(),
-                            'price': round(bbp, 2),
-                            'last_cancel_time': 0.0
-                        }
-                        kzt_cash -= req_cost
+                        if can_enter_tier:
+                            # 🛡️ Gate 2: Cash Floor Protection (Keep at least 2500 KZT reserve)
+                            min_required_kzt = max(cfg.get('min_free_kzt', 0.0), 2500.0)
+                            req_cost = lot_qty * bbp
+                            if (kzt_cash - req_cost) >= min_required_kzt:
+                                spread_pct = (bap - bbp) / bbp
+                                if spread_pct >= cfg['min_spread_pct']:
+                                    tier_idx = current_tiers + 1
+                                    logger.info(f"[{sym}] 🪜 Placing Sub-Grid Maker BUY (Tier {tier_idx}/{max_tiers}): {lot_qty} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} ₸)")
+                                    resp = self.kase_client.authorized_request('putTradeOrder', {
+                                        'instr_name': sym,
+                                        'action_id': 1,
+                                        'order_type_id': 2,
+                                        'qty': lot_qty,
+                                        'limit_price': round(bbp, 2),
+                                        'expiration_id': 1
+                                    })
+                                    new_oid = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
+                                    self.active_kase_buys[sym] = {
+                                        'id': new_oid,
+                                        'placed_at': time.time(),
+                                        'price': round(bbp, 2),
+                                        'last_cancel_time': 0.0
+                                    }
+                                    kzt_cash -= req_cost
 
             # --- Realized Profit Tracking from Orders ---
             try:
