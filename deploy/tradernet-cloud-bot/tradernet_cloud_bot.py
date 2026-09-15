@@ -1332,12 +1332,10 @@ class CloudBotEngine:
                     lot_decimals=lot_decimals,
                 )
 
-                # Fallback to min_lot if clip_qty is zero but sufficient cash exists
-                if clip_qty <= 0:
-                    continue
-
-                est_cost = round(clip_qty * bbp, 4)
-                is_affordable = (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
+                # If clip_qty is zero due to no cash, fallback to min_lot for theoretical cost calculation
+                effective_clip = clip_qty if clip_qty > 0 else min_lot
+                est_cost = round(effective_clip * bbp, 4)
+                is_affordable = (clip_qty >= min_lot) and (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
 
                 candidates.append({
                     'sym': sym,
@@ -1388,12 +1386,16 @@ class CloudBotEngine:
                 if inv_qty > prev_qty:
                     filled_diff = inv_qty - prev_qty
                     CloudBotEngine.METRICS["orders_filled"] += 1
-                    bought_price = self.active_resting_buys.get(sym, {}).get('price', bbp)
+                    bought_price = bbp
+                    for bo_k, tr_val in list(self.active_resting_buys.items()):
+                        if tr_val.get('sym') == sym:
+                            bought_price = tr_val.get('price', bbp)
+                            self.active_resting_buys.pop(bo_k, None)
+                            break
                     if not hasattr(self, 'last_scalp_entry'):
                         self.last_scalp_entry = {}
                     self.last_scalp_entry[sym] = bought_price
                     logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty}) @ ${bought_price}")
-                    self.active_resting_buys.pop(sym, None)
                 self.previous_inv[sym] = inv_qty
 
                 # --- TELEMETRY & ORDER PEGGER: Check ALL Resting BUY orders from Broker (Drift, TTL, Blowout) ---
@@ -1402,16 +1404,17 @@ class CloudBotEngine:
                         bo_id = bo.get('id')
                         bo_price = float(bo.get('p') or 0.0)
                         
-                        # Register in active_resting_buys if not tracked (e.g. after container restart)
-                        if sym not in self.active_resting_buys or self.active_resting_buys[sym].get('id') != bo_id:
-                            self.active_resting_buys[sym] = {
+                        # Register in active_resting_buys keyed by order ID if not tracked
+                        if bo_id not in self.active_resting_buys:
+                            self.active_resting_buys[bo_id] = {
                                 'id': bo_id,
+                                'sym': sym,
                                 'placed_at': time.time(),
                                 'price': bo_price,
                                 'last_cancel_time': 0.0
                             }
                         
-                        track_info = self.active_resting_buys[sym]
+                        track_info = self.active_resting_buys[bo_id]
                         now_ts = time.time()
                         order_age = now_ts - track_info.get('placed_at', now_ts)
                         last_cancel = track_info.get('last_cancel_time', 0.0)
@@ -1439,12 +1442,15 @@ class CloudBotEngine:
                             try:
                                 self.crypto_client.cancel(bo_id)
                                 track_info['last_cancel_time'] = now_ts
-                                self.active_resting_buys.pop(sym, None)
+                                self.active_resting_buys.pop(bo_id, None)
                                 CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
                             except Exception as ce:
                                 logger.warning(f"[{sym}] Ошибка отзыва крипто-заявки #{bo_id}: {ce}")
-                elif sym in self.active_resting_buys:
-                    self.active_resting_buys.pop(sym, None)
+                else:
+                    # Clean up tracked orders for this symbol if none exist at broker
+                    for bo_k, tr_val in list(self.active_resting_buys.items()):
+                        if tr_val.get('sym') == sym:
+                            self.active_resting_buys.pop(bo_k, None)
 
                 # --- FAIL-SAFE 2: Time-Stop Tracking ---
                 if inv_qty >= min_lot:
