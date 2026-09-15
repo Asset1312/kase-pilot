@@ -59,13 +59,13 @@ def calculate_clip_size(
     if price <= 0 or free_cash <= 0:
         return 0.0
 
-    # 1. Базовый целевой объем по стоимости (~$1.50 - $3.00 на клип)
+    # 1. Базовый целевой объем по стоимости (~$3.00 - $4.00 на клип)
     if price < 0.50:
-        target_cost = 2.00  # Дешевые (XLM, ADA): ~5-10 монет
+        target_cost = 3.50  # Дешевые (XLM, ADA): ~15-25 монет для ощутимого долларового профита
     elif price < 2.00:
-        target_cost = 2.50  # Средние (SUI, APT): ~2-3 монеты
+        target_cost = 3.50  # Средние (SUI, APT): ~3-5 монет
     else:
-        target_cost = max(price * min_lot, 3.50)  # Дорогие (DOT, NEAR, SOL)
+        target_cost = max(price * min_lot, 3.80)  # Дорогие (DOT, NEAR, SOL)
 
     target_qty = target_cost / price
 
@@ -1444,12 +1444,19 @@ class CloudBotEngine:
                     snapback_premium = max(min_floor, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     
+                    # 💰 ABSOLUTE PROFIT FLOOR: At least +$0.025 net profit per closed clip (eliminates 0.00$ broker reporting)
+                    if sell_clip > 0:
+                        min_price_for_abs_profit = round(calc_entry + (0.025 / sell_clip), cfg['decimals'])
+                        if min_price_for_abs_profit > min_safe_sell:
+                            min_safe_sell = min_price_for_abs_profit
+
                     # Ensure limit price is NEVER lower than min_safe_sell (even if bap is lower)
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
                     if target_tp < min_safe_sell:
                         target_tp = min_safe_sell
 
-                    logger.info(f"[{sym}] 🪜 Cheapest-First TP: Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
+                    est_profit_usd = (target_tp - calc_entry) * sell_clip
+                    logger.info(f"[{sym}] 🪜 Cheapest-First TP: Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%, Профит: +${est_profit_usd:.4f})")
                     
                     try:
                         resp = self.crypto_client.authorized_request('putTradeOrder', {
