@@ -1659,18 +1659,36 @@ class CloudBotEngine:
                 else:
                     self.inventory_entry_time.pop(sym, None)
 
-                # Case A: We hold shares and have no active SELL order -> place TP sell above entry
-                if curr_shares > 0 and curr_shares >= cfg['qty'] and not sell_orders:
+                # Case A: We hold shares -> Ensure ALL accumulated shares (curr_shares) are covered by TP sell
+                if curr_shares > 0:
                     tp_price = max(bap, round(entry_price * (1 + cfg['min_spread_pct']), 2))
-                    logger.info(f"[{sym}] Placing Take-Profit SELL: {cfg['qty']} shares @ {tp_price:.2f} KZT (Entry: {entry_price:.2f})")
-                    self.kase_client.authorized_request('putTradeOrder', {
-                        'instr_name': sym,
-                        'action_id': 3,
-                        'order_type_id': 2,
-                        'qty': cfg['qty'],
-                        'limit_price': tp_price,
-                        'expiration_id': 1
-                    })
+                    total_selling_qty = sum(int(o.get('q', 0)) for o in sell_orders)
+                    if not sell_orders:
+                        logger.info(f"[{sym}] Placing Take-Profit SELL: {curr_shares} shares (all inventory) @ {tp_price:.2f} KZT (Entry: {entry_price:.2f})")
+                        self.kase_client.authorized_request('putTradeOrder', {
+                            'instr_name': sym,
+                            'action_id': 3,
+                            'order_type_id': 2,
+                            'qty': curr_shares,
+                            'limit_price': tp_price,
+                            'expiration_id': 1
+                        })
+                    elif total_selling_qty < curr_shares:
+                        # Existing sell order covers less than our inventory (e.g. 50 instead of 85) -> cancel and replace with all shares
+                        logger.info(f"[{sym}] Updating Take-Profit SELL: replacing partial order ({total_selling_qty} shares) with full inventory ({curr_shares} shares)")
+                        for so in sell_orders:
+                            try:
+                                self.kase_client.cancel(so.get('id'))
+                            except Exception as ce:
+                                logger.warning(f"[{sym}] Error canceling old partial sell order {so.get('id')}: {ce}")
+                        self.kase_client.authorized_request('putTradeOrder', {
+                            'instr_name': sym,
+                            'action_id': 3,
+                            'order_type_id': 2,
+                            'qty': curr_shares,
+                            'limit_price': tp_price,
+                            'expiration_id': 1
+                        })
 
                 # Case B: Check resting BUY orders (Stale Order Pegger, Drift Check & TTL)
                 if buy_orders:
