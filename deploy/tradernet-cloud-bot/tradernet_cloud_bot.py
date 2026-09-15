@@ -1270,9 +1270,16 @@ class CloudBotEngine:
             if is_directive_stale:
                 logger.warning(f"⚠️ Dead Man's Switch Triggered! Directive is stale ({directive_age:.0f}s > {regime_info.get('ttl_seconds', 1200)}s). Halting new entries.")
 
+            # 🛡️ STRICT HARD CASH GATE: ZERO BORROWING / NO MARGIN LOANS ALLOWED!
+            # If gross USD cash <= $1.00 or uncommitted cash <= $1.00, or account in overdraft (<= 0),
+            # strictly lock the engine in SELL-ONLY / REDUCE-ONLY mode.
+            is_cash_depleted = (usd_cash <= 1.00) or (uncommitted_usd_cash <= 1.00)
+            if is_cash_depleted:
+                logger.warning(f"🛡️ [HARD CASH GATE] Кэш исчерпан (Gross: ${usd_cash:.2f}, Uncommitted: ${uncommitted_usd_cash:.2f}). Режим: ТОЛЬКО ПРОДАЖА (REDUCE-ONLY). Новые покупки СТРОГО ЗАПРЕЩЕНЫ.")
+
             risk_mode = regime_info.get("risk_mode", "NORMAL")
             allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
-            can_enter_new = (not is_directive_stale) and (risk_mode != "HALT") and (allowed_sides == "LONG_ONLY")
+            can_enter_new = (not is_directive_stale) and (risk_mode != "HALT") and (allowed_sides == "LONG_ONLY") and (not is_cash_depleted)
 
             # Candidate Collection & Ranking (Spread Compression & Affordability)
             candidates = []
@@ -1567,11 +1574,15 @@ class CloudBotEngine:
 
                 # --- 2. Flat / Liquid Inventory & Maker BUY -> Adaptive Snapback Entry ---
                 elif unsold_inventory < min_lot and not buy_orders and is_affordable:
+                    # 🛡️ HARD GATE: Strict SELL-ONLY mode if cash depleted or directive says HALT
+                    if not can_enter_new or is_cash_depleted:
+                        continue
+
                     # Adaptive trigger: spread compressed by >= 25% or spread <= 1.55%
                     is_spread_compressed = (spread_pct <= (baseline * 0.75)) or (spread_pct <= 1.55)
 
                     if not is_spread_compressed:
-                        if not can_enter_new or spread_pct > 2.5:
+                        if spread_pct > 2.5:
                             continue
 
                     # 🛡️ 3. Adverse Selection Guard: Lead-Lag Radar on Binance
