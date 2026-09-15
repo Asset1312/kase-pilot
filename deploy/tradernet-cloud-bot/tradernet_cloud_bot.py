@@ -1349,23 +1349,54 @@ class CloudBotEngine:
                     self.active_resting_buys.pop(sym, None)
                 self.previous_inv[sym] = inv_qty
 
-                # --- TELEMETRY & TTL: Check Resting BUY orders with Spread Blowout Protection ---
-                if sym in self.active_resting_buys and buy_orders:
-                    track_info = self.active_resting_buys[sym]
-                    age = time.time() - track_info.get('placed_at', time.time())
-                    is_spread_blown_out = spread_pct > (baseline * 0.90)
-                    price_moved_away = abs(bbp - track_info.get('price', bbp)) > 0.0001
-                    if is_spread_blown_out or price_moved_away or age >= 15.0:
-                        order_id = track_info.get('id')
-                        reason = f"Расширение спреда ({spread_pct:.2f}%)" if is_spread_blown_out else ("Сдвиг цен стакана" if price_moved_away else f"Таймаут TTL ({age:.0f}с)")
-                        logger.info(f"[{sym}] 🛡️ Авто-отмена приказа #{order_id}: {reason}. Защита капитала активна.")
-                        try:
-                            self.crypto_client.cancel(order_id)
-                        except Exception as ce:
-                            logger.warning(f"Error cancelling order #{order_id}: {ce}")
-                        CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
-                        self.active_resting_buys.pop(sym, None)
-                elif not buy_orders and sym in self.active_resting_buys:
+                # --- TELEMETRY & ORDER PEGGER: Check ALL Resting BUY orders from Broker (Drift, TTL, Blowout) ---
+                if buy_orders:
+                    for bo in buy_orders:
+                        bo_id = bo.get('id')
+                        bo_price = float(bo.get('p') or 0.0)
+                        
+                        # Register in active_resting_buys if not tracked (e.g. after container restart)
+                        if sym not in self.active_resting_buys or self.active_resting_buys[sym].get('id') != bo_id:
+                            self.active_resting_buys[sym] = {
+                                'id': bo_id,
+                                'placed_at': time.time(),
+                                'price': bo_price,
+                                'last_cancel_time': 0.0
+                            }
+                        
+                        track_info = self.active_resting_buys[sym]
+                        now_ts = time.time()
+                        order_age = now_ts - track_info.get('placed_at', now_ts)
+                        last_cancel = track_info.get('last_cancel_time', 0.0)
+                        can_cancel = (now_ts - last_cancel) >= 15.0  # 🛡️ Anti-spam: max 1 cancel/re-peg per 15s
+
+                        # Condition 1: Price Drift (Best Bid moved away >= 0.20% or price changed)
+                        drift_pct = abs((bbp - bo_price) / bo_price) if bo_price > 0 else 0.0
+                        is_price_drifted = (drift_pct >= 0.0020) or (abs(bbp - bo_price) > 0.0001)
+
+                        # Condition 2: TTL Expired (resting > 60s without fill -> free capital)
+                        is_ttl_expired = order_age >= 60.0
+
+                        # Condition 3: Spread Blown out (spread normalized or widened beyond compression threshold)
+                        is_spread_blown_out = spread_pct > (baseline * 0.85)
+
+                        if can_cancel and (is_price_drifted or is_ttl_expired or is_spread_blown_out):
+                            reason = (
+                                f"Дрейф цены (Заявка: ${bo_price:.4f}, Best Bid: ${bbp:.4f}, дрейф: {drift_pct*100:.2f}%)"
+                                if is_price_drifted else (
+                                    f"Таймаут TTL ({order_age:.0f}с без исполнения)"
+                                    if is_ttl_expired else f"Расширение спреда ({spread_pct:.2f}% > норма)"
+                                )
+                            )
+                            logger.info(f"[{sym}] 🔄 [CRYPTO ORDER PEGGER] Отзываем неактуальную заявку #{bo_id}: {reason}. Освобождаем USD маржу.")
+                            try:
+                                self.crypto_client.cancel(bo_id)
+                                track_info['last_cancel_time'] = now_ts
+                                self.active_resting_buys.pop(sym, None)
+                                CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
+                            except Exception as ce:
+                                logger.warning(f"[{sym}] Ошибка отзыва крипто-заявки #{bo_id}: {ce}")
+                elif sym in self.active_resting_buys:
                     self.active_resting_buys.pop(sym, None)
 
                 # --- FAIL-SAFE 2: Time-Stop Tracking ---
