@@ -862,7 +862,7 @@ def is_kase_market_open() -> bool:
     now = datetime.datetime.now(tz_kzt)
     if now.weekday() >= 5:
         return False
-    start_time = datetime.time(10, 0, 0)
+    start_time = datetime.time(11, 30, 0)
     end_time = datetime.time(17, 30, 0)
     return start_time <= now.time() <= end_time
 
