@@ -354,6 +354,22 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"OK")
             return
 
+        # 2. Manual Emergency Restart via Dashboard Button
+        if self.path == "/restart":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("""<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="6;url=/"><title>Перезапуск бота...</title><style>body{background:#0b0f19;color:#f3f4f6;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;}h2{color:#38bdf8;margin-bottom:12px;}p{color:#9ca3af;font-size:14px;}</style></head><body><h2>🔄 Инициирован перезапуск торгового контейнера</h2><p>Контейнер перезагружается на Render.com. Перенаправление на дашборд через 6 секунд...</p></body></html>""".encode("utf-8"))
+            def delayed_restart():
+                try:
+                    send_telegram_msg("🔄 **[РУЧНОЙ РЕСТАРТ]** Инициирован перезапуск торгового контейнера через панель дашборда.", TELEGRAM_CHAT_ID)
+                except Exception:
+                    pass
+                time.sleep(1.0)
+                os._exit(0)
+            threading.Thread(target=delayed_restart, daemon=True).start()
+            return
+
         mem_mb = get_process_memory_mb()
         metrics = getattr(CloudBotEngine, 'METRICS', {})
         placed = metrics.get('orders_placed', 0)
@@ -562,7 +578,10 @@ class HealthHandler(BaseHTTPRequestHandler):
     <div class="container">
         <div class="header">
             <h1><div class="pulse"></div> Облачный торговый робот Tradernet AI</h1>
-            <span style="font-size: 13px; color: #9ca3af;">Обновлено: {now_str}</span>
+            <div style="display: flex; align-items: center; gap: 14px;">
+                <span style="font-size: 13px; color: #9ca3af;">Обновлено: {now_str}</span>
+                <button onclick="if(confirm('Перезапустить контейнер торгового робота на Render?')) {{ window.location.href='/restart'; }}" style="background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #fca5a5; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.background='#ef4444'; this.style.color='#ffffff';" onmouseout="this.style.background='rgba(239, 68, 68, 0.2)'; this.style.color='#fca5a5';">🔄 Перезагрузить бота</button>
+            </div>
         </div>
 
         <div class="status-bar">
@@ -1413,7 +1432,10 @@ class CloudBotEngine:
 
                 if unsold_inventory >= min_lot:
                     # Clip-sized exit: do not dump entire balance if book depth is narrow
-                    sell_clip = min(unsold_inventory, max(clip_qty, min_lot))
+                    if sym == 'SUI/USD':
+                        sell_clip = 1.0  # Strict 1-SUI ladder step
+                    else:
+                        sell_clip = min(unsold_inventory, max(clip_qty, min_lot))
                     # Quantize sell_clip
                     if sell_clip >= lot_step:
                         sell_clip = round(math.floor(round(sell_clip / lot_step, 6)) * lot_step, lot_decimals)
