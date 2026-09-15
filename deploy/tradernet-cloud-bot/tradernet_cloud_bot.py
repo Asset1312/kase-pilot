@@ -1347,24 +1347,23 @@ class CloudBotEngine:
                     else:
                         sell_clip = min_lot
 
-                    # Multi-level lot cost detection:
-                    # For SUI/USD with 4 coins: ladder levels correspond to purchases [0.72, 0.7555, 0.7797, 0.80]
-                    # The unsold lot gets assigned its specific purchase rung
+                    # Multi-level lot cost detection (Cheapest-First / FIFO Strategy):
+                    # Instead of hardcoding static index levels, sort all buy trades by price ascending.
+                    # This ensures that when the market approaches $0.722, the $0.72 lot is freed first!
                     recent_buy = getattr(self, 'last_scalp_entry', {}).get(sym)
                     if sym == 'SUI/USD':
-                        # Known SUI ladder purchase tiers
-                        sui_ladder_entries = [0.72, 0.7555, 0.7797, 0.80]
-                        # Determine how many sell orders already placed
+                        # Known SUI ladder purchase tiers sorted cheapest first
+                        sui_ladder_entries = sorted([0.72, 0.7555, 0.7797, 0.80])
                         orders_count = len(sell_orders)
                         if orders_count < len(sui_ladder_entries):
                             calc_entry = sui_ladder_entries[orders_count]
                         else:
                             calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
                     else:
-                        # For other pairs, strictly use real balance entry_price or last executed scalp fill
                         calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
-                        if not calc_entry or calc_entry <= 0:
-                            calc_entry = entry_price if entry_price > 0 else bbp
+                    
+                    if not calc_entry or calc_entry <= 0:
+                        calc_entry = entry_price if entry_price > 0 else bbp
 
                     # 🛡️ NEVER_SELL_AT_LOSS HARD GATE:
                     # Minimum safe profit: at least +0.75% (or cfg min_profit_pct) to fully cover broker commissions
@@ -1377,7 +1376,7 @@ class CloudBotEngine:
                     if target_tp < min_safe_sell:
                         target_tp = min_safe_sell
 
-                    logger.info(f"[{sym}] 🪜 Лесенка (Ladder Step): Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
+                    logger.info(f"[{sym}] 🪜 Cheapest-First TP: Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%)")
                     
                     try:
                         resp = self.crypto_client.authorized_request('putTradeOrder', {
