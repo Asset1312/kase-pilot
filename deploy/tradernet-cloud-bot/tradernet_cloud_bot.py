@@ -823,7 +823,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">КазТрансОйл (KZTO.KZ)</div>
-                        <div class="stat-val" style="color: #60a5fa;">1 акция в работе</div>
+                        <div class="stat-val" style="color: #60a5fa;">2 акции в работе</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">Облигации БЦК (BCCIRB.KZ)</div>
@@ -1583,7 +1583,7 @@ class CloudBotEngine:
             # Active scalping configs for KASE
             kase_configs = {
                 'AIRA.KZ': {'qty': 3, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'KZTO.KZ': {'qty': 1, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'KZTO.KZ': {'qty': 2, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
                 'BCCIRB.KZ': {'qty': 50, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
                 'KMGD.KZ': {'qty': 25, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
                 'CCBN.KZ': {'qty': 1, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 10000.0}
