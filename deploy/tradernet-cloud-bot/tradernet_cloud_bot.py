@@ -1452,6 +1452,20 @@ class CloudBotEngine:
                         if tr_val.get('sym') == sym:
                             self.active_resting_buys.pop(bo_k, None)
 
+                # --- TELEMETRY & ORDER PEGGER (SELL): Cancel Distorted / Stale Sell Orders (e.g. $125 SOL) ---
+                if sell_orders:
+                    for so in sell_orders:
+                        so_id = so.get('id')
+                        so_price = float(so.get('p') or 0.0)
+                        # If a sell order is placed absurdly high (> 5% above current Best Ask, e.g. $125 when Ask is $101),
+                        # it was caused by the old micro-lot absolute floor bug. Cancel it immediately to reset.
+                        if bap > 0 and so_price > (bap * 1.05):
+                            logger.info(f"[{sym}] 🔄 [SELL ORDER PEGGER] Отзываем искаженную заявку на продажу #{so_id} @ ${so_price} (>5% от Ask ${bap:.4f}). Восстанавливаем позицию.")
+                            try:
+                                self.crypto_client.cancel(so_id)
+                            except Exception as ce:
+                                logger.warning(f"[{sym}] Ошибка отзыва искаженного SELL #{so_id}: {ce}")
+
                 # --- FAIL-SAFE 2: Time-Stop Tracking ---
                 if inv_qty >= min_lot:
                     if sym not in self.inventory_entry_time:
@@ -1500,13 +1514,21 @@ class CloudBotEngine:
                     snapback_premium = max(min_floor, (baseline - spread_pct) / 200.0)
                     min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
                     
-                    # 💰 ABSOLUTE PROFIT FLOOR: At least +$0.025 net profit per closed clip (eliminates 0.00$ broker reporting).
-                    # For single micro-lots (like 1 SUI @ ~$0.72), floor is +$0.0099 (allowing clean $0.7299 exit).
-                    abs_profit_target = 0.0099 if (sym == 'SUI/USD' and sell_clip <= 1.0) else 0.025
-                    if sell_clip > 0:
-                        min_price_for_abs_profit = round(calc_entry + (abs_profit_target / sell_clip), cfg['decimals'])
-                        if min_price_for_abs_profit > min_safe_sell:
-                            min_safe_sell = min_price_for_abs_profit
+                    # 💰 ABSOLUTE PROFIT FLOOR:
+                    # For SOL (micro lot 0.001 @ ~$100, clip value ~$0.10): use percentage target strictly (max 1.5% premium, avoiding $125 distortion).
+                    # For other assets (SUI, etc.): ensure at least +$0.0099 to +$0.025 net profit, capped at max +4.0% premium over entry.
+                    if sym == 'SOL/USD':
+                        # Strict sensible target: entry + 1.25% (e.g. $100.25 -> ~$101.50)
+                        min_safe_sell = round(calc_entry * 1.0125, cfg['decimals'])
+                    else:
+                        abs_profit_target = 0.0099 if (sym == 'SUI/USD' and sell_clip <= 1.0) else 0.025
+                        if sell_clip > 0:
+                            min_price_for_abs_profit = round(calc_entry + (abs_profit_target / sell_clip), cfg['decimals'])
+                            # Hard cap: absolute floor must never exceed +4% over entry price
+                            max_reasonable_tp = round(calc_entry * 1.04, cfg['decimals'])
+                            min_price_for_abs_profit = min(min_price_for_abs_profit, max_reasonable_tp)
+                            if min_price_for_abs_profit > min_safe_sell:
+                                min_safe_sell = min_price_for_abs_profit
 
                     # Ensure limit price is NEVER lower than min_safe_sell (even if bap is lower)
                     target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
