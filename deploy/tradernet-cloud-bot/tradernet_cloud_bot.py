@@ -1156,6 +1156,8 @@ def ask_deepseek_market_regime(btc_feed: dict, eth_feed: dict, sol_feed: dict, s
             "allowed_sides": "LONG_ONLY",
             "risk_score": 7,
             "commentary": f"Автономный консервативный fallback: временная задержка связи с DeepSeek ({elapsed:.1f}с). Торговля продолжается с повышенной осторожностью.",
+            "btc_outlook": "Контроль волатильности (Fallback)",
+            "eth_outlook": "Контроль волатильности (Fallback)",
             "sol_outlook": "Осторожный режим",
             "sui_outlook": "Осторожный режим",
             "ttl_seconds": 1200,
@@ -1240,6 +1242,7 @@ class CloudBotEngine:
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
+            acc_list = user_summary.get('acc', [])
             pure_cash_balance = 0.0
             for a in acc_list:
                 if a.get('curr') == 'USD':
@@ -1379,10 +1382,7 @@ class CloudBotEngine:
                     lot_decimals=lot_decimals,
                 )
 
-                if clip_qty <= 0:
-                    continue
-
-                est_cost = round(clip_qty * bbp, 4)
+                est_cost = round(clip_qty * bbp, 4) if clip_qty > 0 else 0.0
                 # 🛡️ Покупка разрешена только на реальные собственные средства (без заемных) с буфером
                 is_affordable = (clip_qty >= min_lot) and (raw_usd_s >= 1.0) and (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
 
@@ -2128,12 +2128,12 @@ class CloudBotEngine:
         Анализирует динамику системы, выявляет скрытые аномалии и санкционирует graceful restart при необходимости.
         """
         logger.info("🧠 [AI SUPERVISOR] Когнитивный супервизор DeepSeek запущен (интервал 1800 сек)...")
-        time.sleep(300)  # Первый аудит через 5 минут после старта
+        time.sleep(60)  # Первый аудит через 60 секунд после старта
         global LAST_AI_AUDIT_TS
         while True:
             try:
-                time.sleep(1800)
                 if not DEEPSEEK_API_KEY:
+                    time.sleep(60)
                     continue
 
                 stall_sec = time.monotonic() - LAST_MAIN_LOOP_HEARTBEAT
@@ -2231,6 +2231,7 @@ class CloudBotEngine:
                     )
             except Exception as e:
                 logger.error(f"[AI SUPERVISOR] Ошибка когнитивного аудита: {e}")
+            time.sleep(1800)
 
     def start(self):
         logger.info("=" * 65)
