@@ -2760,8 +2760,11 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             send_telegram_msg(f"Ошибка обработки: {e}", chat_id)
 
         except Exception as e:
-            logger.error(f"Telegram polling loop error: {e}")
-            time.sleep(3)
+            if "409" in str(e):
+                time.sleep(15)  # Another instance (Render) is polling; back off silently
+            else:
+                logger.error(f"Telegram polling loop error: {e}")
+                time.sleep(3)
         time.sleep(1)
 
 def main():
