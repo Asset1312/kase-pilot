@@ -2502,7 +2502,7 @@ class CloudBotEngine:
             try:
                 self.run_crypto_step()
                 self.run_kase_step()
-                self.run_bybit_step()
+                # self.run_bybit_step()  # Delegated exclusively to Android Redmi 12 standalone node
             except Exception as e:
                 logger.error(f"Loop error: {e}")
             time.sleep(10)
