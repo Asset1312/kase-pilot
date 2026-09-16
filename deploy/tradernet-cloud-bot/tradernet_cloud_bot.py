@@ -288,17 +288,6 @@ def tradernet_spread_scanner_loop():
                                 hunter_msg = f"[{now_str}] 🎯 СНАЙПЕР: Вход по {ticker} @ {ask}$ (сжатие {sp_pct}%). Snapback TP: {tp_target}$ (+{snapback_premium*100:.2f}%)"
                                 LATEST_SPREAD_ANOMALIES.appendleft(hunter_msg)
                                 logger.info(hunter_msg)
-                                try:
-                                    send_telegram_msg(
-                                        f"🎯 **[Снайпер аномалий] ВХОД В СЖАТИЕ СПРЕДА**\n\n"
-                                        f"Монета: **{ticker}**\n"
-                                        f"Цена: **{ask} $**\n"
-                                        f"Сжатие: **{sp_pct}%** (база {baseline}%)\n"
-                                        f"Целевой Snapback TP: **{tp_target} $** (+{snapback_premium*100:.2f}% на нормализации)",
-                                        TELEGRAM_CHAT_ID
-                                    )
-                                except Exception:
-                                    pass
 
                         # Check Exit for Active Anomaly Trades (Mean Reversion / TP Hit)
                         if ticker in ACTIVE_ANOMALY_TRADES:
@@ -325,18 +314,7 @@ def tradernet_spread_scanner_loop():
                                 exit_msg = f"[{now_str}] 🏆 СНАЙПЕР: Закрыт цикл {ticker}! Вход {tr['entry_price']}$ -> Выход {exit_price}$ (+{profit_pct}%) за {duration_sec}с!"
                                 LATEST_SPREAD_ANOMALIES.appendleft(exit_msg)
                                 logger.info(exit_msg)
-                                try:
-                                    send_telegram_msg(
-                                        f"🏆 **[Снайпер аномалий] ЦИКЛ ЗАКРЫТ В ПЛЮС!**\n\n"
-                                        f"Монета: **{ticker}**\n"
-                                        f"Вход: {tr['entry_price']} $ ➔ Выход: **{exit_price} $**\n"
-                                        f"Чистая прибыль: **+{profit_pct}%** (+${profit_usd})\n"
-                                        f"Длительность удержания: {duration_sec} сек.\n"
-                                        f"Спред восстановился в норму ({sp_pct}%)",
-                                        TELEGRAM_CHAT_ID
-                                    )
-                                except Exception:
-                                    pass
+
                         elif sp_pct >= 3.50 and ticker not in ['TRX/USD', 'XRP/USD']:
                             anom = f"[{now_str}] ⚠️ Расширение спреда {ticker}: {sp_pct}% (Bid: {bid}, Ask: {ask})"
                             LATEST_SPREAD_ANOMALIES.appendleft(anom)
@@ -1715,19 +1693,7 @@ class CloudBotEngine:
                         })
                         CloudBotEngine.METRICS["orders_placed"] += 1
                         order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                        try:
-                            send_telegram_msg(
-                                f"🪜 **[ЛЕСЕНКА: ВЫСТАВЛЕН ТЕЙК-ПРОФИТ]**\n\n"
-                                f"Монета: **{sym}**\n"
-                                f"Операция: **Лимитная продажа (SELL)**\n"
-                                f"Объем: **{sell_clip}**\n"
-                                f"Цена выхода: **${target_tp}**\n"
-                                f"Себестоимость лота: **${calc_entry}** (+{((target_tp/calc_entry)-1)*100:.2f}%)\n"
-                                f"№ приказа: `{order_id}`",
-                                TELEGRAM_CHAT_ID
-                            )
-                        except Exception:
-                            pass
+
                     except Exception as err:
                         logger.error(f"[{sym}] Ошибка выставления лесенки SELL: {err}")
 
@@ -1800,19 +1766,7 @@ class CloudBotEngine:
                             'price': buy_price,
                             'qty': clip_qty
                         }
-                        try:
-                            send_telegram_msg(
-                                f"🚀 **[АВТО-ОРДЕР ВЫСТАВЛЕН]**\n\n"
-                                f"Монета: **{sym}**\n"
-                                f"Операция: **Лимитная покупка (BUY)**\n"
-                                f"Объем: **{clip_qty}** (~${est_cost:.2f})\n"
-                                f"Цена: **${buy_price}**\n"
-                                f"Сжатие спреда: **{spread_pct:.2f}%** (норма {baseline}%)\n"
-                                f"№ приказа: `{order_id}`",
-                                TELEGRAM_CHAT_ID
-                            )
-                        except Exception:
-                            pass
+
                     else:
                         # Broker Rejected Order (e.g. margin/collateral or critical risk limit)
                         cooldown_sec = 600.0  # 10 minutes silence for this pair
@@ -2043,16 +1997,7 @@ class CloudBotEngine:
                                 self.kase_client.cancel(bo_id)
                                 track_info['last_cancel_time'] = now_ts
                                 self.active_kase_buys.pop(sym, None)
-                                # Send Telegram notification
-                                send_telegram_msg(
-                                    f"🔄 **[KASE: РЕ-ПЕГГИНГ / ОТЗЫВ ЗАЯВКИ]**\n\n"
-                                    f"Инструмент: **{sym}**\n"
-                                    f"Причина: {reason}\n"
-                                    f"Старый ордер #{bo_id}: {cfg['qty']} шт @ {bo_price:.2f} ₸\n"
-                                    f"Текущий Best Bid: **{bbp:.2f} ₸** | Best Ask: **{bap:.2f} ₸**\n"
-                                    f"💡 *Капитал освобожден для актуальной перестановки.*",
-                                    TELEGRAM_CHAT_ID
-                                )
+
                             except Exception as ce:
                                 logger.warning(f"[{sym}] Ошибка отзыва заявки KASE #{bo_id}: {ce}")
 
@@ -2302,9 +2247,21 @@ class CloudBotEngine:
                     
                     net = max(0.0, gross - tot_fees)
                     CloudBotEngine.BYBIT_STATS["gross_profit_usd"] = round(gross, 4)
-                    CloudBotEngine.BYBIT_STATS["fees_usd"] = round(tot_fees, 4)
-                    CloudBotEngine.BYBIT_STATS["net_profit_usd"] = round(net, 4)
-                    CloudBotEngine.BYBIT_STATS["completed_cycles"] = cycles
+                    prev_cycles = getattr(self, "bybit_last_cycles", None)
+                    if prev_cycles is not None and cycles > prev_cycles:
+                        last_sell = sell_execs[0] if sell_execs else {}
+                        s_p = last_sell.get("execPrice", "")
+                        s_q = last_sell.get("execQty", "")
+                        send_telegram_msg(
+                            f"🏆 **[BYBIT.KZ: ЦИКЛ ЗАКРЫТ В ПЛЮС!]**\n\n"
+                            f"Пара: **SUI/USDT**\n"
+                            f"Продано: **{s_q} SUI** @ **${s_p}**\n"
+                            f"Прибыль: **+${net:.4f} USDT**\n"
+                            f"Всего закрыто циклов: **{cycles}**\n"
+                            f"Текущий баланс: **${total_usd:.2f} USDT**",
+                            TELEGRAM_CHAT_ID
+                        )
+                    self.bybit_last_cycles = cycles
 
                     trade_rows = []
                     for ex in execs[:10]:
@@ -2401,15 +2358,6 @@ class CloudBotEngine:
                         resp1 = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Buy", clip_1, t1, post_only=True)
                         if resp1.get("retCode") == 0:
                             avail_usdt -= val_1
-                            send_telegram_msg(
-                                f"🎯 **[BYBIT.KZ: СТУПЕНЬ 1 (Скальп)]**\n\n"
-                                f"Пара: **SUI/USDT**\n"
-                                f"Объем: **{clip_1} SUI** @ **${t1}** (-0.55%)\n"
-                                f"Сумма ордера: **${round(val_1, 2)} USDT**\n"
-                                f"Тип: **Maker (PostOnly)**\n"
-                                f"Ордер ID: `{resp1.get('result', {}).get('orderId')}`",
-                                TELEGRAM_CHAT_ID
-                            )
 
                 # Ступень 2 (-1.75% защитный откат)
                 has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
@@ -2422,15 +2370,6 @@ class CloudBotEngine:
                         resp2 = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Buy", clip_2, t2, post_only=True)
                         if resp2.get("retCode") == 0:
                             avail_usdt -= val_2
-                            send_telegram_msg(
-                                f"🎯 **[BYBIT.KZ: СТУПЕНЬ 2 (Откат)]**\n\n"
-                                f"Пара: **SUI/USDT**\n"
-                                f"Объем: **{clip_2} SUI** @ **${t2}** (-1.75%)\n"
-                                f"Сумма ордера: **${round(val_2, 2)} USDT**\n"
-                                f"Тип: **Maker (PostOnly)**\n"
-                                f"Ордер ID: `{resp2.get('result', {}).get('orderId')}`",
-                                TELEGRAM_CHAT_ID
-                            )
 
         except Exception as e:
             logger.error(f"[Bybit] Ошибка шага торговли: {e}")
