@@ -469,9 +469,13 @@ class HealthHandler(BaseHTTPRequestHandler):
         regime_title = f"Режим: {regime.get('risk_mode', 'NORMAL')} ({regime.get('allowed_sides', 'LONG_ONLY')})"
         regime_comment = regime.get('commentary', 'Бот работает в автономном математическом режиме сбора спреда.')
         risk_score = regime.get('risk_score', 5)
-        sol_out = regime.get('sol_outlook', 'Диапазон $100-103')
-        sui_out = regime.get('sui_outlook', 'Поддержка $0.75, сопротивление $0.78')
+        btc_out = regime.get('btc_outlook', 'Флагман рынка: контроль уровня $76k')
+        eth_out = regime.get('eth_outlook', 'Контроль уровня $2,450')
+        sol_out = regime.get('sol_outlook', 'Диапазон $95-102')
+        sui_out = regime.get('sui_outlook', 'Поддержка $0.68, сопротивление $0.75')
 
+        btc_bm = benchmarks.get('BTC/USD', {}).get('last_price', '76500.00')
+        eth_bm = benchmarks.get('ETH/USD', {}).get('last_price', '2480.00')
         sol_bm = benchmarks.get('SOL/USD', {}).get('last_price', '101.00')
         sui_bm = benchmarks.get('SUI/USD', {}).get('last_price', '0.7600')
 
@@ -584,7 +588,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         .ai-banner {{ background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); border: 1px solid #4338ca; border-radius: 16px; padding: 20px; margin-bottom: 20px; }}
         .ai-banner h3 {{ font-size: 16px; color: #a5b4fc; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }}
         .ai-banner p {{ font-size: 14px; color: #e0e7ff; line-height: 1.6; margin-bottom: 14px; }}
-        .outlook-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .outlook-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }}
         .outlook-box {{ background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: 8px; font-size: 13px; color: #cbd5e1; }}
         .footer {{ text-align: center; margin-top: 28px; color: #6b7280; font-size: 12px; }}
     </style>
@@ -623,8 +627,10 @@ class HealthHandler(BaseHTTPRequestHandler):
             <h3>🧠 Макро-сводка DeepSeek AI: <span style="color: #38bdf8;">{regime_title}</span> (Риск: {risk_score}/10)</h3>
             <p>{regime_comment}</p>
             <div class="outlook-grid">
-                <div class="outlook-box"><strong>💎 Solana (SOL):</strong> {sol_out} (Мировая цена: ${sol_bm})</div>
-                <div class="outlook-box"><strong>🌊 Sui (SUI):</strong> {sui_out} (Мировая цена: ${sui_bm})</div>
+                <div class="outlook-box"><strong>🟠 Bitcoin (BTC):</strong> {btc_out} (Мировая: ${btc_bm})</div>
+                <div class="outlook-box"><strong>🔷 Ethereum (ETH):</strong> {eth_out} (Мировая: ${eth_bm})</div>
+                <div class="outlook-box"><strong>💎 Solana (SOL):</strong> {sol_out} (Мировая: ${sol_bm})</div>
+                <div class="outlook-box"><strong>🌊 Sui (SUI):</strong> {sui_out} (Мировая: ${sui_bm})</div>
             </div>
         </div>
 
@@ -912,7 +918,7 @@ class BinanceLeadLagDetector:
     """
     def __init__(self, symbols=None):
         if symbols is None:
-            symbols = ['solusdt', 'suiusdt']
+            symbols = ['btcusdt', 'ethusdt', 'solusdt', 'suiusdt']
         self.symbols = [s.lower() for s in symbols]
         self.trades = {s: deque(maxlen=2000) for s in self.symbols}
         self.latest_prices = {s: 0.0 for s in self.symbols}
@@ -1076,36 +1082,41 @@ def get_global_crypto_price(symbol="SOLUSDT") -> dict:
         logger.error(f"Global crypto price fallback error: {e}")
     return {}
 
-def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
+def ask_deepseek_market_regime(btc_feed: dict, eth_feed: dict, sol_feed: dict, sui_feed: dict, account_summary: dict) -> dict:
     """DeepSeek AI: Chief Quantitative Risk Supervisor (Cold Path)."""
     if not DEEPSEEK_API_KEY:
         return {}
     url = "https://api.deepseek.com/chat/completions"
     prompt = f"""
-Ты — Главный риск-офицер и количественный супервизор хедж-фонда (Risk Supervisor).
-Твоя задача — проанализировать телеметрию рынка и выдать строгую директиву риска (RiskDirective).
+Ты — Главный риск-офицер и количественный макро-супервизор хедж-фонда (Chief Risk Officer).
+Твоя главная задача — ЗАЩИТА КАПИТАЛА (Capital Preservation First). При макро-штормах (провал крипто-законов в Сенате США, каскадные ликвидации деривативов, заседание FOMC/ФРС, оттоки из ETF) ты ОБЯЗАН заморозить покупки!
 
-Текущая телеметрия:
+Текущая телеметрия рынка:
+- Bitcoin (BTC/USDT - Флагман рынка): {btc_feed}
+- Ethereum (ETH/USDT - Барометр ликвидности): {eth_feed}
 - Solana (Binance): {sol_feed}
 - Sui (Binance): {sui_feed}
 - Портфель Tradernet: {account_summary}
 
-Требования к директиве:
-1. 'risk_mode':
-   - 'NORMAL' (рынок адекватен, волатильность рабочая)
-   - 'DEFENSIVE' (рынок под давлением продавцов, снизить аппетит к риску)
-   - 'HALT' (панический слив, шторм, запретить любые новые покупки)
-2. 'allowed_sides': 'LONG_ONLY' или 'NONE' (если слив или аномалия).
-3. 'risk_score': число 1-10.
-4. 'commentary': краткая человеческая сводка (2 предложения) на русском для Telegram и дашборда.
-5. 'ttl_seconds': время жизни директивы (обычно 1200 сек).
+Критерии режима риска (risk_mode):
+1. 'HALT' (Категорический стоп-сигнал):
+   - Если BTC пробил вниз ключевые уровни поддержки ($76k..$78k) или падает более 2% за сутки
+   - Если на рынке идет каскадная ликвидация плечевых лонгов
+   - Если есть регуляторный шок (провал законов в Сенате США) или паника перед решением ФРС
+   - В режиме 'HALT': 'allowed_sides': 'NONE', 'risk_score': 8-10. Все покупки немедленно замораживаются!
+2. 'DEFENSIVE' (Осторожный режим):
+   - Волатильность повышена, BTC/ETH в неопределенности, 'allowed_sides': 'LONG_ONLY', 'risk_score': 6-7.
+3. 'NORMAL' (Рабочий режим):
+   - Спокойный боковик или плавный рост, 'allowed_sides': 'LONG_ONLY', 'risk_score': 1-5.
 
 Ответь ИСКЛЮЧИТЕЛЬНО в формате валидного JSON по схеме:
 {{
   "risk_mode": "NORMAL",
   "allowed_sides": "LONG_ONLY",
   "risk_score": 5,
-  "commentary": "текст аналитической сводки на русском",
+  "commentary": "краткий макро-анализ на русском (2 предложения) для трейдера",
+  "btc_outlook": "оценка BTC и ключевых поддержек",
+  "eth_outlook": "оценка ETH",
   "sol_outlook": "краткий ориентир по Solana",
   "sui_outlook": "краткий ориентир по Sui",
   "ttl_seconds": 1200
@@ -1163,8 +1174,10 @@ class CloudBotEngine:
         "allowed_sides": "LONG_ONLY",
         "risk_score": 5,
         "commentary": "Рынок в рабочей фазе. Бот работает в режиме автономного сбора спреда.",
-        "sol_outlook": "Консолидация в диапазоне $100-103",
-        "sui_outlook": "Попытка отскока от зоны поддержки $0.75",
+        "btc_outlook": "Флагман рынка: контроль уровня $76k",
+        "eth_outlook": "Контроль уровня $2,450",
+        "sol_outlook": "Консолидация в диапазоне $95-102",
+        "sui_outlook": "Попытка отскока от зоны поддержки $0.68",
         "ttl_seconds": 1200,
         "updated_at": time.time()
     }
@@ -1270,12 +1283,21 @@ class CloudBotEngine:
             # Check macro regime via DeepSeek once every 5 minutes (300s)
             now = time.time()
             if now - getattr(self, 'last_regime_check', 0) > 300:
+                btc_feed = get_global_crypto_price("BTCUSDT")
+                eth_feed = get_global_crypto_price("ETHUSDT")
                 sol_feed = get_global_crypto_price("SOLUSDT")
                 sui_feed = get_global_crypto_price("SUIUSDT")
+                if btc_feed: CloudBotEngine.LATEST_BINANCE['BTC/USD'] = btc_feed
+                if eth_feed: CloudBotEngine.LATEST_BINANCE['ETH/USD'] = eth_feed
                 if sol_feed: CloudBotEngine.LATEST_BINANCE['SOL/USD'] = sol_feed
                 if sui_feed: CloudBotEngine.LATEST_BINANCE['SUI/USD'] = sui_feed
-                summary_info = {"usd_cash": usd_cash, "sol_held": positions.get('SOL/USD', {}).get('q', 0), "sui_held": positions.get('SUI/USD', {}).get('q', 0)}
-                regime = ask_deepseek_market_regime(sol_feed, sui_feed, summary_info)
+                summary_info = {
+                    "effective_own_cash": effective_own_cash,
+                    "saldo_usd": raw_usd_s,
+                    "sol_held": positions.get('SOL/USD', {}).get('q', 0),
+                    "sui_held": positions.get('SUI/USD', {}).get('q', 0)
+                }
+                regime = ask_deepseek_market_regime(btc_feed, eth_feed, sol_feed, sui_feed, summary_info)
                 if regime:
                     CloudBotEngine.LATEST_REGIME = regime
                     self.last_regime_check = now
@@ -1606,6 +1628,15 @@ class CloudBotEngine:
                             continue
 
                     # 🛡️ 3. Adverse Selection Guard: Lead-Lag Radar on Binance
+                    # A. Systemic Market Cascade Veto: never buy any altcoin if market anchors (BTC/ETH) are dumping!
+                    btc_imp = LEAD_LAG_RADAR.get_market_impulse("btcusdt")
+                    eth_imp = LEAD_LAG_RADAR.get_market_impulse("ethusdt")
+                    if btc_imp.get('is_dump') or eth_imp.get('is_dump') or (btc_imp.get('impulse_pct', 0.0) <= -0.20):
+                        CloudBotEngine.METRICS["dump_blocks"] += 1
+                        logger.info(f"[{sym}] 🛑 Вход отменен: Системный сброс BTC/ETH (BTC impulse: {btc_imp.get('impulse_pct', 0.0):.2f}%, ETH: {eth_imp.get('impulse_pct', 0.0):.2f}%)")
+                        continue
+
+                    # B. Coin-specific adverse selection
                     impulse = LEAD_LAG_RADAR.get_market_impulse(cfg.get('binance', ''))
                     is_impulse_pump = False
                     if impulse.get('is_fresh'):

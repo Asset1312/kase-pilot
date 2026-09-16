@@ -248,14 +248,18 @@ def _collect_reconnecting(
     adapter: TradernetWebsocketAdapter,
     symbols: Sequence[str],
     observer: Any = None,
+    *,
+    count: int = 1,
 ) -> list[Any]:
     async def run() -> list[Any]:
-        return [
-            quote
-            async for quote in adapter.quotes(
-                symbols, reconnect=True, observer=observer
-            )
-        ]
+        results: list[Any] = []
+        async for quote in adapter.quotes(
+            symbols, reconnect=True, observer=observer
+        ):
+            results.append(quote)
+            if len(results) >= count:
+                break
+        return results
 
     return asyncio.run(run())
 
@@ -296,7 +300,7 @@ def test_reconnect_backs_off_exponentially(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     delays: list[float] = []
-    fake = FlakyWebsocket(failures=3, messages=[])
+    fake = FlakyWebsocket(failures=3, messages=[{"c": "HSBK.KZ"}])
     _install_fake_websocket(monkeypatch, fake)
 
     async def record_sleep(delay: float) -> None:
@@ -305,8 +309,9 @@ def test_reconnect_backs_off_exponentially(
     monkeypatch.setattr(tradernet_ws.asyncio, "sleep", record_sleep)
     adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
 
-    _collect_reconnecting(adapter, ["HSBK.KZ"])
+    result = _collect_reconnecting(adapter, ["HSBK.KZ"])
 
+    assert result == [{"c": "HSBK.KZ"}]
     assert delays == [1.0, 2.0, 4.0]
 
 
@@ -334,3 +339,205 @@ def test_without_reconnect_a_failure_still_propagates(
         _collect(adapter, ["HSBK.KZ"])
 
     assert fake.connection_attempts == 1
+
+
+class MultiStreamWebsocket:
+    """Simulates a sequence of stream attempts with different outcomes."""
+
+    def __init__(
+        self,
+        streams: Sequence[Sequence[dict[str, Any]] | Exception],
+    ) -> None:
+        self._streams = list(streams)
+        self.connection_attempts = 0
+
+    async def __aenter__(self) -> Self:
+        self.connection_attempts += 1
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def quotes(
+        self,
+        symbols: Sequence[str],
+    ) -> AsyncIterator[dict[str, Any]]:
+        idx = min(self.connection_attempts - 1, len(self._streams) - 1)
+        outcome = self._streams[idx]
+        if isinstance(outcome, Exception):
+            raise outcome
+            yield  # pragma: no cover
+        for message in outcome:
+            yield message
+
+    async def market_depth(
+        self,
+        symbol: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        idx = min(self.connection_attempts - 1, len(self._streams) - 1)
+        outcome = self._streams[idx]
+        if isinstance(outcome, Exception):
+            raise outcome
+            yield  # pragma: no cover
+        for message in outcome:
+            yield message
+
+
+def test_without_reconnect_clean_eof_finishes_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A. reconnect=False + clean StopAsyncIteration finishes normally without retry."""
+    messages = [{"c": "HSBK.KZ", "ltp": 100.0}]
+    fake = FakeWebsocket(object(), messages=messages)
+    _install_fake_websocket(monkeypatch, fake)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    result = _collect(adapter, ["HSBK.KZ"])
+
+    assert result == messages
+
+
+def test_reconnect_reopens_stream_on_clean_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B. reconnect=True + clean StopAsyncIteration triggers reconnection."""
+    stream1: list[dict[str, Any]] = []
+    stream2 = [{"c": "HSBK.KZ", "ltp": 200.0}]
+    fake = MultiStreamWebsocket([stream1, stream2])
+    _install_fake_websocket(monkeypatch, fake)  # type: ignore[arg-type]
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    result = _collect_reconnecting(adapter, ["HSBK.KZ"])
+
+    assert result == stream2
+    assert fake.connection_attempts == 2
+
+
+def test_reconnect_reports_failed_and_resumed_on_clean_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C. first stream EOF, second yields data: observer sees failed then resumed."""
+    events: list[tuple[str, int, float]] = []
+    stream1 = [{"c": "HSBK.KZ", "init": 1}]
+    stream2 = [{"c": "HSBK.KZ", "init": 1, "ltp": 250.0}]
+    fake = MultiStreamWebsocket([stream1, stream2])
+    _install_fake_websocket(monkeypatch, fake)  # type: ignore[arg-type]
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    results: list[Any] = []
+
+    async def run() -> None:
+        async for msg in adapter.quotes(
+            ["HSBK.KZ"],
+            reconnect=True,
+            observer=lambda ev, att, del_: events.append((ev, att, del_)),
+        ):
+            results.append(msg)
+            if len(results) == 2:
+                break
+
+    asyncio.run(run())
+
+    assert results == stream1 + stream2
+    assert events == [("failed", 1, 1.0), ("resumed", 1, 0.0)]
+    assert fake.connection_attempts == 2
+
+
+def test_reconnect_backs_off_exponentially_on_repeated_clean_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D. repeated clean EOF: exponential retry delays are applied."""
+    delays: list[float] = []
+    fake = MultiStreamWebsocket([[], [], [], [{"c": "HSBK.KZ"}]])
+    _install_fake_websocket(monkeypatch, fake)  # type: ignore[arg-type]
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", record_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    result = _collect_reconnecting(adapter, ["HSBK.KZ"])
+
+    assert result == [{"c": "HSBK.KZ"}]
+    assert delays == [1.0, 2.0, 4.0]
+    assert fake.connection_attempts == 4
+
+
+def test_reconnect_propagates_asyncio_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G. asyncio cancellation propagates immediately without retrying."""
+    fake = FakeWebsocket(object(), messages=[{"c": "HSBK.KZ"}])
+    _install_fake_websocket(monkeypatch, fake)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    async def run() -> None:
+        async for _ in adapter.quotes(["HSBK.KZ"], reconnect=True):
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run())
+
+
+def test_scheduled_run_until_cancellation_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H. scheduled _run_until cancellation terminates cleanly and does not reconnect."""
+    stream_messages = [{"c": "HSBK.KZ", "ltp": 100.0}]
+    fake = FakeWebsocket(object(), messages=stream_messages)
+    _install_fake_websocket(monkeypatch, fake)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    collected: list[Any] = []
+
+    async def consumer() -> None:
+        async for quote in adapter.quotes(["HSBK.KZ"], reconnect=True):
+            collected.append(quote)
+            # After receiving quote, the stream ends and reconnect would sleep then retry;
+            # simulate cancellation during that period.
+            raise asyncio.CancelledError()
+
+    async def run() -> None:
+        try:
+            await consumer()
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+    assert collected == stream_messages
+
+
+def test_raht_orderbook_clean_termination_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce the RAHT pattern: orderbook yields messages then cleanly ends.
+    With reconnect=True the iterator must continue receiving from the next stream.
+    """
+    stream1 = [
+        {"i": "RAHT.KZ", "n": 0, "ins": [{"p": 100, "q": 10, "s": "B"}]},
+        {"i": "RAHT.KZ", "n": 1, "upd": [{"p": 100, "q": 20, "s": "B"}]},
+    ]
+    stream2 = [
+        {"i": "RAHT.KZ", "n": 0, "ins": [{"p": 100, "q": 30, "s": "B"}]},
+        {"i": "RAHT.KZ", "n": 1, "upd": [{"p": 100, "q": 40, "s": "B"}]},
+    ]
+    fake = MultiStreamWebsocket([stream1, stream2])
+    _install_fake_websocket(monkeypatch, fake)  # type: ignore[arg-type]
+    monkeypatch.setattr(tradernet_ws.asyncio, "sleep", _no_sleep)
+    adapter = TradernetWebsocketAdapter(object())  # type: ignore[arg-type]
+
+    collected: list[Any] = []
+
+    async def run() -> None:
+        async for msg in adapter.market_depth("RAHT.KZ", reconnect=True):
+            collected.append(msg)
+            if len(collected) == len(stream1) + len(stream2):
+                break
+
+    asyncio.run(run())
+
+    assert collected == stream1 + stream2
+    assert fake.connection_attempts == 2

@@ -31,6 +31,10 @@ _MAX_RETRY_DELAY = 60.0
 ReconnectObserver = Callable[[str, int, float], None]
 
 
+class _StreamEnded(Exception):
+    """Internal signal that the underlying broker stream ended normally."""
+
+
 class TradernetWebsocketAdapter:
     """Expose confirmed broker WebSocket streams through the SDK."""
 
@@ -97,10 +101,10 @@ class TradernetWebsocketAdapter:
     ) -> AsyncIterator[dict[str, Any]]:
         """Consume a stream, optionally reconnecting after transport failures.
 
-        Only ``ApiRequestError`` (transport/connection trouble) triggers a
-        retry. ``ValidationError`` means the broker sent something we do not
-        understand — retrying would not help and would hide the problem.
-        Cancellation is never caught.
+        Only ``ApiRequestError`` and unexpected stream exhaustion (clean EOF)
+        trigger a retry when ``reconnect=True``. ``ValidationError`` means the
+        broker sent something we do not understand — retrying would not help
+        and would hide the problem. Cancellation is never caught.
 
         Note that after a reconnect the broker re-sends a fresh snapshot
         (``init: 1`` for quotes, ``n: 0`` for the order book — F-38/F-40), so
@@ -109,8 +113,11 @@ class TradernetWebsocketAdapter:
         reports.
         """
         if not reconnect:
-            async for message in self._consume(make_stream, message_name):
-                yield message
+            try:
+                async for message in self._consume(make_stream, message_name):
+                    yield message
+            except _StreamEnded:
+                return
             return
 
         attempt = 0
@@ -124,8 +131,7 @@ class TradernetWebsocketAdapter:
                         attempt = 0
                         delay = _INITIAL_RETRY_DELAY
                     yield message
-                return
-            except ApiRequestError:
+            except (ApiRequestError, _StreamEnded):
                 attempt += 1
                 if observer is not None:
                     observer("failed", attempt, delay)
@@ -144,7 +150,7 @@ class TradernetWebsocketAdapter:
                     try:
                         message = await stream.__anext__()
                     except StopAsyncIteration:
-                        return
+                        raise _StreamEnded from None
                     except Exception as exc:
                         raise ApiRequestError(
                             "Tradernet WebSocket request failed"
@@ -157,7 +163,7 @@ class TradernetWebsocketAdapter:
                         )
 
                     yield message
-        except ApiRequestError, ValidationError:
+        except (ApiRequestError, ValidationError, _StreamEnded):
             raise
         except Exception as exc:
             raise ApiRequestError("Tradernet WebSocket request failed") from exc
