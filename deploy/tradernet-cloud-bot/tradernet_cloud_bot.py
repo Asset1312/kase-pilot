@@ -136,14 +136,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradernetCloudAI")
 
+# Auto-load .env for local development / testing
+_env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
+if os.path.exists(_env_file):
+    try:
+        with open(_env_file, "r", encoding="utf-8") as _ef:
+            for _line in _ef:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+    except Exception:
+        pass
+
 PORT = int(os.environ.get("PORT", "10000"))
 
-# API Keys loaded strictly from environment variables (No hardcoded secrets)
-KASE_PUB_KEY = os.environ.get("KASE_PUB_KEY", "")
-KASE_SEC_KEY = os.environ.get("KASE_SEC_KEY", "")
+# API Keys loaded strictly from environment variables or .env (No hardcoded secrets)
+KASE_PUB_KEY = os.environ.get("KASE_PUB_KEY", os.environ.get("TRADERNET_PUBLIC_KEY", ""))
+KASE_SEC_KEY = os.environ.get("KASE_SEC_KEY", os.environ.get("TRADERNET_PRIVATE_KEY", ""))
 
-CRYPTO_PUB_KEY = os.environ.get("CRYPTO_PUB_KEY", "")
-CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", "")
+CRYPTO_PUB_KEY = os.environ.get("CRYPTO_PUB_KEY", os.environ.get("TRADERNET_PUBLIC_KEY", ""))
+CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", os.environ.get("TRADERNET_PRIVATE_KEY", ""))
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
