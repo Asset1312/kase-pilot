@@ -115,11 +115,8 @@ class BybitV5Client:
             return {"retCode": -1, "retMsg": str(e), "result": {}}
 
     def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
-        """Fetches wallet balance for specified account type (UNIFIED, SPOT)."""
+        """Fetches wallet balance for specified account type (UNIFIED)."""
         res = self._request("GET", "/v5/account/wallet-balance", params={"accountType": account_type})
-        if res.get("retCode") != 0 and account_type == "UNIFIED":
-            # Fallback to SPOT if account is classic spot
-            res = self._request("GET", "/v5/account/wallet-balance", params={"accountType": "SPOT"})
 
         summary = {
             "retCode": res.get("retCode", -1),
