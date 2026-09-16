@@ -1542,56 +1542,18 @@ class CloudBotEngine:
                     logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty}) @ ${bought_price}")
                 self.previous_inv[sym] = inv_qty
 
-                # --- TELEMETRY & ORDER PEGGER: Check ALL Resting BUY orders from Broker (Drift, TTL, Blowout) ---
+                # --- TRADERNET CRYPTO EXIT-ONLY MODE: Отзываем любые висящие заявки BUY ---
                 if buy_orders:
                     for bo in buy_orders:
                         bo_id = bo.get('id')
-                        bo_price = float(bo.get('p') or 0.0)
-                        
-                        # Register in active_resting_buys keyed by order ID if not tracked
-                        if bo_id not in self.active_resting_buys:
-                            self.active_resting_buys[bo_id] = {
-                                'id': bo_id,
-                                'sym': sym,
-                                'placed_at': time.time(),
-                                'price': bo_price,
-                                'last_cancel_time': 0.0
-                            }
-                        
-                        track_info = self.active_resting_buys[bo_id]
-                        now_ts = time.time()
-                        order_age = now_ts - track_info.get('placed_at', now_ts)
-                        last_cancel = track_info.get('last_cancel_time', 0.0)
-                        can_cancel = (now_ts - last_cancel) >= 15.0  # 🛡️ Anti-spam: max 1 cancel/re-peg per 15s
-
-                        # Condition 1: Price Drift (Best Bid moved away >= 0.20% or price changed)
-                        drift_pct = abs((bbp - bo_price) / bo_price) if bo_price > 0 else 0.0
-                        is_price_drifted = (drift_pct >= 0.0020) or (abs(bbp - bo_price) > 0.0001)
-
-                        # Condition 2: TTL Expired (resting > 60s without fill -> free capital)
-                        is_ttl_expired = order_age >= 60.0
-
-                        # Condition 3: Spread Blown out (spread normalized or widened beyond compression threshold)
-                        is_spread_blown_out = spread_pct > (baseline * 0.85)
-
-                        if can_cancel and (is_price_drifted or is_ttl_expired or is_spread_blown_out):
-                            reason = (
-                                f"Дрейф цены (Заявка: ${bo_price:.4f}, Best Bid: ${bbp:.4f}, дрейф: {drift_pct*100:.2f}%)"
-                                if is_price_drifted else (
-                                    f"Таймаут TTL ({order_age:.0f}с без исполнения)"
-                                    if is_ttl_expired else f"Расширение спреда ({spread_pct:.2f}% > норма)"
-                                )
-                            )
-                            logger.info(f"[{sym}] 🔄 [CRYPTO ORDER PEGGER] Отзываем неактуальную заявку #{bo_id}: {reason}. Освобождаем USD маржу.")
+                        if bo_id:
+                            logger.info(f"[{sym}] 🛑 [EXIT-ONLY] Отзываем BUY-заявку #{bo_id} (режим ликвидации позиций)")
                             try:
                                 self.crypto_client.cancel(bo_id)
-                                track_info['last_cancel_time'] = now_ts
-                                self.active_resting_buys.pop(bo_id, None)
                                 CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
                             except Exception as ce:
                                 logger.warning(f"[{sym}] Ошибка отзыва крипто-заявки #{bo_id}: {ce}")
-                else:
-                    # Clean up tracked orders for this symbol if none exist at broker
+                    buy_orders = []
                     for bo_k, tr_val in list(self.active_resting_buys.items()):
                         if tr_val.get('sym') == sym:
                             self.active_resting_buys.pop(bo_k, None)
@@ -1697,81 +1659,11 @@ class CloudBotEngine:
                     except Exception as err:
                         logger.error(f"[{sym}] Ошибка выставления лесенки SELL: {err}")
 
-                # --- 2. Flat / Liquid Inventory & Maker BUY -> Adaptive Snapback Entry ---
-                elif unsold_inventory < min_lot and not buy_orders and is_affordable:
-                    # 🛡️ HARD GATE: Strict SELL-ONLY mode if cash depleted or directive says HALT
-                    if not can_enter_new or is_cash_depleted:
-                        continue
-
-                    # Adaptive trigger: spread compressed by >= 25% or spread <= 1.55%
-                    is_spread_compressed = (spread_pct <= (baseline * 0.75)) or (spread_pct <= 1.55)
-
-                    if not is_spread_compressed:
-                        if spread_pct > 2.5:
-                            continue
-
-                    # 🛡️ 3. Adverse Selection Guard: Lead-Lag Radar on Binance
-                    # A. Systemic Market Cascade Veto: never buy any altcoin if market anchors (BTC/ETH) are dumping!
-                    btc_imp = LEAD_LAG_RADAR.get_market_impulse("btcusdt")
-                    eth_imp = LEAD_LAG_RADAR.get_market_impulse("ethusdt")
-                    if btc_imp.get('is_dump') or eth_imp.get('is_dump') or (btc_imp.get('impulse_pct', 0.0) <= -0.20):
-                        CloudBotEngine.METRICS["dump_blocks"] += 1
-                        logger.info(f"[{sym}] 🛑 Вход отменен: Системный сброс BTC/ETH (BTC impulse: {btc_imp.get('impulse_pct', 0.0):.2f}%, ETH: {eth_imp.get('impulse_pct', 0.0):.2f}%)")
-                        continue
-
-                    # B. Coin-specific adverse selection
-                    impulse = LEAD_LAG_RADAR.get_market_impulse(cfg.get('binance', ''))
-                    is_impulse_pump = False
-                    if impulse.get('is_fresh'):
-                        # Veto on Toxic Flow: Never buy if Binance is dumping or CVD negative
-                        if impulse.get('is_dump') or impulse.get('impulse_pct', 0.0) <= -0.15:
-                            CloudBotEngine.METRICS["dump_blocks"] += 1
-                            logger.info(f"[{sym}] 🛑 Entry skipped: Adverse Selection Guard (Binance impulse: {impulse.get('impulse_pct', 0.0):.2f}%, CVD: {impulse.get('cvd', 0.0):.2f})")
-                            continue
-                        if impulse.get('is_pump'):
-                            is_impulse_pump = True
-                            CloudBotEngine.METRICS["impulse_entries"] += 1
-
-                    buy_price = round(bbp, cfg['decimals'])
-                    
-                    # 🛡️ REDUNDANT HARD ZERO-BORROWING ASSERTION:
-                    # Double check that we NEVER borrow broker funds right before order dispatch!
-                    if effective_own_cash <= 1.0 or uncommitted_usd_cash < (est_cost + 1.0):
-                        logger.warning(f"[{sym}] 🛑 ЗАПРЕТ ЗАЁМНЫХ СРЕДСТВ: Попытка входа заблокирована. Своих средств: ${effective_own_cash:.2f}, Требуется: ${est_cost:.2f}. Режим REDUCE-ONLY.")
-                        continue
-
-                    logger.info(f"[{sym}] 🎯 Approved Maker BUY (Compression: {item['compression_pct']}%): {clip_qty} @ ${buy_price:.4f} (Spread: {spread_pct:.2f}%, Free Uncommitted: ${uncommitted_usd_cash:.2f}, Gross Own Cash: ${effective_own_cash:.2f})")
-                    resp = self.crypto_client.authorized_request('putTradeOrder', {
-                        'instr_name': sym,
-                        'action_id': 1,
-                        'order_type_id': 2,
-                        'qty': clip_qty if lot_decimals > 0 else int(clip_qty),
-                        'limit_price': buy_price,
-                        'expiration_id': 1
-                    })
-                    order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                    is_accepted = bool(order_id) and (resp.get('error') is None)
-                    err_msg = resp.get('error') or resp.get('result', {}).get('msg') or resp.get('errMsg')
-                    
-                    if is_accepted:
-                        CloudBotEngine.METRICS["orders_placed"] += 1
-                        uncommitted_usd_cash = max(0.0, uncommitted_usd_cash - est_cost)
-                        usd_cash = max(0.0, usd_cash - est_cost)
-                        CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
-                        CloudBotEngine.LATEST_USD_CASH = usd_cash
-                        self.active_resting_buys[sym] = {
-                            'id': order_id,
-                            'placed_at': time.time(),
-                            'is_impulse': is_impulse_pump,
-                            'price': buy_price,
-                            'qty': clip_qty
-                        }
-
-                    else:
-                        # Broker Rejected Order (e.g. margin/collateral or critical risk limit)
-                        cooldown_sec = 600.0  # 10 minutes silence for this pair
-                        self.pair_cooldowns[sym] = time.time() + cooldown_sec
-                        logger.warning(f"[{sym}] ⚠️ Брокер отклонил приказ BUY ({err_msg or 'недостаточно обеспечения/реджект'}). Пауза {cooldown_sec/60:.0f} мин.")
+                # --- 2. Flat / Liquid Inventory: BUY ENTRIES STRICTLY DISABLED (EXIT-ONLY MODE) ---
+                elif unsold_inventory < min_lot:
+                    # Tradernet Crypto is in planned EXIT-ONLY mode:
+                    # All buying is disabled. Capital is being reallocated to KASE and Bybit.
+                    continue
 
             # --- Realized Profit Tracking (with Tradernet API get_trades_history sync) ---
             try:
@@ -2396,6 +2288,7 @@ class CloudBotEngine:
                 telemetry = {
                     "loop_stall_seconds": round(stall_sec, 1),
                     "is_kase_market_open": is_kase_market_open(),
+                    "tradernet_crypto_mode": "EXIT_ONLY (Все покупки намеренно отключены, ждем исполнения тейк-профитов для вывода средств на Bybit и KASE)",
                     "crypto_profit_report": crypto_pnl,
                     "kase_profit_report": pnl,
                     "orders_placed": metrics.get("orders_placed", 0),
@@ -2408,6 +2301,8 @@ class CloudBotEngine:
 
                 prompt = f"""
 Ты — Главный системный супервизор алгоритмического торгового бота (Tradernet / KASE Multi-Asset Cloud Bot).
+ВАЖНОЕ ПРИМЕЧАНИЕ АРХИТЕКТУРЫ:
+Подсистема Tradernet Crypto переведена трейдером в штатный режим EXIT_ONLY (покупки отключены, позиции ликвидируются по Тейк-Профиту, капитал переносится на Bybit и KASE). Нулевые покупки и нулевой USD кэш в крипте на Tradernet являются ЦЕЛЕВЫМ ПОВЕДЕНИЕМ, а не сбоем! Основная торговля криптой делегирована на Bybit.
 Твоя задача — объективно оценить работоспособность и здоровье торговой системы по снимку телеметрии:
 {json.dumps(telemetry, ensure_ascii=False, indent=2)}
 
