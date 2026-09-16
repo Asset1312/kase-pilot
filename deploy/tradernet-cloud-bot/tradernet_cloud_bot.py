@@ -2321,7 +2321,9 @@ class CloudBotEngine:
 
             # 4. DeepSeek Macro CRO & Lead-Lag Safety Guard
             regime = getattr(CloudBotEngine, 'LATEST_REGIME', {})
-            is_halted = (regime.get("risk_mode") == "HALT") or (regime.get("allowed_sides") == "NONE")
+            risk_score = int(regime.get("risk_score", 0))
+            is_halted = (regime.get("risk_mode") == "HALT") or (regime.get("allowed_sides") == "NONE") or (risk_score >= 7)
+
             btc_imp = LEAD_LAG_RADAR.get_market_impulse("btcusdt")
             is_systemic_dump = btc_imp.get("is_dump", False) or (btc_imp.get("impulse_pct", 0.0) <= -0.20)
 
@@ -2330,36 +2332,72 @@ class CloudBotEngine:
             if sui_price <= 0:
                 sui_price = float(get_global_crypto_price("SUIUSDT").get("last_price", 0.70))
 
-            # 6. Exit logic: Take-Profit Limit Sell (+1.4% gross, netting +1.2% after fees)
-            if sui_free >= 1.0 and not open_sells:
-                tp_price = round(sui_price * 1.014, 4)
-                sell_qty = round(sui_free, 1)
-                logger.info(f"🟡 [Bybit.kz] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} SUI @ ${tp_price} (+1.4%)")
-                resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Sell", sell_qty, tp_price)
-                if resp.get("retCode") == 0:
-                    send_telegram_msg(
-                        f"🟡 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
-                        f"Пара: **SUI/USDT**\n"
-                        f"Объем: **{sell_qty} SUI**\n"
-                        f"Цена выхода: **${tp_price}** (+1.4%)\n"
-                        f"Ордер ID: `{resp.get('result', {}).get('orderId')}`",
-                        TELEGRAM_CHAT_ID
-                    )
+            # 6. Exit logic: Take-Profit Limit Sell (PostOnly Maker)
+            # Проверяем minOrderAmt: продаем только если позиция >= 5.0 USDT
+            current_pos_val = sui_free * sui_price
+            if current_pos_val >= 5.00 and not open_sells:
+                # Динамический тейк-профит в зависимости от режима рынка
+                tp_pct = 0.022 if is_halted else 0.014
+                tp_price = round(sui_price * (1.0 + tp_pct), 4)
+                sell_qty = math.floor(sui_free * 100) / 100.0  # Floor до basePrecision (0.01)
 
-            # 7. Entry logic: Limit Maker Buy on Dip (-0.8%)
-            if not is_halted and not is_systemic_dump and avail_usdt >= 2.50 and len(open_buys) < 2:
-                buy_target = round(sui_price * 0.992, 4)
-                alloc_usd = min(avail_usdt * 0.35, 3.50)
-                clip_sui = round(alloc_usd / buy_target, 1)
-                if clip_sui >= 1.0:
-                    logger.info(f"🟡 [Bybit.kz] Выставляем лимитную покупку: {clip_sui} SUI @ ${buy_target} (-0.8%)")
-                    resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Buy", clip_sui, buy_target)
+                if (sell_qty * tp_price) >= 5.00:
+                    logger.info(f"🟡 [Bybit.kz] ТЕЙК-ПРОФИТ: {sell_qty} SUI @ ${tp_price} (+{tp_pct*100:.1f}%)")
+                    resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Sell", sell_qty, tp_price, post_only=True)
                     if resp.get("retCode") == 0:
                         send_telegram_msg(
-                            f"🟡 **[BYBIT.KZ: ВХОД В СЕТКУ]**\n\n"
+                            f"🟡 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
                             f"Пара: **SUI/USDT**\n"
-                            f"Ступень: **{clip_sui} SUI** @ **${buy_target}**\n"
-                            f"Сумма: **${round(clip_sui * buy_target, 2)} USDT**\n"
+                            f"Объем: **{sell_qty} SUI** (~${round(sell_qty * tp_price, 2)})\n"
+                            f"Цена выхода: **${tp_price}** (+{tp_pct*100:.1f}%)\n"
+                            f"Ордер ID: `{resp.get('result', {}).get('orderId')}`",
+                            TELEGRAM_CHAT_ID
+                        )
+
+            # 7. TTL & Price Drift Management для висящих Buy-ордеров
+            current_time = time.time()
+            for b_ord in list(open_buys):
+                ord_id = b_ord.get("orderId")
+                ord_price = float(b_ord.get("price", 0.0))
+                created_time = float(b_ord.get("createdTime", current_time * 1000)) / 1000.0
+
+                drift_pct = abs(sui_price - ord_price) / ord_price if ord_price > 0 else 0.0
+                is_expired = (current_time - created_time) > 1200  # 20 минут
+
+                # Снимаем, если рынок ушел более чем на 2.5% или истек TTL
+                if (drift_pct > 0.025 or is_expired) and ord_id:
+                    logger.info(f"🟡 [Bybit.kz] Отмена устаревшего ордера {ord_id} (Дрейф: {drift_pct*100:.1f}%, TTL: {int(current_time - created_time)}с)")
+                    BYBIT_CLIENT.cancel_order("SUIUSDT", ord_id)
+                    if b_ord in open_buys:
+                        open_buys.remove(b_ord)
+
+            # 8. Entry logic: Адаптивный Wick Hunter vs Normal
+            if not is_systemic_dump and avail_usdt >= 5.10 and len(open_buys) < 1:
+                if is_halted:
+                    mode_label = "WICK_HUNTER"
+                    discount = 0.042       # -4.2% глубоко в ликвидность
+                else:
+                    mode_label = "NORMAL"
+                    discount = 0.008       # -0.8% рабочий откат
+
+                buy_target = round(sui_price * (1.0 - discount), 4)
+                alloc_usd = 5.10  # Фиксированная первая ступень под баланс $10.73
+
+                # Расчет количества с округлением строго вниз
+                clip_sui = math.floor((alloc_usd / buy_target) * 100) / 100.0
+                actual_order_val = clip_sui * buy_target
+
+                if actual_order_val >= 5.00 and actual_order_val <= avail_usdt:
+                    logger.info(f"🟡 [Bybit.kz][{mode_label}] Выставляем покупку: {clip_sui} SUI @ ${buy_target} (-{discount*100:.1f}%)")
+                    resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Buy", clip_sui, buy_target, post_only=True)
+                    if resp.get("retCode") == 0:
+                        send_telegram_msg(
+                            f"🎯 **[BYBIT.KZ: ВХОД {mode_label}]**\n\n"
+                            f"Пара: **SUI/USDT**\n"
+                            f"Ступень 1: **{clip_sui} SUI** @ **${buy_target}** (-{discount*100:.1f}%)\n"
+                            f"Сумма ордера: **${round(actual_order_val, 2)} USDT**\n"
+                            f"Остаток кэша: **${round(avail_usdt - actual_order_val, 2)} USDT**\n"
+                            f"Тип: **Maker (PostOnly)**\n"
                             f"Ордер ID: `{resp.get('result', {}).get('orderId')}`",
                             TELEGRAM_CHAT_ID
                         )

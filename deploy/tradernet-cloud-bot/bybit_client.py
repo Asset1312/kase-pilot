@@ -157,16 +157,17 @@ class BybitV5Client:
         qty: float,
         price: float,
         category: str = "spot",
+        post_only: bool = True,
     ) -> Dict[str, Any]:
-        """Places a limit Maker order on Bybit Spot."""
+        """Places a limit Maker order on Bybit Spot with PostOnly support."""
         data = {
             "category": category,
             "symbol": symbol.upper(),
             "side": side.capitalize(),  # "Buy" or "Sell"
             "orderType": "Limit",
-            "qty": str(qty),
-            "price": str(price),
-            "timeInForce": "GTC",
+            "qty": f"{qty:.2f}",
+            "price": f"{price:.4f}",
+            "timeInForce": "PostOnly" if post_only else "GTC",
         }
         return self._request("POST", "/v5/order/create", data=data)
 
