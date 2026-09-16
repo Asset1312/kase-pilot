@@ -2248,6 +2248,17 @@ class CloudBotEngine:
             bal["updated_at"] = time.time()
             CloudBotEngine.BYBIT_BALANCE = bal
 
+            ret_c = bal.get("retCode", 0)
+            if ret_c == 403:
+                CloudBotEngine.BYBIT_STATUS = "⚠️ БЛОК IP (Bybit WAF 403)"
+                return
+            elif ret_c == 10003:
+                CloudBotEngine.BYBIT_STATUS = "⚠️ НЕВЕРНЫЙ КЛЮЧ (10003)"
+                return
+            elif ret_c != 0:
+                CloudBotEngine.BYBIT_STATUS = f"⚠️ ОШИБКА API ({ret_c})"
+                return
+
             if total_usd <= 0.05 and sui_bal <= 0.1:
                 CloudBotEngine.BYBIT_STATUS = "ОЖИДАНИЕ ДЕПОЗИТА ($0.00)"
                 return

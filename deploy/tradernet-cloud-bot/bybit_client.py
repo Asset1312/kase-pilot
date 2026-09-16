@@ -7,6 +7,7 @@ Uses requests.Session with browser-grade TLS headers to reliably pass Cloudflare
 
 from __future__ import annotations
 
+import os
 import hashlib
 import hmac
 import json
@@ -35,6 +36,9 @@ class BybitV5Client:
         self.recv_window = str(recv_window)
         self.base_url = f"https://{self.domain}"
         self.session = requests.Session()
+        proxy = os.environ.get("BYBIT_PROXY", os.environ.get("HTTPS_PROXY", "")).strip()
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json",
@@ -42,11 +46,10 @@ class BybitV5Client:
 
     @property
     def is_configured(self) -> bool:
-        """Returns True if API key and secret are provided."""
         return bool(self.api_key and self.api_secret)
 
     def _generate_signature(self, timestamp: str, payload_str: str) -> str:
-        """Generates HMAC-SHA256 signature according to Bybit V5 specification."""
+        """Bybit V5 HMAC-SHA256 signature generator."""
         param_str = f"{timestamp}{self.api_key}{self.recv_window}{payload_str}"
         return hmac.new(
             self.api_secret.encode("utf-8"),
@@ -94,11 +97,18 @@ class BybitV5Client:
             else:
                 resp = self.session.post(url, data=payload_str.encode("utf-8"), headers=headers, timeout=timeout)
 
+            if resp.status_code == 403:
+                return {
+                    "retCode": 403,
+                    "retMsg": "WAF_IP_BLOCKED: Облачный IP (Render/AWS) заблокирован Bybit WAF (Tencent Cloud EdgeOne)",
+                    "result": {}
+                }
+
             try:
                 body_json = resp.json()
                 return body_json
             except Exception:
-                return {"retCode": resp.status_code, "retMsg": resp.text, "result": {}}
+                return {"retCode": resp.status_code, "retMsg": resp.text[:200], "result": {}}
 
         except Exception as e:
             logger.error(f"Bybit request failed [{endpoint}]: {e}")
