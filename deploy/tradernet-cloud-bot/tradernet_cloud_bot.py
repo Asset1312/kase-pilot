@@ -23,6 +23,7 @@ from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import tradernet
 from latency_telemetry_worker import LatencyBenchmarkEngine
+from bybit_client import BybitV5Client
 
 def extract_best_ask_qty(quote: dict) -> Optional[float]:
     """Извлечение глубины верхнего уровня стакана Tradernet."""
@@ -146,6 +147,11 @@ CRYPTO_SEC_KEY = os.environ.get("CRYPTO_SEC_KEY", "")
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+
+# Bybit Kazakhstan Credentials (Loaded from Render Environment)
+BYBIT_API_KEY = os.environ.get("BYBIT_API_KEY", "")
+BYBIT_API_SECRET = os.environ.get("BYBIT_API_SECRET", "")
+BYBIT_CLIENT = BybitV5Client(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET, domain=BYBIT_DOMAIN)
 
 # Telegram Bot Integration
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppgtY2I6-JQFiM-mgcnZ36U")
@@ -442,6 +448,12 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "mm_latency_benchmark": LATENCY_ENGINE.get_latency_report(),
                 "kase_spreads": LATEST_KASE_SPREADS,
                 "crypto_spreads": LATEST_TRADERNET_SPREADS,
+                "bybit_kazakhstan": {
+                    "status": getattr(CloudBotEngine, 'BYBIT_STATUS', 'ОЖИДАНИЕ КЛЮЧЕЙ'),
+                    "balance": getattr(CloudBotEngine, 'BYBIT_BALANCE', {}),
+                    "stats": getattr(CloudBotEngine, 'BYBIT_STATS', {}),
+                    "open_orders": getattr(CloudBotEngine, 'BYBIT_ORDERS', [])
+                },
                 "watchdog_supervisor": {
                     "stall_seconds": round(time.monotonic() - LAST_MAIN_LOOP_HEARTBEAT, 1),
                     "reconciliations_run": WATCHDOG_STATS.get("reconciliations_run", 0),
@@ -489,6 +501,33 @@ class HealthHandler(BaseHTTPRequestHandler):
         committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
         usd_col = "#ef4444" if raw_usd_s < 0 else "#34d399"
         usd_badge = "⚠️ ОВЕРДРАФТ (входы заблокированы)" if raw_usd_s <= 0 else f"Свободно: ${uncommitted_c:.2f} | В ордерах: ${committed_m:.2f}"
+
+        # Bybit Kazakhstan Data Extraction
+        bybit_status_str = getattr(CloudBotEngine, 'BYBIT_STATUS', 'ОЖИДАНИЕ КЛЮЧЕЙ')
+        bybit_bal = getattr(CloudBotEngine, 'BYBIT_BALANCE', {})
+        bybit_tot = bybit_bal.get('total_usd', 0.0)
+        bybit_avail = bybit_bal.get('available_usdt', 0.0)
+        bybit_locked = bybit_bal.get('locked_usdt', 0.0)
+        bybit_stats = getattr(CloudBotEngine, 'BYBIT_STATS', {})
+        bybit_gross = bybit_stats.get('gross_profit_usd', 0.0)
+        bybit_fees = bybit_stats.get('fees_usd', 0.0)
+        bybit_net = bybit_stats.get('net_profit_usd', 0.0)
+        bybit_cycles = bybit_stats.get('completed_cycles', 0)
+        bybit_trades = bybit_stats.get('trades', [])
+        bybit_badge_bg = "#059669" if bybit_tot > 0 else "#374151"
+
+        bybit_trades_html = ""
+        for bt in bybit_trades[:6]:
+            side_col = "#34d399" if bt.get('side') == 'Buy' else "#fbbf24"
+            bybit_trades_html += f"""<tr>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #292524; color: #9ca3af;">{bt.get('time')}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #292524; font-weight: 600; color: {side_col};">{bt.get('side')} SUI</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #292524;">{bt.get('qty')} @ ${bt.get('price')}</td>
+                <td style="padding: 6px 10px; border-bottom: 1px solid #292524; color: #f87171;">-${bt.get('fee')} {bt.get('fee_currency')}</td>
+            </tr>"""
+        if not bybit_trades_html:
+            bybit_trades_html = '<tr><td colspan="4" style="padding: 10px; text-align: center; color: #78716c;">Ожидание первого депозита и сделок на Bybit.kz...</td></tr>'
+
 
         today_pnl = pnl_stats.get('today_profit_kzt', 0.0)
         total_pnl = pnl_stats.get('total_profit_kzt', 0.0)
@@ -620,6 +659,10 @@ class HealthHandler(BaseHTTPRequestHandler):
                 <div class="label">Крипто-депозит USD (Cash-Only)</div>
                 <div class="val" style="color: {usd_col};">${raw_usd_s:.2f} <span style="font-size: 11px; color: #9ca3af; font-weight: normal;">({usd_badge})</span></div>
             </div>
+            <div class="status-pill">
+                <div class="label">🟡 Bybit.kz (Spot USDT)</div>
+                <div class="val" style="color: #fbbf24;">${bybit_tot:.2f} <span style="font-size: 11px; color: #9ca3af; font-weight: normal;">({bybit_status_str})</span></div>
+            </div>
         </div>
 
         <!-- DeepSeek Macro Analyst Report -->
@@ -671,6 +714,51 @@ class HealthHandler(BaseHTTPRequestHandler):
                     </thead>
                     <tbody>
                         {trade_rows_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Bybit Kazakhstan Trading Terminal & History Card -->
+        <div class="card" style="border-color: #f59e0b; background: linear-gradient(180deg, #1c1917 0%, #0c0a09 100%); margin-bottom: 20px;">
+            <div class="card-header">
+                <div class="card-title" style="color: #fbbf24; display: flex; align-items: center; gap: 8px;">
+                    🟡 Bybit Kazakhstan (Spot V5)
+                    <a href="https://www.bybit.kz/" target="_blank" style="font-size: 12px; color: #38bdf8; text-decoration: none; border-bottom: 1px dashed #38bdf8; margin-left: 8px;">🔗 Открыть bybit.kz ↗</a>
+                </div>
+                <span class="badge" style="background: {bybit_badge_bg}; color: #ffffff;">{bybit_status_str}</span>
+            </div>
+            <div class="stat-grid" style="margin-bottom: 16px;">
+                <div class="stat-box" style="background: rgba(0,0,0,0.35);">
+                    <div class="stat-label">Баланс USDT</div>
+                    <div class="stat-val" style="color: #fbbf24; font-size: 20px;">${bybit_tot:.2f} <span style="font-size: 11px; color: #a8a29e; font-weight: normal;">(Свободно: ${bybit_avail:.2f} | В ордерах: ${bybit_locked:.2f})</span></div>
+                </div>
+                <div class="stat-box" style="background: rgba(0,0,0,0.35);">
+                    <div class="stat-label">Чистая прибыль (Net PnL)</div>
+                    <div class="stat-val" style="color: #34d399; font-size: 20px;">+${bybit_net:.4f}</div>
+                </div>
+                <div class="stat-box" style="background: rgba(0,0,0,0.35);">
+                    <div class="stat-label">Комиссии биржи (Расходы)</div>
+                    <div class="stat-val" style="color: #f87171; font-size: 20px;">-${bybit_fees:.4f}</div>
+                </div>
+                <div class="stat-box" style="background: rgba(0,0,0,0.35);">
+                    <div class="stat-label">Закрытых циклов (Сделки)</div>
+                    <div class="stat-val" style="color: #f3f4f6;">{bybit_cycles} кругов</div>
+                </div>
+            </div>
+            <div style="background: rgba(0,0,0,0.25); border-radius: 10px; padding: 12px; overflow-x: auto;">
+                <div style="font-size: 12px; font-weight: 700; color: #fde68a; text-transform: uppercase; margin-bottom: 8px;">Лента движений и сделок (Bybit V5 History):</div>
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+                    <thead>
+                        <tr style="color: #78716c; font-size: 11px; text-transform: uppercase;">
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #292524;">Время</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #292524;">Операция</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #292524;">Объем / Цена</th>
+                            <th style="padding: 6px 10px; border-bottom: 1px solid #292524;">Комиссия</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {bybit_trades_html}
                     </tbody>
                 </table>
             </div>
@@ -1211,6 +1299,22 @@ class CloudBotEngine:
         "last_dump_event": None,
         "last_impulse_event": None
     }
+    BYBIT_STATUS = "ОЖИДАНИЕ КЛЮЧЕЙ"
+    BYBIT_BALANCE = {
+        "total_usd": 0.0,
+        "available_usdt": 0.0,
+        "locked_usdt": 0.0,
+        "coins": {},
+        "updated_at": 0.0
+    }
+    BYBIT_STATS = {
+        "gross_profit_usd": 0.0,
+        "fees_usd": 0.0,
+        "net_profit_usd": 0.0,
+        "completed_cycles": 0,
+        "trades": []
+    }
+    BYBIT_ORDERS = []
 
     def __init__(self):
         self.kase_client = tradernet.Tradernet(KASE_PUB_KEY, KASE_SEC_KEY)
@@ -2122,6 +2226,123 @@ class CloudBotEngine:
             except Exception as e:
                 logger.error(f"[WATCHDOG] Ошибка ревизора инвентаря: {e}")
 
+    def run_bybit_step(self):
+        """
+        Bybit Kazakhstan Spot V5 Micro-Grid Trading Engine.
+        Tailored for $10 USDT testing on SUI/USDT with DeepSeek CRO protection.
+        """
+        if not BYBIT_CLIENT or not BYBIT_CLIENT.is_configured:
+            CloudBotEngine.BYBIT_STATUS = "ОЖИДАНИЕ КЛЮЧЕЙ"
+            return
+
+        try:
+            # 1. Live Balance Sync from Bybit V5
+            bal = BYBIT_CLIENT.get_wallet_balance()
+            avail_usdt = bal.get("available_usdt", 0.0)
+            locked_usdt = bal.get("locked_usdt", 0.0)
+            total_usd = bal.get("total_usd", 0.0)
+            sui_coin = bal.get("coins", {}).get("SUI", {})
+            sui_bal = sui_coin.get("balance", 0.0)
+            sui_free = sui_coin.get("free", 0.0)
+
+            bal["updated_at"] = time.time()
+            CloudBotEngine.BYBIT_BALANCE = bal
+
+            if total_usd <= 0.05 and sui_bal <= 0.1:
+                CloudBotEngine.BYBIT_STATUS = "ОЖИДАНИЕ ДЕПОЗИТА ($0.00)"
+                return
+
+            CloudBotEngine.BYBIT_STATUS = f"АКТИВЕН (${total_usd:.2f})"
+
+            # 2. Sync active open orders from Bybit
+            open_orders = BYBIT_CLIENT.get_open_orders("SUIUSDT")
+            CloudBotEngine.BYBIT_ORDERS = open_orders
+            open_buys = [o for o in open_orders if o.get("side") == "Buy"]
+            open_sells = [o for o in open_orders if o.get("side") == "Sell"]
+
+            # 3. Execution & Fee Sync (Track movements, fees, realized PnL)
+            now = time.time()
+            if now - getattr(self, "last_bybit_sync", 0) > 30:
+                self.last_bybit_sync = now
+                execs = BYBIT_CLIENT.get_execution_history("SUIUSDT", limit=20)
+                if execs:
+                    tot_fees = sum(float(e.get("execFee") or 0.0) for e in execs)
+                    sell_execs = [e for e in execs if e.get("side") == "Sell"]
+                    
+                    cycles = len(sell_execs)
+                    gross = 0.0
+                    for s in sell_execs:
+                        s_p = float(s.get("execPrice") or 0.0)
+                        s_q = float(s.get("execQty") or 0.0)
+                        gross += s_p * s_q * 0.012  # ~1.2% captured net spread
+                    
+                    net = max(0.0, gross - tot_fees)
+                    CloudBotEngine.BYBIT_STATS["gross_profit_usd"] = round(gross, 4)
+                    CloudBotEngine.BYBIT_STATS["fees_usd"] = round(tot_fees, 4)
+                    CloudBotEngine.BYBIT_STATS["net_profit_usd"] = round(net, 4)
+                    CloudBotEngine.BYBIT_STATS["completed_cycles"] = cycles
+
+                    trade_rows = []
+                    for ex in execs[:10]:
+                        trade_rows.append({
+                            "id": ex.get("execId", "")[-6:],
+                            "time": datetime.datetime.fromtimestamp(float(ex.get("execTime", 0))/1000).strftime("%H:%M:%S") if ex.get("execTime") else "",
+                            "side": ex.get("side"),
+                            "price": ex.get("execPrice"),
+                            "qty": ex.get("execQty"),
+                            "fee": round(float(ex.get("execFee") or 0.0), 4),
+                            "fee_currency": ex.get("feeCurrency", "USDT")
+                        })
+                    CloudBotEngine.BYBIT_STATS["trades"] = trade_rows
+
+            # 4. DeepSeek Macro CRO & Lead-Lag Safety Guard
+            regime = getattr(CloudBotEngine, 'LATEST_REGIME', {})
+            is_halted = (regime.get("risk_mode") == "HALT") or (regime.get("allowed_sides") == "NONE")
+            btc_imp = LEAD_LAG_RADAR.get_market_impulse("btcusdt")
+            is_systemic_dump = btc_imp.get("is_dump", False) or (btc_imp.get("impulse_pct", 0.0) <= -0.20)
+
+            # 5. Price reference
+            sui_price = float(LATENCY_ENGINE.last_bybit_mid or 0.0)
+            if sui_price <= 0:
+                sui_price = float(get_global_crypto_price("SUIUSDT").get("last_price", 0.70))
+
+            # 6. Exit logic: Take-Profit Limit Sell (+1.4% gross, netting +1.2% after fees)
+            if sui_free >= 1.0 and not open_sells:
+                tp_price = round(sui_price * 1.014, 4)
+                sell_qty = round(sui_free, 1)
+                logger.info(f"🟡 [Bybit.kz] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} SUI @ ${tp_price} (+1.4%)")
+                resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Sell", sell_qty, tp_price)
+                if resp.get("retCode") == 0:
+                    send_telegram_msg(
+                        f"🟡 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
+                        f"Пара: **SUI/USDT**\n"
+                        f"Объем: **{sell_qty} SUI**\n"
+                        f"Цена выхода: **${tp_price}** (+1.4%)\n"
+                        f"Ордер ID: `{resp.get('result', {}).get('orderId')}`",
+                        TELEGRAM_CHAT_ID
+                    )
+
+            # 7. Entry logic: Limit Maker Buy on Dip (-0.8%)
+            if not is_halted and not is_systemic_dump and avail_usdt >= 2.50 and len(open_buys) < 2:
+                buy_target = round(sui_price * 0.992, 4)
+                alloc_usd = min(avail_usdt * 0.35, 3.50)
+                clip_sui = round(alloc_usd / buy_target, 1)
+                if clip_sui >= 1.0:
+                    logger.info(f"🟡 [Bybit.kz] Выставляем лимитную покупку: {clip_sui} SUI @ ${buy_target} (-0.8%)")
+                    resp = BYBIT_CLIENT.create_limit_order("SUIUSDT", "Buy", clip_sui, buy_target)
+                    if resp.get("retCode") == 0:
+                        send_telegram_msg(
+                            f"🟡 **[BYBIT.KZ: ВХОД В СЕТКУ]**\n\n"
+                            f"Пара: **SUI/USDT**\n"
+                            f"Ступень: **{clip_sui} SUI** @ **${buy_target}**\n"
+                            f"Сумма: **${round(clip_sui * buy_target, 2)} USDT**\n"
+                            f"Ордер ID: `{resp.get('result', {}).get('orderId')}`",
+                            TELEGRAM_CHAT_ID
+                        )
+
+        except Exception as e:
+            logger.error(f"[Bybit] Ошибка шага торговли: {e}")
+
     def run_deepseek_ai_supervisor(self):
         """
         2. Когнитивный супервизор DeepSeek (Cold Path, аудит каждые 30 минут).
@@ -2250,6 +2471,7 @@ class CloudBotEngine:
             try:
                 self.run_crypto_step()
                 self.run_kase_step()
+                self.run_bybit_step()
             except Exception as e:
                 logger.error(f"Loop error: {e}")
             time.sleep(10)
