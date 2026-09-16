@@ -78,6 +78,7 @@ class BybitV5Client:
 
         headers = {
             "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "X-BAPI-API-KEY": self.api_key,
             "X-BAPI-SIGN": signature,
             "X-BAPI-TIMESTAMP": timestamp,
@@ -92,6 +93,16 @@ class BybitV5Client:
         except urllib.error.HTTPError as he:
             err_body = he.read().decode("utf-8", errors="ignore")
             logger.error(f"Bybit API HTTP {he.code} Error [{endpoint}]: {err_body}")
+            # If regional api.bybit.kz returned 403 (datacenter filter), try api.bybit.com fallback
+            if he.code == 403 and "bybit.kz" in self.base_url:
+                try:
+                    fallback_url = url.replace("api.bybit.kz", "api.bybit.com")
+                    req_fb = urllib.request.Request(fallback_url, data=body_bytes, headers=headers, method=method.upper())
+                    with urllib.request.urlopen(req_fb, timeout=timeout) as fb_resp:
+                        raw = fb_resp.read().decode("utf-8")
+                        return json.loads(raw)
+                except Exception:
+                    pass
             try:
                 return json.loads(err_body)
             except Exception:
