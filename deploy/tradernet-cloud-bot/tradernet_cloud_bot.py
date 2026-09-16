@@ -388,15 +388,19 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
             usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0)
+            raw_usd_s = getattr(CloudBotEngine, 'RAW_USD_SALDO', usd_c)
             uncommitted_c = getattr(CloudBotEngine, 'UNCOMMITTED_USD_CASH', usd_c)
             committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
             status = {
                 "status": "online",
                 "bot": "Tradernet AI Cloud Bot (DeepSeek + Global Arb)",
-                "usd_cash": usd_c,
-                "balance_usd": usd_c,
+                "usd_cash": raw_usd_s,
+                "raw_usd_saldo": raw_usd_s,
+                "balance_usd": raw_usd_s,
                 "uncommitted_usd_cash": round(uncommitted_c, 2),
                 "committed_buy_margin": round(committed_m, 2),
+                "is_margin_borrowing_blocked": True,
+                "has_overdraft": raw_usd_s <= 0.0,
                 "trades_sync_status": getattr(CloudBotEngine, 'TRADES_SYNC_STATUS', "OK (7d Tradernet History)"),
                 "radar_status": "CONNECTED" if getattr(LEAD_LAG_RADAR, 'is_connected', False) else "ONLINE (Fallback)",
                 "kase_market": "OPEN" if is_kase_market_open() else "CLOSED",
@@ -476,8 +480,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         total_crypto_usd = crypto_pnl.get('total_profit_usd', 0.0)
         crypto_cycles = crypto_pnl.get('completed_cycles', 0)
         usd_c = getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0)
+        raw_usd_s = getattr(CloudBotEngine, 'RAW_USD_SALDO', usd_c)
         uncommitted_c = getattr(CloudBotEngine, 'UNCOMMITTED_USD_CASH', usd_c)
         committed_m = getattr(CloudBotEngine, 'COMMITTED_BUY_MARGIN', 0.0)
+        usd_col = "#ef4444" if raw_usd_s < 0 else "#34d399"
+        usd_badge = "⚠️ ОВЕРДРАФТ (входы заблокированы)" if raw_usd_s <= 0 else f"Свободно: ${uncommitted_c:.2f} | В ордерах: ${committed_m:.2f}"
 
         today_pnl = pnl_stats.get('today_profit_kzt', 0.0)
         total_pnl = pnl_stats.get('total_profit_kzt', 0.0)
@@ -606,8 +613,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 <div class="val">{kase_status}</div>
             </div>
             <div class="status-pill">
-                <div class="label">Крипто-депозит USD</div>
-                <div class="val" style="color: #34d399;">${usd_c:.2f} <span style="font-size: 11px; color: #9ca3af; font-weight: normal;">(Свободно: ${uncommitted_c:.2f} | В ордерах: ${committed_m:.2f})</span></div>
+                <div class="label">Крипто-депозит USD (Cash-Only)</div>
+                <div class="val" style="color: {usd_col};">${raw_usd_s:.2f} <span style="font-size: 11px; color: #9ca3af; font-weight: normal;">({usd_badge})</span></div>
             </div>
         </div>
 
@@ -1147,6 +1154,7 @@ def ask_deepseek_market_regime(sol_feed: dict, sui_feed: dict, account_summary: 
 
 class CloudBotEngine:
     LATEST_USD_CASH = 0.0
+    RAW_USD_SALDO = 0.0
     UNCOMMITTED_USD_CASH = 0.0
     COMMITTED_BUY_MARGIN = 0.0
     TRADES_SYNC_STATUS = "OK (7d Tradernet History)"
@@ -1219,14 +1227,14 @@ class CloudBotEngine:
             }
 
             user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
-            acc_list = user_summary.get('acc', [])
-            usd_cash = 0.0
             pure_cash_balance = 0.0
             for a in acc_list:
                 if a.get('curr') == 'USD':
-                    # 's' is the real cash balance on account; 'open_limit' might include broker margin facility
+                    # 🛡️ STRICT CASH-ONLY: 's' is real physical cash balance; 'open_limit' includes broker margin
                     pure_cash_balance = float(a.get('s') or 0.0)
-                    usd_cash = float(a.get('open_limit') or a.get('free_money') or a.get('s') or 0.0)
+            
+            raw_usd_s = pure_cash_balance
+            usd_cash = max(0.0, pure_cash_balance)
 
             pos_list = user_summary.get('pos', [])
             positions = {p.get('i'): p for p in pos_list}
@@ -1251,7 +1259,8 @@ class CloudBotEngine:
             MARGIN_SAFETY_BUFFER = 3.00
             uncommitted_usd_cash = max(0.0, effective_own_cash - committed_buy_margin)
 
-            CloudBotEngine.LATEST_USD_CASH = effective_own_cash
+            CloudBotEngine.RAW_USD_SALDO = raw_usd_s
+            CloudBotEngine.LATEST_USD_CASH = raw_usd_s
             CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
             CloudBotEngine.COMMITTED_BUY_MARGIN = committed_buy_margin
 
@@ -1281,9 +1290,10 @@ class CloudBotEngine:
             # 🛡️ STRICT HARD CASH GATE: ZERO BORROWING / NO MARGIN LOANS ALLOWED!
             # If gross USD cash <= $1.00 or uncommitted cash <= $1.00, or account in overdraft (<= 0),
             # strictly lock the engine in SELL-ONLY / REDUCE-ONLY mode.
-            is_cash_depleted = (usd_cash <= 1.00) or (uncommitted_usd_cash <= 1.00)
+            has_borrowed_funds = (raw_usd_s <= 0.0)
+            is_cash_depleted = has_borrowed_funds or (effective_own_cash <= 1.00) or (uncommitted_usd_cash <= 1.00)
             if is_cash_depleted:
-                logger.warning(f"🛡️ [HARD CASH GATE] Кэш исчерпан (Gross: ${usd_cash:.2f}, Uncommitted: ${uncommitted_usd_cash:.2f}). Режим: ТОЛЬКО ПРОДАЖА (REDUCE-ONLY). Новые покупки СТРОГО ЗАПРЕЩЕНЫ.")
+                logger.warning(f"🛡️ [HARD CASH GATE] Кэш исчерпан (Own Cash: ${effective_own_cash:.2f}, Saldo: ${raw_usd_s:.2f}, Uncommitted: ${uncommitted_usd_cash:.2f}). Режим: ТОЛЬКО ПРОДАЖА (REDUCE-ONLY). Заемные средства ЗАПРЕЩЕНЫ.")
 
             risk_mode = regime_info.get("risk_mode", "NORMAL")
             allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
@@ -1347,10 +1357,12 @@ class CloudBotEngine:
                     lot_decimals=lot_decimals,
                 )
 
-                # If clip_qty is zero due to no cash, fallback to min_lot for theoretical cost calculation
-                effective_clip = clip_qty if clip_qty > 0 else min_lot
-                est_cost = round(effective_clip * bbp, 4)
-                is_affordable = (clip_qty >= min_lot) and (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
+                if clip_qty <= 0:
+                    continue
+
+                est_cost = round(clip_qty * bbp, 4)
+                # 🛡️ Покупка разрешена только на реальные собственные средства (без заемных) с буфером
+                is_affordable = (clip_qty >= min_lot) and (raw_usd_s >= 1.0) and (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
 
                 candidates.append({
                     'sym': sym,
