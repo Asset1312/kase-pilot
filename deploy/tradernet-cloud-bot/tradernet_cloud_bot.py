@@ -2356,19 +2356,29 @@ class CloudBotEngine:
 
             # 7. TTL & Price Drift Management для висящих Buy-ордеров
             current_time = time.time()
+            active_discount = 0.042 if is_halted else 0.008
+            target_entry = round(sui_price * (1.0 - active_discount), 4)
+
             for b_ord in list(open_buys):
                 ord_id = b_ord.get("orderId")
                 ord_price = float(b_ord.get("price", 0.0))
+                if not ord_id or ord_price <= 0:
+                    continue
+
                 created_time = float(b_ord.get("createdTime", current_time * 1000)) / 1000.0
+                is_expired = (current_time - created_time) > 1200  # 20 минут TTL
 
-                drift_pct = abs(sui_price - ord_price) / ord_price if ord_price > 0 else 0.0
-                is_expired = (current_time - created_time) > 1200  # 20 минут
+                # Измеряем дрейф ЦЕЛИ входа, а не дистанцию до текущего спота
+                target_drift_pct = abs(target_entry - ord_price) / ord_price
 
-                # Снимаем, если рынок ушел более чем на 2.5% или истек TTL
-                if (drift_pct > 0.025 or is_expired) and ord_id:
-                    logger.info(f"🟡 [Bybit.kz] Отмена устаревшего ордера {ord_id} (Дрейф: {drift_pct*100:.1f}%, TTL: {int(current_time - created_time)}с)")
-                    BYBIT_CLIENT.cancel_order("SUIUSDT", ord_id)
-                    if b_ord in open_buys:
+                # Перевыставляем, только если цель ушла более чем на 1.5% или истек TTL
+                if target_drift_pct > 0.015 or is_expired:
+                    logger.info(
+                        f"🟡 [Bybit.kz] Отмена ордера {ord_id} "
+                        f"(Дрейф цели: {target_drift_pct*100:.2f}%, Возраст: {int(current_time - created_time)}с)"
+                    )
+                    resp_c = BYBIT_CLIENT.cancel_order("SUIUSDT", ord_id)
+                    if resp_c.get("retCode") == 0 and b_ord in open_buys:
                         open_buys.remove(b_ord)
 
             # 8. Entry logic: Адаптивный Wick Hunter vs Normal
