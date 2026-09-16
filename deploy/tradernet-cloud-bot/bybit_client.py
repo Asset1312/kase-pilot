@@ -1,7 +1,8 @@
-"""Bybit Kazakhstan / Global Spot V5 Lightweight REST Client.
+"""Bybit Kazakhstan Spot V5 Lightweight REST Client.
 
 Supports HMAC-SHA256 signature authentication, wallet balance inspection,
 limit order placement (Maker), order cancellation, and execution/fee tracking.
+Uses requests.Session with browser-grade TLS headers to reliably pass Cloudflare.
 """
 
 from __future__ import annotations
@@ -12,14 +13,14 @@ import json
 import logging
 import time
 import urllib.parse
-import urllib.request
 from typing import Any, Dict, List, Optional
+import requests
 
 logger = logging.getLogger("BybitV5Client")
 
 
 class BybitV5Client:
-    """Lightweight Bybit V5 REST Client with zero heavy external dependencies."""
+    """Lightweight Bybit V5 REST Client for Bybit Kazakhstan."""
 
     def __init__(
         self,
@@ -33,6 +34,11 @@ class BybitV5Client:
         self.domain = domain.strip()
         self.recv_window = str(recv_window)
         self.base_url = f"https://{self.domain}"
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        })
 
     @property
     def is_configured(self) -> bool:
@@ -56,13 +62,12 @@ class BybitV5Client:
         data: Optional[Dict[str, Any]] = None,
         timeout: int = 8,
     ) -> Dict[str, Any]:
-        """Executes signed or public HTTP request to Bybit V5 API."""
+        """Executes signed or public HTTP request to Bybit Kazakhstan V5 API."""
         if not self.is_configured:
             return {"retCode": -1, "retMsg": "API credentials not configured", "result": {}}
 
         timestamp = str(int(time.time() * 1000))
         url = f"{self.base_url}{endpoint}"
-        body_bytes = None
         payload_str = ""
 
         if method.upper() == "GET":
@@ -72,13 +77,11 @@ class BybitV5Client:
                 payload_str = query_str
         elif method.upper() == "POST":
             payload_str = json.dumps(data) if data else ""
-            body_bytes = payload_str.encode("utf-8")
 
         signature = self._generate_signature(timestamp, payload_str)
 
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "X-BAPI-API-KEY": self.api_key,
             "X-BAPI-SIGN": signature,
             "X-BAPI-TIMESTAMP": timestamp,
@@ -86,27 +89,17 @@ class BybitV5Client:
         }
 
         try:
-            req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method.upper())
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                return json.loads(raw)
-        except urllib.error.HTTPError as he:
-            err_body = he.read().decode("utf-8", errors="ignore")
-            logger.error(f"Bybit API HTTP {he.code} Error [{endpoint}]: {err_body}")
-            # If regional api.bybit.kz returned 403 (datacenter filter), try api.bybit.com fallback
-            if he.code == 403 and "bybit.kz" in self.base_url:
-                try:
-                    fallback_url = url.replace("api.bybit.kz", "api.bybit.com")
-                    req_fb = urllib.request.Request(fallback_url, data=body_bytes, headers=headers, method=method.upper())
-                    with urllib.request.urlopen(req_fb, timeout=timeout) as fb_resp:
-                        raw = fb_resp.read().decode("utf-8")
-                        return json.loads(raw)
-                except Exception:
-                    pass
+            if method.upper() == "GET":
+                resp = self.session.get(url, headers=headers, timeout=timeout)
+            else:
+                resp = self.session.post(url, data=payload_str.encode("utf-8"), headers=headers, timeout=timeout)
+
             try:
-                return json.loads(err_body)
+                body_json = resp.json()
+                return body_json
             except Exception:
-                return {"retCode": he.code, "retMsg": str(he), "result": {}}
+                return {"retCode": resp.status_code, "retMsg": resp.text, "result": {}}
+
         except Exception as e:
             logger.error(f"Bybit request failed [{endpoint}]: {e}")
             return {"retCode": -1, "retMsg": str(e), "result": {}}
@@ -121,6 +114,9 @@ class BybitV5Client:
         summary = {
             "retCode": res.get("retCode", -1),
             "retMsg": res.get("retMsg", ""),
+            "key_len": len(self.api_key),
+            "secret_len": len(self.api_secret),
+            "key_prefix": self.api_key[:6] if len(self.api_key) >= 6 else "",
             "total_usd": 0.0,
             "available_usdt": 0.0,
             "locked_usdt": 0.0,
