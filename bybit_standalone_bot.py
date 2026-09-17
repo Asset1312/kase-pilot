@@ -68,9 +68,9 @@ SUI_1M_DUMP_THRESHOLD = -0.0060     # -0.60% SUI drop in 1 min
 SUI_3M_DUMP_THRESHOLD = -0.0120     # -1.20% SUI drop in 3 min
 COOLDOWN_MIN_SECONDS = 600          # 10 minutes minimum freeze
 
-# Spacing Regimes
-SPACING_NORMAL = {"step_1": 0.0055, "step_2": 0.0175}   # Normal: -0.55% / -1.75%
-SPACING_STORM = {"step_1": 0.0120, "step_2": 0.0280}    # High Vol / Storm: -1.20% / -2.80%
+# Spacing Regimes (3-Step Micro-Grid)
+SPACING_NORMAL = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}   # Normal: -0.55% / -1.75% / -3.20%
+SPACING_STORM = {"step_1": 0.0120, "step_2": 0.0280, "step_3": 0.0450}    # High Vol / Storm: -1.20% / -2.80% / -4.50%
 VOL_STORM_THRESHOLD = 0.0120                            # 15m Range > 1.20% -> Storm
 
 # Take-Profit & Soft Breakeven
@@ -107,6 +107,7 @@ class MarketGuard:
         self.volatility_regime = "NORMAL"  # "NORMAL" or "STORM"
         self.step1_discount = SPACING_NORMAL["step_1"]
         self.step2_discount = SPACING_NORMAL["step_2"]
+        self.step3_discount = SPACING_NORMAL["step_3"]
         self.last_btc_1m_chg = 0.0
         self.last_sui_1m_chg = 0.0
         self.last_sui_15m_range = 0.0
@@ -167,10 +168,12 @@ class MarketGuard:
             self.volatility_regime = "STORM"
             self.step1_discount = SPACING_STORM["step_1"]
             self.step2_discount = SPACING_STORM["step_2"]
+            self.step3_discount = SPACING_STORM["step_3"]
         else:
             self.volatility_regime = "NORMAL"
             self.step1_discount = SPACING_NORMAL["step_1"]
             self.step2_discount = SPACING_NORMAL["step_2"]
+            self.step3_discount = SPACING_NORMAL["step_3"]
 
         # Dump Trigger Evaluation (When not in cooldown)
         if not self.cooldown_active:
@@ -444,8 +447,10 @@ class StandaloneBybitBot:
             # 7. Drift & TTL Management for resting BUY orders
             step1_disc = self.guard.step1_discount
             step2_disc = self.guard.step2_discount
+            step3_disc = self.guard.step3_discount
             t1 = round(sui_price * (1.0 - step1_disc), 4)
             t2 = round(sui_price * (1.0 - step2_disc), 4)
+            t3 = round(sui_price * (1.0 - step3_disc), 4)
 
             for b_ord in list(open_buys):
                 ord_id = b_ord.get("orderId")
@@ -458,7 +463,8 @@ class StandaloneBybitBot:
 
                 d1 = abs(t1 - ord_price) / ord_price
                 d2 = abs(t2 - ord_price) / ord_price
-                target_drift_pct = min(d1, d2)
+                d3 = abs(t3 - ord_price) / ord_price
+                target_drift_pct = min(d1, d2, d3)
 
                 if target_drift_pct > 0.015 or is_expired:
                     logger.info(
@@ -474,69 +480,108 @@ class StandaloneBybitBot:
             can_buy = (not self.guard.cooldown_active) and (not self.circuit_breaker_active)
 
             if can_buy:
-                # Inventory Check: Is Step 1 already bought?
-                step1_already_held = holding_pos_val >= 5.00
+                # Dynamic sizing based on total available funds
+                # When capital is >= $16.50, activate 3-Step Grid (30% / 30% / 30% / 10% buffer)
+                # When capital is < $16.50, fallback to 2-Step Grid (45% / 45% / 10% buffer)
+                use_3_steps = (avail_usdt + (holding_pos_val if holding_pos_val >= 5.0 else 0.0)) >= 16.50
 
-                if step1_already_held:
-                    # Step 1 is in position! We MUST NOT place Step 1 again at the top!
-                    # Remaining cash is reserved STRICTLY for Step 2 (averaging floor at -1.75% / -2.80%)
-                    has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                    if not has_step2 and avail_usdt >= 5.00:
-                        alloc_2 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
-                        clip_2 = math.floor((alloc_2 / t2) * 100) / 100.0
-                        val_2 = clip_2 * t2
-                        if val_2 >= 5.00 and val_2 <= avail_usdt:
-                            logger.info(
-                                f"🟡 [Bybit.kz][Ступень 2 Усреднение] Покупка: {clip_2} SUI @ ${t2} "
-                                f"(-{step2_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
-                            )
-                            resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
-                            if resp2.get("retCode") == 0:
-                                avail_usdt -= val_2
+                if use_3_steps:
+                    # Sizing per step: 30% of total capital (minimum $5.05)
+                    step_budget = max(5.05, round(est_total_equity * 0.30, 2))
 
-                else:
-                    # No active position held (deposit is in cash).
-                    # If cash allows both floors (>= 10.10 USDT), place Step 1 (45%) and Step 2 (45%) with 10% buffer
-                    if avail_usdt >= 10.10:
-                        alloc_1 = max(5.05, round(avail_usdt * 0.45, 2))
-                        alloc_2 = max(5.05, round(avail_usdt * 0.45, 2))
+                    step1_held = holding_pos_val >= 5.00
+                    step2_held = holding_pos_val >= (step_budget * 1.5)
 
+                    if not step1_held:
                         has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                        if not has_step1 and avail_usdt >= alloc_1:
-                            clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
+                        if not has_step1 and avail_usdt >= step_budget:
+                            clip_1 = math.floor((step_budget / t1) * 100) / 100.0
                             val_1 = clip_1 * t1
                             if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                logger.info(
-                                    f"🟡 [Bybit.kz][Ступень 1] Покупка: {clip_1} SUI @ ${t1} "
-                                    f"(-{step1_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
-                                )
+                                logger.info(f"🟡 [Bybit.kz][Ступень 1] Покупка: {clip_1} SUI @ ${t1} (-{step1_disc*100:.2f}%)")
                                 resp1 = self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
                                 if resp1.get("retCode") == 0:
                                     avail_usdt -= val_1
 
+                    if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                        if not has_step2 and avail_usdt >= alloc_2:
+                        if not has_step2 and avail_usdt >= step_budget:
+                            clip_2 = math.floor((step_budget / t2) * 100) / 100.0
+                            val_2 = clip_2 * t2
+                            if val_2 >= 5.00 and val_2 <= avail_usdt:
+                                logger.info(f"🟡 [Bybit.kz][Ступень 2] Покупка: {clip_2} SUI @ ${t2} (-{step2_disc*100:.2f}%)")
+                                resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
+                                if resp2.get("retCode") == 0:
+                                    avail_usdt -= val_2
+
+                    # Place Step 3 (Deepest Protection Floor)
+                    has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
+                    alloc_3 = min(avail_usdt, step_budget)
+                    if not has_step3 and avail_usdt >= 5.00:
+                        clip_3 = math.floor((alloc_3 / t3) * 100) / 100.0
+                        val_3 = clip_3 * t3
+                        if val_3 >= 5.00 and val_3 <= avail_usdt:
+                            logger.info(f"🟡 [Bybit.kz][Ступень 3 Защита] Покупка: {clip_3} SUI @ ${t3} (-{step3_disc*100:.2f}%)")
+                            resp3 = self.client.create_limit_order(SYMBOL, "Buy", clip_3, t3, post_only=True)
+                            if resp3.get("retCode") == 0:
+                                avail_usdt -= val_3
+
+                else:
+                    # 2-Step Grid Fallback for deposits < $16.50
+                    step1_already_held = holding_pos_val >= 5.00
+                    if step1_already_held:
+                        has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
+                        if not has_step2 and avail_usdt >= 5.00:
+                            alloc_2 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
                             clip_2 = math.floor((alloc_2 / t2) * 100) / 100.0
                             val_2 = clip_2 * t2
                             if val_2 >= 5.00 and val_2 <= avail_usdt:
                                 logger.info(
-                                    f"🟡 [Bybit.kz][Ступень 2] Покупка: {clip_2} SUI @ ${t2} "
+                                    f"🟡 [Bybit.kz][Ступень 2 Усреднение] Покупка: {clip_2} SUI @ ${t2} "
                                     f"(-{step2_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
                                 )
                                 resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
                                 if resp2.get("retCode") == 0:
                                     avail_usdt -= val_2
+                    else:
+                        if avail_usdt >= 10.10:
+                            alloc_1 = max(5.05, round(avail_usdt * 0.45, 2))
+                            alloc_2 = max(5.05, round(avail_usdt * 0.45, 2))
+                            has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
+                            if not has_step1 and avail_usdt >= alloc_1:
+                                clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
+                                val_1 = clip_1 * t1
+                                if val_1 >= 5.00 and val_1 <= avail_usdt:
+                                    logger.info(
+                                        f"🟡 [Bybit.kz][Ступень 1] Покупка: {clip_1} SUI @ ${t1} "
+                                        f"(-{step1_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
+                                    )
+                                    resp1 = self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
+                                    if resp1.get("retCode") == 0:
+                                        avail_usdt -= val_1
 
-                    elif avail_usdt >= 5.05:
-                        # Only enough cash for one single order (>= 5.00 USDT)
-                        has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                        if not has_step1:
-                            alloc_1 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
-                            clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
-                            val_1 = clip_1 * t1
-                            if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                logger.info(f"🟡 [Bybit.kz][Ступень 1 (Одиночная)] Покупка: {clip_1} SUI @ ${t1} (-{step1_disc*100:.2f}%)")
-                                self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
+                            has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
+                            if not has_step2 and avail_usdt >= alloc_2:
+                                clip_2 = math.floor((alloc_2 / t2) * 100) / 100.0
+                                val_2 = clip_2 * t2
+                                if val_2 >= 5.00 and val_2 <= avail_usdt:
+                                    logger.info(
+                                        f"🟡 [Bybit.kz][Ступень 2] Покупка: {clip_2} SUI @ ${t2} "
+                                        f"(-{step2_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
+                                    )
+                                    resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
+                                    if resp2.get("retCode") == 0:
+                                        avail_usdt -= val_2
+
+                        elif avail_usdt >= 5.05:
+                            has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
+                            if not has_step1:
+                                alloc_1 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
+                                clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
+                                val_1 = clip_1 * t1
+                                if val_1 >= 5.00 and val_1 <= avail_usdt:
+                                    logger.info(f"🟡 [Bybit.kz][Ступень 1 (Одиночная)] Покупка: {clip_1} SUI @ ${t1} (-{step1_disc*100:.2f}%)")
+                                    self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
 
             # 9. Update live statistics for dashboard
             guard_status_str = "🟢 Норма"
@@ -566,6 +611,7 @@ class StandaloneBybitBot:
                 "sui_1m_chg": round(self.guard.last_sui_1m_chg * 100, 2),
                 "step1_discount_pct": round(self.guard.step1_discount * 100, 2),
                 "step2_discount_pct": round(self.guard.step2_discount * 100, 2),
+                "step3_discount_pct": round(self.guard.step3_discount * 100, 2),
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
@@ -651,7 +697,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             Импульс BTC 1m: <b>{st.get('btc_1m_chg', 0.0):+.2f}%</b> | SUI 1m: <b>{st.get('sui_1m_chg', 0.0):+.2f}%</b>
         </div>
         <div class="label" style="margin-top: 4px;">
-            Сетка: Ступень 1 (-{st.get('step1_discount_pct', 0.55)}%) | Ступень 2 (-{st.get('step2_discount_pct', 1.75)}%)
+            Сетка: 1 (-{st.get('step1_discount_pct', 0.55)}%) | 2 (-{st.get('step2_discount_pct', 1.75)}%) | 3 (-{st.get('step3_discount_pct', 3.20)}%)
         </div>
         <div class="label" style="margin-top: 4px;">
             Режим ТП: <b>{st.get('tp_mode')}</b> (Удержание: {st.get('position_age_hours', 0.0)}ч)

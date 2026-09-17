@@ -148,3 +148,29 @@ def test_inventory_aware_sizing():
     alloc_step2 = min(avail_remaining, max(5.05, round(avail_remaining * 0.90, 2)))
     assert alloc_step2 >= 5.00
     assert alloc_step2 <= avail_remaining
+
+
+def test_three_step_grid_sizing():
+    # Case 3: Scaled Deposit = 26.80 USDT (30% / 30% / 30% / 10% buffer)
+    avail = 26.80
+    alloc_1 = max(5.05, round(avail * 0.30, 2))  # ~8.04
+    alloc_2 = max(5.05, round(avail * 0.30, 2))  # ~8.04
+    alloc_3 = max(5.05, round(avail * 0.30, 2))  # ~8.04
+    buffer = round(avail - alloc_1 - alloc_2 - alloc_3, 2)
+    assert alloc_1 >= 5.00
+    assert alloc_2 >= 5.00
+    assert alloc_3 >= 5.00
+    assert alloc_1 + alloc_2 + alloc_3 <= avail
+    assert buffer >= 2.00
+
+    # Case 4: Full Deposit = 39.50 USDT
+    avail_full = 39.50
+    alloc_1 = max(5.05, round(avail_full * 0.30, 2))  # ~11.85
+    alloc_2 = max(5.05, round(avail_full * 0.30, 2))  # ~11.85
+    alloc_3 = max(5.05, round(avail_full * 0.30, 2))  # ~11.85
+    buffer_full = round(avail_full - alloc_1 - alloc_2 - alloc_3, 2)
+    assert alloc_1 >= 11.00
+    assert alloc_2 >= 11.00
+    assert alloc_3 >= 11.00
+    assert buffer_full >= 3.50
+
