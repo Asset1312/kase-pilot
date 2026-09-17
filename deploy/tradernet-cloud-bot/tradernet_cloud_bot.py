@@ -1321,7 +1321,8 @@ class CloudBotEngine:
     def run_crypto_step(self):
         global LAST_MAIN_LOOP_HEARTBEAT
         LAST_MAIN_LOOP_HEARTBEAT = time.monotonic()
-        try:
+        # 🛑 TRADERNET CRYPTO FULLY RETIRED: Capital liquidated and migrated to Bybit
+        return
             crypto_pairs = {
                 'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
                 'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
