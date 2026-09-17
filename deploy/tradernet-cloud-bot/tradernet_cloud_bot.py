@@ -1319,414 +1319,8 @@ class CloudBotEngine:
         self.pair_cooldowns = {}       # {sym: expire_timestamp} for broker reject protection
 
     def run_crypto_step(self):
-        global LAST_MAIN_LOOP_HEARTBEAT
-        LAST_MAIN_LOOP_HEARTBEAT = time.monotonic()
-        # 🛑 TRADERNET CRYPTO FULLY RETIRED: Capital liquidated and migrated to Bybit
+        """Tradernet Crypto fully retired. Capital migrated to Bybit."""
         return
-            crypto_pairs = {
-                'UNI/USD': {'binance': 'UNIUSDT', 'qty': '0.1', 'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'SUI/USD': {'binance': 'SUIUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'FET/USD': {'binance': 'FETUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                'DOT/USD': {'binance': 'DOTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'TON/USD': {'binance': 'TONUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'ADA/USD': {'binance': 'ADAUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                'NEAR/USD': {'binance': 'NEARUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'APT/USD': {'binance': 'APTUSDT', 'qty': '1', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                'ATOM/USD': {'binance': 'ATOMUSDT', 'qty': '0.5', 'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                'SOL/USD': {'binance': 'SOLUSDT', 'qty': '0.001', 'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0125, 'decimals': 2},
-                'XLM/USD': {'binance': 'XLMUSDT', 'qty': '5', 'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5}
-            }
-
-            user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
-            acc_list = user_summary.get('acc', [])
-            pure_cash_balance = 0.0
-            for a in acc_list:
-                if a.get('curr') == 'USD':
-                    # 🛡️ STRICT CASH-ONLY: 's' is real physical cash balance; 'open_limit' includes broker margin
-                    pure_cash_balance = float(a.get('s') or 0.0)
-            
-            raw_usd_s = pure_cash_balance
-            usd_cash = max(0.0, pure_cash_balance)
-
-            pos_list = user_summary.get('pos', [])
-            positions = {p.get('i'): p for p in pos_list}
-
-            orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
-            active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
-
-            # 🛡️ STRICT ZERO-BORROWING MARGIN POLICY:
-            # Under NO circumstances will the bot use margin lending or leverage.
-            # Only 100% owned, unborrowed cash balance can be used.
-            effective_own_cash = min(pure_cash_balance, usd_cash)
-
-            # Worst-Case Collateral Guard:
-            # Sum of all open resting BUY orders
-            committed_buy_margin = sum(
-                float(o.get('leaves_qty') or o.get('rem_qty') or o.get('q') or 0.0) * float(o.get('p') or 0.0)
-                for o in active_orders
-                if o.get('oper') == 1
-            )
-            
-            # Require at least $3.00 safety buffer of 100% OWN CASH
-            MARGIN_SAFETY_BUFFER = 3.00
-            uncommitted_usd_cash = max(0.0, effective_own_cash - committed_buy_margin)
-
-            CloudBotEngine.RAW_USD_SALDO = raw_usd_s
-            CloudBotEngine.LATEST_USD_CASH = raw_usd_s
-            CloudBotEngine.UNCOMMITTED_USD_CASH = uncommitted_usd_cash
-            CloudBotEngine.COMMITTED_BUY_MARGIN = committed_buy_margin
-
-            quotes = self.crypto_client.get_quotes(list(crypto_pairs.keys())).get('result', {}).get('q', [])
-            q_dict = {q.get('c'): q for q in quotes}
-
-            # Check macro regime via DeepSeek once every 5 minutes (300s)
-            now = time.time()
-            if now - getattr(self, 'last_regime_check', 0) > 300:
-                btc_feed = get_global_crypto_price("BTCUSDT")
-                eth_feed = get_global_crypto_price("ETHUSDT")
-                sol_feed = get_global_crypto_price("SOLUSDT")
-                sui_feed = get_global_crypto_price("SUIUSDT")
-                if btc_feed: CloudBotEngine.LATEST_BINANCE['BTC/USD'] = btc_feed
-                if eth_feed: CloudBotEngine.LATEST_BINANCE['ETH/USD'] = eth_feed
-                if sol_feed: CloudBotEngine.LATEST_BINANCE['SOL/USD'] = sol_feed
-                if sui_feed: CloudBotEngine.LATEST_BINANCE['SUI/USD'] = sui_feed
-                summary_info = {
-                    "effective_own_cash": effective_own_cash,
-                    "saldo_usd": raw_usd_s,
-                    "sol_held": positions.get('SOL/USD', {}).get('q', 0),
-                    "sui_held": positions.get('SUI/USD', {}).get('q', 0)
-                }
-                regime = ask_deepseek_market_regime(btc_feed, eth_feed, sol_feed, sui_feed, summary_info)
-                if regime:
-                    CloudBotEngine.LATEST_REGIME = regime
-                    self.last_regime_check = now
-            regime_info = CloudBotEngine.LATEST_REGIME
-
-            # --- FAIL-SAFE 1: Dead Man's Switch (Протухание директивы) ---
-            directive_age = time.time() - float(regime_info.get("updated_at", 0))
-            is_directive_stale = directive_age > float(regime_info.get("ttl_seconds", 1200))
-            if is_directive_stale:
-                logger.warning(f"⚠️ Dead Man's Switch Triggered! Directive is stale ({directive_age:.0f}s > {regime_info.get('ttl_seconds', 1200)}s). Halting new entries.")
-
-            # 🛡️ STRICT HARD CASH GATE: ZERO BORROWING / NO MARGIN LOANS ALLOWED!
-            # If gross USD cash <= $1.00 or uncommitted cash <= $1.00, or account in overdraft (<= 0),
-            # strictly lock the engine in SELL-ONLY / REDUCE-ONLY mode.
-            has_borrowed_funds = (raw_usd_s <= 0.0)
-            is_cash_depleted = has_borrowed_funds or (effective_own_cash <= 1.00) or (uncommitted_usd_cash <= 1.00)
-            if is_cash_depleted:
-                logger.warning(f"🛡️ [HARD CASH GATE] Кэш исчерпан (Own Cash: ${effective_own_cash:.2f}, Saldo: ${raw_usd_s:.2f}, Uncommitted: ${uncommitted_usd_cash:.2f}). Режим: ТОЛЬКО ПРОДАЖА (REDUCE-ONLY). Заемные средства ЗАПРЕЩЕНЫ.")
-
-            risk_mode = regime_info.get("risk_mode", "NORMAL")
-            allowed_sides = regime_info.get("allowed_sides", "LONG_ONLY")
-            can_enter_new = (not is_directive_stale) and (risk_mode != "HALT") and (allowed_sides == "LONG_ONLY") and (not is_cash_depleted)
-
-            # Candidate Collection & Ranking (Spread Compression & Affordability)
-            candidates = []
-            now_ts = time.time()
-
-            for sym, cfg in crypto_pairs.items():
-                # 🛡️ Reject / Margin Cooldown Filter: prevent spamming broker on rejected orders
-                if now_ts < self.pair_cooldowns.get(sym, 0):
-                    continue
-
-                q = q_dict.get(sym)
-                if not q:
-                    continue
-                bbp = float(q.get('bbp') or 0)
-                bap = float(q.get('bap') or 0)
-                if not bbp or not bap or bap <= bbp:
-                    continue
-
-                if sym == 'SUI/USD':
-                    LATENCY_ENGINE.register_tradernet_quote(bbp, bap)
-
-                # 🛡️ 1. Stale Quote Detector: discard quotes not updated in last 12s
-                q_utime = float(q.get('utime') or 0)
-                if q_utime > 0 and (now_ts - q_utime) > 12.0:
-                    continue
-
-                spread_pct = ((bap - bbp) / bbp) * 100.0
-                baseline = 2.05 if sym not in ['TRX/USD', 'XRP/USD'] else 4.0
-                compression_pct = round(((baseline - spread_pct) / baseline) * 100.0, 1)
-
-                bap_depth = extract_best_ask_qty(q)
-
-                pos_info = positions.get(sym, {})
-                inv_qty = float(pos_info.get('q') or 0.0)
-                entry_price = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or 0.0)
-
-                sym_orders = [o for o in active_orders if o.get('instr') == sym]
-                sell_orders = [o for o in sym_orders if o.get('oper') == 3]
-                buy_orders = [o for o in sym_orders if o.get('oper') == 1]
-
-                # Ladder inventory calculation: quantity not yet committed to active sell orders
-                total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
-                unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
-
-                # Dynamic Clip Sizing with Book Depth Guard, Capital Cap (35%), and Lot Step Quantization
-                min_lot = float(cfg.get('min_qty', 1.0))
-                lot_step = float(cfg.get('lot_step', 1.0))
-                lot_decimals = int(cfg.get('lot_decimals', 0))
-
-                clip_qty = calculate_clip_size(
-                    price=bbp,
-                    free_cash=uncommitted_usd_cash,
-                    bap_q=bap_depth,
-                    max_alloc_pct=0.35,
-                    min_lot=min_lot,
-                    lot_step=lot_step,
-                    lot_decimals=lot_decimals,
-                )
-
-                est_cost = round(clip_qty * bbp, 4) if clip_qty > 0 else 0.0
-                # 🛡️ Покупка разрешена только на реальные собственные средства (без заемных) с буфером
-                is_affordable = (clip_qty >= min_lot) and (raw_usd_s >= 1.0) and (est_cost <= (uncommitted_usd_cash - MARGIN_SAFETY_BUFFER))
-
-                candidates.append({
-                    'sym': sym,
-                    'cfg': cfg,
-                    'bbp': bbp,
-                    'bap': bap,
-                    'spread_pct': spread_pct,
-                    'baseline': baseline,
-                    'compression_pct': compression_pct,
-                    'inv_qty': inv_qty,
-                    'unsold_inventory': unsold_inventory,
-                    'clip_qty': clip_qty,
-                    'min_lot': min_lot,
-                    'lot_step': lot_step,
-                    'lot_decimals': lot_decimals,
-                    'entry_price': entry_price,
-                    'sym_orders': sym_orders,
-                    'sell_orders': sell_orders,
-                    'buy_orders': buy_orders,
-                    'est_cost': est_cost,
-                    'is_affordable': is_affordable
-                })
-
-            # Sort candidates by highest spread compression first (best opportunities first)
-            candidates.sort(key=lambda c: c['compression_pct'], reverse=True)
-
-            for item in candidates:
-                sym = item['sym']
-                cfg = item['cfg']
-                bbp = item['bbp']
-                bap = item['bap']
-                spread_pct = item['spread_pct']
-                baseline = item['baseline']
-                inv_qty = item['inv_qty']
-                unsold_inventory = item['unsold_inventory']
-                clip_qty = item['clip_qty']
-                min_lot = item['min_lot']
-                lot_step = item['lot_step']
-                lot_decimals = item['lot_decimals']
-                entry_price = item['entry_price']
-                sell_orders = item['sell_orders']
-                buy_orders = item['buy_orders']
-                est_cost = item['est_cost']
-                is_affordable = item['is_affordable']
-
-                # --- TELEMETRY: Check Fill of previous BUY orders ---
-                prev_qty = self.previous_inv.get(sym, inv_qty)
-                if inv_qty > prev_qty:
-                    filled_diff = inv_qty - prev_qty
-                    CloudBotEngine.METRICS["orders_filled"] += 1
-                    bought_price = bbp
-                    for bo_k, tr_val in list(self.active_resting_buys.items()):
-                        if tr_val.get('sym') == sym:
-                            bought_price = tr_val.get('price', bbp)
-                            self.active_resting_buys.pop(bo_k, None)
-                            break
-                    if not hasattr(self, 'last_scalp_entry'):
-                        self.last_scalp_entry = {}
-                    self.last_scalp_entry[sym] = bought_price
-                    logger.info(f"[{sym}] 🎉 BUY Order FILLED! Inventory increased +{filled_diff} (Now: {inv_qty}) @ ${bought_price}")
-                self.previous_inv[sym] = inv_qty
-
-                # --- TRADERNET CRYPTO EXIT-ONLY MODE: Отзываем любые висящие заявки BUY ---
-                if buy_orders:
-                    for bo in buy_orders:
-                        bo_id = bo.get('id')
-                        if bo_id:
-                            logger.info(f"[{sym}] 🛑 [EXIT-ONLY] Отзываем BUY-заявку #{bo_id} (режим ликвидации позиций)")
-                            try:
-                                self.crypto_client.cancel(bo_id)
-                                CloudBotEngine.METRICS["orders_cancelled_ttl"] += 1
-                            except Exception as ce:
-                                logger.warning(f"[{sym}] Ошибка отзыва крипто-заявки #{bo_id}: {ce}")
-                    buy_orders = []
-                    for bo_k, tr_val in list(self.active_resting_buys.items()):
-                        if tr_val.get('sym') == sym:
-                            self.active_resting_buys.pop(bo_k, None)
-
-                # --- TELEMETRY & ORDER PEGGER (SELL): Cancel Distorted / Stale Sell Orders (e.g. $125 SOL) ---
-                if sell_orders:
-                    for so in sell_orders:
-                        so_id = so.get('id')
-                        so_price = float(so.get('p') or 0.0)
-                        # If a sell order is placed absurdly high (> 5% above current Best Ask, e.g. $125 when Ask is $101),
-                        # it was caused by the old micro-lot absolute floor bug. Cancel it immediately to reset.
-                        if bap > 0 and so_price > (bap * 1.05):
-                            logger.info(f"[{sym}] 🔄 [SELL ORDER PEGGER] Отзываем искаженную заявку на продажу #{so_id} @ ${so_price} (>5% от Ask ${bap:.4f}). Восстанавливаем позицию.")
-                            try:
-                                self.crypto_client.cancel(so_id)
-                            except Exception as ce:
-                                logger.warning(f"[{sym}] Ошибка отзыва искаженного SELL #{so_id}: {ce}")
-
-                # --- FAIL-SAFE 2: Time-Stop Tracking ---
-                if inv_qty >= min_lot:
-                    if sym not in self.inventory_entry_time:
-                        self.inventory_entry_time[sym] = time.time()
-                else:
-                    self.inventory_entry_time.pop(sym, None)
-
-                # --- 1. Multi-Level Ladder Take-Profit Execution (Лесенка) ---
-                # Calculate total quantity currently committed to active resting SELL orders
-                total_placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
-                unsold_inventory = max(0.0, inv_qty - total_placed_sell_qty)
-
-                if unsold_inventory >= min_lot:
-                    # Clip-sized exit: do not dump entire balance if book depth is narrow
-                    if sym == 'SUI/USD':
-                        sell_clip = 1.0  # Strict 1-SUI ladder step
-                    else:
-                        sell_clip = min(unsold_inventory, max(clip_qty, min_lot))
-                    # Quantize sell_clip
-                    if sell_clip >= lot_step:
-                        sell_clip = round(math.floor(round(sell_clip / lot_step, 6)) * lot_step, lot_decimals)
-                    else:
-                        sell_clip = min_lot
-
-                    # Multi-level lot cost detection (Cheapest-First / FIFO Strategy):
-                    # Instead of hardcoding static index levels, sort all buy trades by price ascending.
-                    # This ensures that when the market approaches $0.722, the $0.72 lot is freed first!
-                    recent_buy = getattr(self, 'last_scalp_entry', {}).get(sym)
-                    if sym == 'SUI/USD':
-                        # Known SUI ladder purchase tiers sorted cheapest first
-                        sui_ladder_entries = sorted([0.72, 0.7555, 0.7797, 0.80])
-                        orders_count = len(sell_orders)
-                        if orders_count < len(sui_ladder_entries):
-                            calc_entry = sui_ladder_entries[orders_count]
-                        else:
-                            calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
-                    else:
-                        calc_entry = recent_buy if (recent_buy and recent_buy > 0) else entry_price
-                    
-                    if not calc_entry or calc_entry <= 0:
-                        calc_entry = entry_price if entry_price > 0 else bbp
-
-                    # 🛡️ NEVER_SELL_AT_LOSS HARD GATE:
-                    # Minimum safe profit: at least +1.25% (or cfg min_profit_pct) to fully cover broker commissions
-                    min_floor = max(0.0125, cfg.get('min_profit_pct', 0.0125))
-                    snapback_premium = max(min_floor, (baseline - spread_pct) / 200.0)
-                    min_safe_sell = round(calc_entry * (1.0 + snapback_premium), cfg['decimals'])
-                    
-                    # 💰 ABSOLUTE PROFIT FLOOR:
-                    # For SOL (micro lot 0.001 @ ~$100, clip value ~$0.10): use percentage target strictly (max 1.5% premium, avoiding $125 distortion).
-                    # For other assets (SUI, etc.): ensure at least +$0.0099 to +$0.025 net profit, capped at max +4.0% premium over entry.
-                    if sym == 'SOL/USD':
-                        # Strict sensible target: entry + 1.25% (e.g. $100.25 -> ~$101.50)
-                        min_safe_sell = round(calc_entry * 1.0125, cfg['decimals'])
-                    else:
-                        abs_profit_target = 0.0099 if (sym == 'SUI/USD' and sell_clip <= 1.0) else 0.025
-                        if sell_clip > 0:
-                            min_price_for_abs_profit = round(calc_entry + (abs_profit_target / sell_clip), cfg['decimals'])
-                            # Hard cap: absolute floor must never exceed +4% over entry price
-                            max_reasonable_tp = round(calc_entry * 1.04, cfg['decimals'])
-                            min_price_for_abs_profit = min(min_price_for_abs_profit, max_reasonable_tp)
-                            if min_price_for_abs_profit > min_safe_sell:
-                                min_safe_sell = min_price_for_abs_profit
-
-                    # Ensure limit price is NEVER lower than min_safe_sell (even if bap is lower)
-                    target_tp = round(max(bap, min_safe_sell), cfg['decimals'])
-                    if target_tp < min_safe_sell:
-                        target_tp = min_safe_sell
-
-                    est_profit_usd = (target_tp - calc_entry) * sell_clip
-                    logger.info(f"[{sym}] 🪜 Cheapest-First TP: Выставляем SELL {sell_clip} @ ${target_tp} (Себестоимость лота: ${calc_entry}, Цель: +{((target_tp/calc_entry)-1)*100:.2f}%, Профит: +${est_profit_usd:.4f})")
-                    
-                    try:
-                        resp = self.crypto_client.authorized_request('putTradeOrder', {
-                            'instr_name': sym,
-                            'action_id': 3,
-                            'order_type_id': 2,
-                            'qty': sell_clip if lot_decimals > 0 else int(sell_clip),
-                            'limit_price': target_tp,
-                            'expiration_id': 1
-                        })
-                        CloudBotEngine.METRICS["orders_placed"] += 1
-                        order_id = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-
-                    except Exception as err:
-                        logger.error(f"[{sym}] Ошибка выставления лесенки SELL: {err}")
-
-                # --- 2. Flat / Liquid Inventory: BUY ENTRIES STRICTLY DISABLED (EXIT-ONLY MODE) ---
-                elif unsold_inventory < min_lot:
-                    # Tradernet Crypto is in planned EXIT-ONLY mode:
-                    # All buying is disabled. Capital is being reallocated to KASE and Bybit.
-                    continue
-
-            # --- Realized Profit Tracking (with Tradernet API get_trades_history sync) ---
-            try:
-                now_sync = time.time()
-                if now_sync - getattr(self, 'last_trades_history_sync', 0) > 300:
-                    try:
-                        dt_start = datetime.date.today() - datetime.timedelta(days=7)
-                        hist_res = self.crypto_client.get_trades_history(start=dt_start, limit=50)
-                        hist_trades = hist_res.get('result', {}).get('trades', [])
-                        if hist_trades:
-                            h_today = 0.0
-                            h_total = 0.0
-                            today_s = datetime.date.today().isoformat()
-                            for ht in hist_trades:
-                                p_val = float(ht.get('profit') or 0.0)
-                                if p_val > 0:
-                                    h_total += p_val
-                                    if str(ht.get('date', '')).startswith(today_s):
-                                        h_today += p_val
-                            if h_total > 0:
-                                CloudBotEngine.REALIZED_CRYPTO_STATS["total_profit_usd"] = round(h_total, 4)
-                                CloudBotEngine.REALIZED_CRYPTO_STATS["today_profit_usd"] = round(h_today, 4)
-                                CloudBotEngine.REALIZED_CRYPTO_STATS["completed_cycles"] = len([t for t in hist_trades if float(t.get('profit') or 0) > 0])
-                                self.last_trades_history_sync = now_sync
-                    except Exception as h_err:
-                        logger.warning(f"Tradernet get_trades_history sync notice: {h_err}")
-
-                realized_crypto = []
-                now_str_date = datetime.datetime.now().strftime("%Y-%m-%d")
-                today_usd = 0.0
-                total_usd = 0.0
-                for o in orders:
-                    instr = o.get('instr', '')
-                    for tr in o.get('trade', []):
-                        prof = float(tr.get('profit') or 0.0)
-                        if prof > 0:
-                            tr_date = str(tr.get('date', ''))
-                            total_usd += prof
-                            if now_str_date in tr_date:
-                                today_usd += prof
-                            realized_crypto.append({
-                                'instr': instr,
-                                'qty': tr.get('q'),
-                                'price': tr.get('p'),
-                                'profit': round(prof, 4),
-                                'date': tr_date,
-                                'order_id': o.get('id')
-                            })
-                realized_crypto.sort(key=lambda x: str(x['date']), reverse=True)
-                if total_usd > 0 or not CloudBotEngine.REALIZED_CRYPTO_STATS.get("total_profit_usd"):
-                    CloudBotEngine.REALIZED_CRYPTO_STATS = {
-                        "today_profit_usd": round(today_usd, 4),
-                        "total_profit_usd": round(total_usd, 4),
-                        "completed_cycles": len(realized_crypto),
-                        "profitable_trades": realized_crypto[:10],
-                        "last_sync_time": time.time()
-                    }
-            except Exception as cpe:
-                logger.error(f"Error parsing crypto realized trades: {cpe}")
-
-        except Exception as e:
-            logger.error(f"Error in crypto step: {e}")
 
     def run_kase_step(self):
         global LAST_MAIN_LOOP_HEARTBEAT
@@ -1973,109 +1567,9 @@ class CloudBotEngine:
             logger.error(f"Error in KASE step: {e}")
 
     def run_inventory_reconciliation_watchdog(self):
-        """
-        1. Детерминированный фоновый ревизор инвентаря (Hot Path, 0 внешних зависимостей).
-        Каждые 180 секунд сверяет реальный портфель с активными ордерами на продажу.
-        Если обнаружена незащищенная монета (как было с UNI/SUI), немедленно выставляет парный Take-Profit.
-        """
-        logger.info("🛡️ [WATCHDOG] Ревизор инвентаря запущен (интервал 180 сек)...")
-        time.sleep(60)  # Даем основному циклу сделать первый прогон
-        while True:
-            try:
-                time.sleep(180)
-                WATCHDOG_STATS["reconciliations_run"] = WATCHDOG_STATS.get("reconciliations_run", 0) + 1
-                WATCHDOG_STATS["last_run_ts"] = time.time()
-                
-                # Запрашиваем актуальный портфель и ордера напрямую у брокера
-                user_summary = self.crypto_client.account_summary().get('result', {}).get('ps', {})
-                pos_list = user_summary.get('pos', [])
-                positions = {p.get('i'): p for p in pos_list}
-                
-                orders = self.crypto_client.get_placed().get('result', {}).get('orders', {}).get('order', [])
-                active_orders = [o for o in orders if o.get('stat') in [10, 2, 1]]
-
-                crypto_configs = {
-                    'UNI/USD': {'min_qty': 0.1, 'lot_step': 0.1, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'SUI/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'FET/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                    'DOT/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'TON/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'ADA/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                    'NEAR/USD': {'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'APT/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5},
-                    'ATOM/USD': {'min_qty': 0.5, 'lot_step': 0.5, 'lot_decimals': 1, 'min_profit_pct': 0.0125, 'decimals': 4},
-                    'SOL/USD': {'min_qty': 0.001, 'lot_step': 0.001, 'lot_decimals': 3, 'min_profit_pct': 0.0125, 'decimals': 2},
-                    'XLM/USD': {'min_qty': 1.0, 'lot_step': 1.0, 'lot_decimals': 0, 'min_profit_pct': 0.0125, 'decimals': 5}
-                }
-
-                quotes_res = self.crypto_client.get_quotes(list(crypto_configs.keys())).get('result', {}).get('q', [])
-                quotes_dict = {q.get('c'): q for q in quotes_res}
-
-                for sym, cfg in crypto_configs.items():
-                    pos_info = positions.get(sym, {})
-                    inv_qty = float(pos_info.get('q') or 0.0)
-                    min_lot = cfg['min_qty']
-                    if inv_qty < min_lot:
-                        continue
-
-                    # Проверяем объем в активных ордерах на продажу
-                    sym_orders = [o for o in active_orders if o.get('instr') == sym]
-                    sell_orders = [o for o in sym_orders if o.get('oper') == 3]
-                    placed_sell_qty = sum(float(o.get('q') or 0.0) for o in sell_orders)
-
-                    unhedged_qty = inv_qty - placed_sell_qty
-                    lot_step = cfg['lot_step']
-                    lot_decimals = cfg['lot_decimals']
-                    actionable_qty = math.floor(round(unhedged_qty / lot_step, 6)) * lot_step
-                    actionable_qty = round(actionable_qty, lot_decimals)
-                    if sym == 'SUI/USD':
-                        actionable_qty = min(1.0, actionable_qty)
-
-                    if actionable_qty >= min_lot:
-                        WATCHDOG_STATS["unhedged_lots_rescued"] = WATCHDOG_STATS.get("unhedged_lots_rescued", 0) + 1
-                        logger.warning(f"⚠️ [WATCHDOG ALERT] Обнаружен нехеджированный остаток {sym}: {actionable_qty} шт без Take-Profit! Авто-восстановление...")
-
-                        q = quotes_dict.get(sym, {})
-                        bbp = float(q.get('bbp') or 0.0)
-                        bap = float(q.get('bap') or 0.0)
-                        entry_p = float(pos_info.get('bal_price_a') or pos_info.get('price_a') or bbp)
-                        if sym == 'SUI/USD':
-                            entry_p = sorted([0.72, 0.7555, 0.7797, 0.80])[0]
-
-                        min_floor = max(0.0125, cfg.get('min_profit_pct', 0.0125))
-                        min_safe_sell = round(entry_p * (1.0 + min_floor), cfg['decimals'])
-                        
-                        abs_profit_target = 0.0099 if (sym == 'SUI/USD' and actionable_qty <= 1.0) else 0.025
-                        if actionable_qty > 0:
-                            min_price_for_abs_profit = round(entry_p + (abs_profit_target / actionable_qty), cfg['decimals'])
-                            if min_price_for_abs_profit > min_safe_sell:
-                                min_safe_sell = min_price_for_abs_profit
-
-                        tp_price = round(max(bap, min_safe_sell), cfg['decimals'])
-
-                        try:
-                            resp = self.crypto_client.authorized_request('putTradeOrder', {
-                                'instr_name': sym,
-                                'action_id': 3,
-                                'order_type_id': 2,
-                                'qty': actionable_qty if lot_decimals > 0 else int(actionable_qty),
-                                'limit_price': tp_price,
-                                'expiration_id': 1
-                            })
-                            new_oid = resp.get('result', {}).get('order_id') or resp.get('result', {}).get('id')
-                            logger.info(f"✅ [WATCHDOG] Take-Profit успешно восстановлен для {sym}: {actionable_qty} шт @ ${tp_price} (Order #{new_oid})")
-                            send_telegram_msg(
-                                f"🛡️ **[WATCHDOG: АВТО-ВОССТАНОВЛЕНИЕ ОРДЕРА]**\n\n"
-                                f"Инструмент: **{sym}**\n"
-                                f"Объем без приказа: **{actionable_qty}** шт\n"
-                                f"Выставлен Take-Profit SELL: **${tp_price}** (Entry: ${entry_p})\n"
-                                f"№ приказа: `{new_oid}`\n"
-                                f"💡 *Алгоритм самостоятельно устранил рассинхрон без участия трейдера.*"
-                            )
-                        except Exception as w_err:
-                            logger.error(f"[WATCHDOG] Ошибка авто-выставления TP для {sym}: {w_err}")
-            except Exception as e:
-                logger.error(f"[WATCHDOG] Ошибка ревизора инвентаря: {e}")
+        """Tradernet Crypto fully retired. Watchdog deactivated."""
+        logger.info("🛡️ [WATCHDOG] Tradernet Crypto отвязан. Ревизор деактивирован.")
+        return
 
     def run_bybit_step(self):
         """
@@ -2289,22 +1783,20 @@ class CloudBotEngine:
                 telemetry = {
                     "loop_stall_seconds": round(stall_sec, 1),
                     "is_kase_market_open": is_kase_market_open(),
-                    "tradernet_crypto_mode": "EXIT_ONLY (Все покупки намеренно отключены, ждем исполнения тейк-профитов для вывода средств на Bybit и KASE)",
-                    "crypto_profit_report": crypto_pnl,
+                    "tradernet_crypto_mode": "FULLY_DETACHED (Крипта на Tradernet полностью отвязана, все позиции закрыты, капитал выведен на Bybit). Оценивать только KASE!",
                     "kase_profit_report": pnl,
                     "orders_placed": metrics.get("orders_placed", 0),
                     "orders_filled": metrics.get("orders_filled", 0),
                     "orders_cancelled_ttl": metrics.get("orders_cancelled_ttl", 0),
-                    "watchdog_rescues": WATCHDOG_STATS.get("unhedged_lots_rescued", 0),
-                    "usd_cash": getattr(CloudBotEngine, 'LATEST_USD_CASH', 0.0),
                     "memory_mb": get_process_memory_mb()
                 }
 
                 prompt = f"""
-Ты — Главный системный супервизор алгоритмического торгового бота (Tradernet / KASE Multi-Asset Cloud Bot).
-ВАЖНОЕ ПРИМЕЧАНИЕ АРХИТЕКТУРЫ:
-Подсистема Tradernet Crypto переведена трейдером в штатный режим EXIT_ONLY (покупки отключены, позиции ликвидируются по Тейк-Профиту, капитал переносится на Bybit и KASE). Нулевые покупки и нулевой USD кэш в крипте на Tradernet являются ЦЕЛЕВЫМ ПОВЕДЕНИЕМ, а не сбоем! Основная торговля криптой делегирована на Bybit.
-Твоя задача — объективно оценить работоспособность и здоровье торговой системы по снимку телеметрии:
+Ты — Главный системный супервизор алгоритмического торгового бота (Tradernet KASE Cloud Bot).
+АРХИТЕКТУРНЫЙ СТАТУС:
+Крипто-подсистема Tradernet ПОЛНОСТЬЮ ОТВЯЗАНА трейдером. Вся крипта ликвидирована, капитал перенесен на Bybit.
+Этот бот отвечает ИСКЛЮЧИТЕЛЬНО за акции KASE (ASBN, HSBK, KMGD). Любое отсутствие крипто-сделок или крипто-баланса является 100% целевым штатным поведением и НЕ должно снижать оценку!
+Оценивай надежность и здоровье системы ТОЛЬКО по работе KASE-цикла и отсутствию зависаний:
 {json.dumps(telemetry, ensure_ascii=False, indent=2)}
 
 Правила оценки:
@@ -2384,19 +1876,15 @@ class CloudBotEngine:
     def start(self):
         logger.info("=" * 65)
         logger.info("🚀 Tradernet AI Cloud Bot (DeepSeek + Global Arb) Started")
-        logger.info("Crypto: SOL/USD (AI-Driven) | KASE: ASBN, HSBK, KMGD")
+        logger.info("Crypto: DETACHED (Fully Migrated to Bybit) | KASE: ASBN, HSBK, KMGD")
         logger.info("=" * 65)
 
-        # Start Autonomous Background Supervisors
-        t_watchdog = threading.Thread(target=self.run_inventory_reconciliation_watchdog, daemon=True, name="InventoryWatchdog")
-        t_watchdog.start()
-
+        # Start DeepSeek AI Supervisor (focused exclusively on KASE)
         t_ai_supervisor = threading.Thread(target=self.run_deepseek_ai_supervisor, daemon=True, name="DeepSeekSupervisor")
         t_ai_supervisor.start()
 
         while True:
             try:
-                self.run_crypto_step()
                 self.run_kase_step()
                 # self.run_bybit_step()  # Delegated exclusively to Android Redmi 12 standalone node
             except Exception as e:
@@ -2491,13 +1979,17 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                         send_telegram_msg(reply, chat_id)
                     elif text.lower() in ['баланс', '/balance', 'какой баланс?']:
                         try:
-                            summary = engine.crypto_client.account_summary().get('result', {}).get('ps', {})
+                            summary = engine.kase_client.account_summary().get('result', {}).get('ps', {})
                             cash_lines = [f"• {a.get('curr')}: {a.get('s')}" for a in summary.get('acc', []) if float(a.get('s') or 0) > 0]
-                            pos_lines = [f"• {p.get('i')}: {p.get('q')} шт (рыночная: ${p.get('mkt_price')})" for p in summary.get('pos', [])]
-                            reply = "💰 Баланс криптосчета:\n" + "\n".join(cash_lines) + "\n\n📊 Открытые позиции:\n" + "\n".join(pos_lines)
+                            pos_lines = [f"• {p.get('i')}: {p.get('q')} шт ({p.get('mkt_price')} KZT)" for p in summary.get('pos', [])]
+                            reply = (
+                                "🏛️ **Баланс KASE (Тенге):**\n" + ("\n".join(cash_lines) if cash_lines else "• KZT: 0") +
+                                "\n\n📊 **Акции KASE:**\n" + ("\n".join(pos_lines) if pos_lines else "• Нет открытых позиций") +
+                                "\n\n⚡ *Крипта полностью отвязана от Tradernet и работает на Bybit KZ через ваш телефон!*"
+                            )
                             send_telegram_msg(reply, chat_id)
                         except Exception as e:
-                            send_telegram_msg(f"Ошибка проверки баланса: {e}", chat_id)
+                            send_telegram_msg(f"Ошибка проверки баланса KASE: {e}", chat_id)
                     elif text.lower() in ['метрики', '/metrics', 'статистика', '/stats', 'статус', '/status']:
                         try:
                             m = CloudBotEngine.METRICS
@@ -2654,7 +2146,7 @@ def telegram_polling_loop(engine: 'CloudBotEngine'):
                             context = {
                                 "regime": CloudBotEngine.LATEST_REGIME,
                                 "benchmarks": CloudBotEngine.LATEST_BINANCE,
-                                "summary": engine.crypto_client.account_summary().get('result', {}).get('ps', {})
+                                "summary": engine.kase_client.account_summary().get('result', {}).get('ps', {})
                             }
                             answer = ask_deepseek_chat(text, context)
                             send_telegram_msg(answer, chat_id)
