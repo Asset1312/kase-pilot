@@ -1504,8 +1504,8 @@ class CloudBotEngine:
                                 can_enter_tier = False
 
                         if can_enter_tier:
-                            # 🛡️ Gate 2: Cash Floor Protection (Keep at least 2500 KZT reserve)
-                            min_required_kzt = max(cfg.get('min_free_kzt', 0.0), 2500.0)
+                            # 🛡️ Gate 2: Cash Floor Protection (Keep at least 500 KZT reserve)
+                            min_required_kzt = max(cfg.get('min_free_kzt', 0.0), float(os.environ.get("KASE_MIN_FREE_KZT", 500.0)))
                             req_cost = lot_qty * bbp
                             if (kzt_cash - req_cost) >= min_required_kzt:
                                 spread_pct = (bap - bbp) / bbp
