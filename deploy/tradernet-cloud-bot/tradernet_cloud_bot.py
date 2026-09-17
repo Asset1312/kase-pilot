@@ -985,7 +985,7 @@ def is_kase_market_open() -> bool:
     now = datetime.datetime.now(tz_kzt)
     if now.weekday() >= 5:
         return False
-    start_time = datetime.time(11, 30, 0)
+    start_time = datetime.time(10, 15, 0)
     end_time = datetime.time(17, 30, 0)
     return start_time <= now.time() <= end_time
 
@@ -1334,7 +1334,9 @@ class CloudBotEngine:
                 'KZTO.KZ': {'qty': 2, 'max_tiers': 2, 'tier_drop_pct': 0.015, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
                 'BCCIRB.KZ': {'qty': 50, 'max_tiers': 2, 'tier_drop_pct': 0.010, 'min_spread_pct': 0.0020, 'min_step': 0.01, 'min_free_kzt': 0.0},
                 'KMGD.KZ': {'qty': 25, 'max_tiers': 2, 'tier_drop_pct': 0.012, 'min_spread_pct': 0.0035, 'min_step': 0.01, 'min_free_kzt': 0.0},
-                'CCBN.KZ': {'qty': 1, 'max_tiers': 1, 'tier_drop_pct': 0.020, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 10000.0}
+                'HSBK.KZ': {'qty': 3, 'max_tiers': 2, 'tier_drop_pct': 0.012, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'ASBN.KZ': {'qty': 50, 'max_tiers': 2, 'tier_drop_pct': 0.015, 'min_spread_pct': 0.0030, 'min_step': 0.01, 'min_free_kzt': 0.0},
+                'CCBN.KZ': {'qty': 1, 'max_tiers': 1, 'tier_drop_pct': 0.020, 'min_spread_pct': 0.0025, 'min_step': 0.01, 'min_free_kzt': 0.0}
             }
 
             user_data = self.kase_client.get_user_data().get('OPQ', {})
@@ -1379,7 +1381,7 @@ class CloudBotEngine:
                 buy_orders = [o for o in sym_orders if o.get('oper') == 1]
 
                 # Stagnation & Time-Stop tracking
-                if curr_shares >= cfg['qty']:
+                if curr_shares > 0:
                     if sym not in self.inventory_entry_time:
                         self.inventory_entry_time[sym] = time.time()
 
@@ -1504,19 +1506,23 @@ class CloudBotEngine:
                                 can_enter_tier = False
 
                         if can_enter_tier:
-                            # 🛡️ Gate 2: Cash Floor Protection (Keep at least 500 KZT reserve)
-                            min_required_kzt = max(cfg.get('min_free_kzt', 0.0), float(os.environ.get("KASE_MIN_FREE_KZT", 500.0)))
-                            req_cost = lot_qty * bbp
-                            if (kzt_cash - req_cost) >= min_required_kzt:
+                            # 🛡️ Gate 2: Full Cash Utilization (0 KZT reserve: trade 100% available cash)
+                            min_required_kzt = max(cfg.get('min_free_kzt', 0.0), float(os.environ.get("KASE_MIN_FREE_KZT", 0.0)))
+                            # Adaptive sizing: use target qty or what balance allows (min 1 share, min 100 KZT order)
+                            affordable_qty = int(kzt_cash // (bbp * 1.001))
+                            trade_qty = min(lot_qty, affordable_qty)
+                            req_cost = trade_qty * bbp
+
+                            if trade_qty > 0 and req_cost >= 100.0 and (kzt_cash - req_cost) >= min_required_kzt:
                                 spread_pct = (bap - bbp) / bbp
                                 if spread_pct >= cfg['min_spread_pct']:
                                     tier_idx = current_tiers + 1
-                                    logger.info(f"[{sym}] 🪜 Placing Sub-Grid Maker BUY (Tier {tier_idx}/{max_tiers}): {lot_qty} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} ₸)")
+                                    logger.info(f"[{sym}] 🪜 Placing Sub-Grid Maker BUY (Tier {tier_idx}/{max_tiers}): {trade_qty} shares @ {bbp:.2f} KZT (Spread: {spread_pct*100:.2f}%, Cash: {kzt_cash:.2f} ₸)")
                                     resp = self.kase_client.authorized_request('putTradeOrder', {
                                         'instr_name': sym,
                                         'action_id': 1,
                                         'order_type_id': 2,
-                                        'qty': lot_qty,
+                                        'qty': trade_qty,
                                         'limit_price': round(bbp, 2),
                                         'expiration_id': 1
                                     })
