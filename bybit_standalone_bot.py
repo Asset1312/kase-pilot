@@ -641,8 +641,28 @@ class StandaloneBybitBot:
                 t2 = round(cur_price * (1.0 - s2_disc), p_dec)
                 t3 = round(cur_price * (1.0 - s3_disc), p_dec)
 
-                # Drift & TTL Management for resting BUY orders
-                for b_ord in list(open_buys):
+                # Budget per pair based on portfolio mode
+                if self.dual_mode_active:
+                    pair_total_equity = est_total_equity * 0.50
+                    step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
+                else:
+                    step_budget = max(5.05, round(est_total_equity * 0.30, 2))
+
+                step1_held = holding_val >= 5.00
+                step2_held = holding_val >= (step_budget * 1.5)
+
+                # Valid buy targets based on inventory
+                valid_targets: List[Tuple[str, float]] = []
+                if not step1_held:
+                    valid_targets.append(("step_1", t1))
+                if not step2_held:
+                    valid_targets.append(("step_2", t2))
+                valid_targets.append(("step_3", t3))
+
+                # Drift, Orphan & Duplicate Management for resting BUY orders
+                assigned_targets = set()
+                sorted_buys = sorted(open_buys, key=lambda b: abs(float(b.get("price", 0.0)) - cur_price))
+                for b_ord in list(sorted_buys):
                     ord_id = b_ord.get("orderId")
                     ord_price = float(b_ord.get("price", 0.0))
                     if not ord_id or ord_price <= 0:
@@ -651,19 +671,25 @@ class StandaloneBybitBot:
                     created_time = float(b_ord.get("createdTime", now * 1000)) / 1000.0
                     is_expired = (now - created_time) > 1200
 
-                    d1 = abs(t1 - ord_price) / ord_price
-                    d2 = abs(t2 - ord_price) / ord_price
-                    d3 = abs(t3 - ord_price) / ord_price
-                    target_drift_pct = min(d1, d2, d3)
+                    best_step = None
+                    min_dist = 999.0
+                    for step_name, target_p in valid_targets:
+                        dist = abs(target_p - ord_price) / ord_price
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_step = step_name
 
-                    if target_drift_pct > 0.015 or is_expired:
+                    if is_expired or min_dist > 0.012 or (best_step in assigned_targets):
                         logger.info(
-                            f"🟡 [{sym}] Ре-пеггинг ордера {ord_id} "
-                            f"(Дрейф цели: {target_drift_pct*100:.2f}%, Возраст: {int(now - created_time)}с)"
+                            f"🟡 [{sym}] Снятие неактуального/дублирующего BUY ордера {ord_id} @ ${ord_price} "
+                            f"(Отклонение: {min_dist*100:.2f}%, Цель: {best_step}, Возраст: {int(now - created_time)}с)"
                         )
                         resp_c = self.client.cancel_order(sym, ord_id)
                         if resp_c.get("retCode") == 0 and b_ord in open_buys:
                             open_buys.remove(b_ord)
+                    else:
+                        if best_step:
+                            assigned_targets.add(best_step)
 
                 # BUY Order Placement Eligibility
                 can_buy_token = True
@@ -686,15 +712,6 @@ class StandaloneBybitBot:
 
                 # Sizing & Order Placement
                 if can_buy_token:
-                    # Budget per pair based on portfolio mode
-                    if self.dual_mode_active:
-                        pair_total_equity = est_total_equity * 0.50
-                        step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
-                    else:
-                        step_budget = max(5.05, round(est_total_equity * 0.30, 2))
-
-                    step1_held = holding_val >= 5.00
-                    step2_held = holding_val >= (step_budget * 1.5)
 
                     # Step 1
                     if not step1_held:
