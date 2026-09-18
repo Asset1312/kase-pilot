@@ -2162,8 +2162,9 @@ def main():
 
     engine = CloudBotEngine()
 
-    t_tg = threading.Thread(target=telegram_polling_loop, args=(engine,), daemon=True)
-    t_tg.start()
+    # Telegram polling disabled in cloud bot: delegated exclusively to Bybit standalone phone node
+    # t_tg = threading.Thread(target=telegram_polling_loop, args=(engine,), daemon=True)
+    # t_tg.start()
 
     engine.start()
 
