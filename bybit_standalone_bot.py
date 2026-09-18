@@ -54,8 +54,8 @@ except ImportError:
 # Credentials & Telegram
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "").strip()
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppgtY2I6-JQFiM-mgcnZ36U").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "455103299").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
 SYMBOL = "SUIUSDT"
@@ -238,6 +238,7 @@ class StandaloneBybitBot:
         self.last_sync_ts = 0.0
         self.peak_equity = 0.0
         self.circuit_breaker_active = False
+        self.is_paused = False
         self.running = True
         self.stats = {
             "symbol": SYMBOL,
@@ -254,6 +255,7 @@ class StandaloneBybitBot:
             "volatility_regime": "NORMAL",
             "cooldown_active": False,
             "cooldown_reason": "",
+            "is_paused": False,
             "position_age_hours": 0.0,
             "tp_mode": "Standard (+0.90%)",
             "updated_at": "",
@@ -476,8 +478,8 @@ class StandaloneBybitBot:
                         open_buys.remove(b_ord)
 
             # 8. Inventory-Aware Sizing & Grid Entry (minOrderAmt = 5 USDT Guard)
-            # If cooldown or circuit breaker is active, DO NOT place any BUY orders!
-            can_buy = (not self.guard.cooldown_active) and (not self.circuit_breaker_active)
+            # If cooldown, circuit breaker, or manual pause is active, DO NOT place any BUY orders!
+            can_buy = (not self.guard.cooldown_active) and (not self.circuit_breaker_active) and (not self.is_paused)
 
             if can_buy:
                 # Dynamic sizing based on total available funds
@@ -585,7 +587,9 @@ class StandaloneBybitBot:
 
             # 9. Update live statistics for dashboard
             guard_status_str = "🟢 Норма"
-            if self.circuit_breaker_active:
+            if self.is_paused:
+                guard_status_str = "⏸️ На паузе (Покупки остановлены)"
+            elif self.circuit_breaker_active:
                 guard_status_str = "🚨 Circuit Breaker (Drawdown > 5%)"
             elif self.guard.cooldown_active:
                 elapsed_cd = int(now - self.guard.cooldown_start_time)
@@ -599,6 +603,7 @@ class StandaloneBybitBot:
                 "locked_usdt": round(locked_usdt, 4),
                 "sui_free": round(sui_free, 4),
                 "sui_locked": round(sui_locked, 4),
+                "is_paused": self.is_paused,
                 "open_orders": self.client.get_open_orders(SYMBOL),
                 "last_price": sui_price,
                 "guard_status": guard_status_str,
@@ -720,6 +725,336 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+# =====================================================================
+# TELEGRAM REMOTE CONTROL PANEL (KEYBOARDS, STATUS, PAUSE, RESUME)
+# =====================================================================
+
+MAIN_REPLY_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📊 Статус и Баланс"}, {"text": "📈 Сделки и PnL"}],
+        [{"text": "⏸️ Пауза (только ТП)"}, {"text": "▶️ Возобновить"}],
+        [{"text": "🚨 Panic Stop"}, {"text": "🔄 Обновить пульт"}]
+    ],
+    "resize_keyboard": True,
+    "persistent": True
+}
+
+STATUS_INLINE_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🔄 Обновить данные", "callback_data": "btn_refresh"},
+            {"text": "📈 Сделки", "callback_data": "btn_trades"}
+        ],
+        [
+            {"text": "⏸️ Поставить на Паузу", "callback_data": "btn_pause"},
+            {"text": "▶️ Возобновить", "callback_data": "btn_resume"}
+        ]
+    ]
+}
+
+PANIC_CONFIRM_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🚨 ДА, СНЯТЬ ВСЕ BUY", "callback_data": "btn_confirm_panic"},
+            {"text": "❌ Отмена", "callback_data": "btn_cancel_panic"}
+        ]
+    ]
+}
+
+def send_telegram_reply(
+    text: str,
+    chat_id: str = TELEGRAM_CHAT_ID,
+    reply_markup: Optional[Dict[str, Any]] = None,
+    message_id_to_edit: Optional[int] = None,
+) -> Optional[int]:
+    """Sends a new message or edits an existing message in Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return None
+    try:
+        if message_id_to_edit:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+            payload_dict: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "message_id": message_id_to_edit,
+                "text": text,
+                "parse_mode": "Markdown",
+            }
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload_dict = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+            }
+        if reply_markup is not None:
+            payload_dict["reply_markup"] = reply_markup
+
+        payload = json.dumps(payload_dict).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("ok"):
+                return int(data.get("result", {}).get("message_id") or 0)
+    except Exception as e:
+        logger.warning(f"Telegram reply/edit error: {e}")
+    return None
+
+def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
+    """Acknowledges an inline button click to dismiss the loading animation."""
+    if not TELEGRAM_BOT_TOKEN or not callback_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+        payload_dict: Dict[str, Any] = {"callback_query_id": callback_id}
+        if text:
+            payload_dict["text"] = text
+        payload = json.dumps(payload_dict).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        logger.debug(f"Callback answer error: {e}")
+
+def format_status_text(bot: StandaloneBybitBot) -> str:
+    st = bot.stats
+    mode_str = "⏸️ *НА ПАУЗЕ (Покупки заморожены)*" if bot.is_paused else "▶️ *АКТИВЕН (Сетка работает)*"
+    total_usd = st.get("total_usd", 0.0)
+    avail = st.get("available_usdt", 0.0)
+    locked = st.get("locked_usdt", 0.0)
+    sui_free = st.get("sui_free", 0.0)
+    price = st.get("last_price", 0.0)
+    guard_str = st.get("guard_status", "🟢 Норма")
+    btc_1m = st.get("btc_1m_chg", 0.0)
+    sui_1m = st.get("sui_1m_chg", 0.0)
+    step1 = st.get("step1_discount_pct", 0.55)
+    step2 = st.get("step2_discount_pct", 1.75)
+    step3 = st.get("step3_discount_pct", 3.20)
+    tp_mode = st.get("tp_mode", "Standard (+0.90%)")
+    updated = st.get("updated_at", "")
+
+    orders = st.get("open_orders", [])
+    if orders:
+        lines = []
+        for o in orders:
+            side = o.get("side", "")
+            q = o.get("qty", "")
+            p = o.get("price", "")
+            icon = "🟢" if side == "Buy" else "🔴"
+            try:
+                val = float(q) * float(p)
+                lines.append(f"• {icon} {side} {q} SUI @ ${p} (${val:.2f})")
+            except Exception:
+                lines.append(f"• {icon} {side} {q} SUI @ ${p}")
+        orders_str = "\n".join(lines)
+    else:
+        orders_str = "• Нет активных ордеров в стакане"
+
+    return (
+        f"🎛️ *BYBIT SPOT BOT: ПУЛЬТ УПРАВЛЕНИЯ*\n\n"
+        f"Статус: {mode_str}\n"
+        f"Пара: *{st.get('symbol')}* | Спот: *${price:.4f}*\n\n"
+        f"💰 *Баланс: ${total_usd:.2f} USDT*\n"
+        f"• Свободно: `${avail:.2f} USDT`\n"
+        f"• В ордерах: `${locked:.2f} USDT`\n"
+        f"• SUI на руках: `{sui_free}`\n\n"
+        f"🛡️ *Защита депозита:* {guard_str}\n"
+        f"• Импульс BTC 1m: `{btc_1m:+.2f}%` | SUI 1m: `{sui_1m:+.2f}%`\n"
+        f"• Сетка: -{step1}% / -{step2}% / -{step3}%\n"
+        f"• Режим ТП: *{tp_mode}*\n\n"
+        f"📖 *Ордера в стакане:*\n{orders_str}\n\n"
+        f"⏱ _Обновлено: {updated}_"
+    )
+
+def format_trades_text(bot: StandaloneBybitBot) -> str:
+    st = bot.stats
+    cycles = st.get("completed_cycles", 0)
+    profit = st.get("net_profit_usd", 0.0)
+    try:
+        execs = bot.client.get_execution_history(SYMBOL, limit=8)
+        lines = []
+        for e in execs:
+            dt = datetime.datetime.fromtimestamp(float(e.get("execTime", 0)) / 1000.0).strftime("%d.%m %H:%M")
+            side = e.get("side", "")
+            icon = "🟢" if side == "Buy" else "🎯"
+            q = e.get("execQty", "")
+            p = e.get("execPrice", "")
+            v = float(e.get("execValue", 0.0))
+            lines.append(f"{icon} `[{dt}]` {side:<4} {q:>5} @ ${p} (${v:.2f})")
+        execs_str = "\n".join(lines) if lines else "Нет недавних сделок"
+    except Exception as e:
+        execs_str = f"Ошибка загрузки истории: {e}"
+
+    return (
+        f"📈 *ИСТОРИЯ СДЕЛОК {SYMBOL}*\n\n"
+        f"• Закрыто циклов: *{cycles}* (100% Win Rate)\n"
+        f"• Общий профит: *+${profit:.4f} USDT*\n\n"
+        f"📋 *Последние исполнения:*\n{execs_str}"
+    )
+
+def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> None:
+    t = text.strip().lower()
+    if t in ["📊 статус и баланс", "/status", "/balance", "статус", "баланс"]:
+        send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD)
+    elif t in ["📈 сделки и pnl", "/trades", "/pnl", "сделки", "профит"]:
+        send_telegram_reply(format_trades_text(bot), chat_id=chat_id, reply_markup=MAIN_REPLY_KEYBOARD)
+    elif t in ["⏸️ пауза (только тп)", "/pause", "пауза", "pause"]:
+        bot.is_paused = True
+        try:
+            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
+            bot.cancel_all_buys(open_buys)
+        except Exception as e:
+            logger.warning(f"Pause buy cancel error: {e}")
+        send_telegram_reply(
+            "⏸️ *БОТ ПОСТАВЛЕН НА ПАУЗУ*\n\n"
+            "• Все активные BUY-ордера немедленно сняты из стакана.\n"
+            "• Тейк-профиты (SELL) остаются активными и ждут закрытия в плюс.\n"
+            "• Новые покупки заблокированы.\n\n"
+            "Нажмите *«▶️ Возобновить»*, чтобы вернуть сетку в работу.",
+            chat_id=chat_id,
+            reply_markup=MAIN_REPLY_KEYBOARD
+        )
+    elif t in ["▶️ возобновить", "/resume", "/start", "старт", "возобновить", "resume"]:
+        bot.is_paused = False
+        send_telegram_reply(
+            "▶️ *ТОРГОВЛЯ ВОЗОБНОВЛЕНА!*\n\n"
+            "• Бот снова в строю.\n"
+            "• В течение 10 секунд алгоритм оценит рынок и выставит свежие ордера сетки.",
+            chat_id=chat_id,
+            reply_markup=MAIN_REPLY_KEYBOARD
+        )
+    elif t in ["🚨 panic stop", "/panic", "panic", "паника"]:
+        send_telegram_reply(
+            "⚠️ *ПОДТВЕРЖДЕНИЕ ЭКСТРЕННОЙ ОСТАНОВКИ*\n\n"
+            "Вы уверены, что хотите снять ВСЕ лимитные ордера на покупку и заморозить бота?",
+            chat_id=chat_id,
+            reply_markup=PANIC_CONFIRM_KEYBOARD
+        )
+    elif t in ["🔄 обновить пульт", "меню", "/menu"]:
+        send_telegram_reply(
+            "🎛️ *Пульт управления Bybit обновлен!*\nИспользуйте кнопки меню внизу экрана.",
+            chat_id=chat_id,
+            reply_markup=MAIN_REPLY_KEYBOARD
+        )
+    else:
+        send_telegram_reply(
+            "Команда не распознана. Используйте кнопки на пульте ниже:",
+            chat_id=chat_id,
+            reply_markup=MAIN_REPLY_KEYBOARD
+        )
+
+def handle_telegram_callback(
+    bot: StandaloneBybitBot,
+    cb_id: str,
+    chat_id: str,
+    msg_id: int,
+    data: str,
+) -> None:
+    if data == "btn_refresh":
+        answer_callback_query(cb_id, "Данные обновлены ✅")
+        send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
+    elif data == "btn_trades":
+        answer_callback_query(cb_id, "История загружена 📊")
+        send_telegram_reply(format_trades_text(bot), chat_id=chat_id, message_id_to_edit=msg_id)
+    elif data == "btn_pause":
+        bot.is_paused = True
+        try:
+            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
+            bot.cancel_all_buys(open_buys)
+        except Exception:
+            pass
+        answer_callback_query(cb_id, "Бот на паузе ⏸️")
+        send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
+    elif data == "btn_resume":
+        bot.is_paused = False
+        answer_callback_query(cb_id, "Торговля возобновлена ▶️")
+        send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
+    elif data == "btn_confirm_panic":
+        bot.is_paused = True
+        try:
+            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
+            bot.cancel_all_buys(open_buys)
+        except Exception:
+            pass
+        answer_callback_query(cb_id, "Ордера отменены! 🚨")
+        send_telegram_reply(
+            "🚨 *АВАРИЙНАЯ ОСТАНОВКА ВЫПОЛНЕНА*\n\n"
+            "• Все BUY-ордера отозваны.\n"
+            "• Бот заморожен. Чтобы вернуться к торгам, нажмите «▶️ Возобновить».",
+            chat_id=chat_id,
+            reply_markup=MAIN_REPLY_KEYBOARD,
+            message_id_to_edit=msg_id
+        )
+    elif data == "btn_cancel_panic":
+        answer_callback_query(cb_id, "Отмена действия ❌")
+        send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
+
+def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram controller disabled: token or chat_id missing.")
+        return
+
+    logger.info("📱 [Telegram Control Panel] Поток запущен. Слушаем команды...")
+    send_telegram_reply(
+        "🎛️ *Bybit Spot Bot на связи!*\n"
+        "Пульт управления активирован. Кнопки добавлены в нижнее меню.",
+        chat_id=TELEGRAM_CHAT_ID,
+        reply_markup=MAIN_REPLY_KEYBOARD,
+    )
+
+    last_offset = 0
+    while bot.running:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={last_offset + 1}&timeout=15"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "BybitControl/2.0"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            if not data.get("ok"):
+                time.sleep(2)
+                continue
+
+            for u in data.get("result", []):
+                last_offset = u.get("update_id", last_offset)
+
+                # 1. Message from user
+                m = u.get("message")
+                if m:
+                    cid = str(m.get("chat", {}).get("id", ""))
+                    if cid == str(TELEGRAM_CHAT_ID):
+                        txt = m.get("text", "")
+                        if txt:
+                            handle_telegram_text(bot, txt, cid)
+
+                # 2. Inline callback
+                cb = u.get("callback_query")
+                if cb:
+                    cid = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+                    if cid == str(TELEGRAM_CHAT_ID):
+                        cb_id = cb.get("id", "")
+                        mid = cb.get("message", {}).get("message_id", 0)
+                        c_data = cb.get("data", "")
+                        handle_telegram_callback(bot, cb_id, cid, mid, c_data)
+
+        except urllib.error.HTTPError as he:
+            if he.code == 409:
+                logger.warning("Telegram 409 Conflict: another instance is polling getUpdates. Retrying in 5s...")
+                time.sleep(5)
+            else:
+                time.sleep(3)
+        except Exception:
+            time.sleep(3)
+
+
 def start_server(bot: StandaloneBybitBot) -> None:
     """Runs local mobile dashboard on background thread."""
     SimpleDashboardHandler.bot_instance = bot
@@ -735,4 +1070,6 @@ if __name__ == "__main__":
     bot = StandaloneBybitBot()
     t_web = threading.Thread(target=start_server, args=(bot,), daemon=True)
     t_web.start()
+    t_tg = threading.Thread(target=telegram_polling_thread, args=(bot,), daemon=True, name="TelegramControl")
+    t_tg.start()
     bot.run_forever()
