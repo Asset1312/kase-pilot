@@ -256,6 +256,7 @@ class StandaloneBybitBot:
             "cooldown_active": False,
             "cooldown_reason": "",
             "is_paused": False,
+            "mnt_balance": 0.0,
             "position_age_hours": 0.0,
             "tp_mode": "Standard (+0.90%)",
             "updated_at": "",
@@ -301,6 +302,8 @@ class StandaloneBybitBot:
             sui_free = sui_coin.get("free", 0.0)
             sui_locked = sui_coin.get("locked", 0.0)
             total_sui = sui_free + sui_locked
+            mnt_coin = bal.get("coins", {}).get("MNT", {})
+            mnt_bal = float(mnt_coin.get("balance") or mnt_coin.get("free") or 0.0)
 
             # 2. Market Price
             sui_price = self.get_market_price()
@@ -604,6 +607,7 @@ class StandaloneBybitBot:
                 "sui_free": round(sui_free, 4),
                 "sui_locked": round(sui_locked, 4),
                 "is_paused": self.is_paused,
+                "mnt_balance": round(mnt_bal, 4),
                 "open_orders": self.client.get_open_orders(SYMBOL),
                 "last_price": sui_price,
                 "guard_status": guard_status_str,
@@ -691,6 +695,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
         <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
         <div class="label" style="margin-top: 6px; color: #10b981;">Закрыто циклов: {st.get('completed_cycles', 0)} | Профит: +${st.get('net_profit_usd', 0.0):.4f} USDT</div>
+        <div class="label" style="margin-top: 4px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
     </div>
 
     <div class="card">
@@ -856,6 +861,17 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
     else:
         orders_str = "• Нет активных ордеров в стакане"
 
+    mnt_bal = float(st.get("mnt_balance") or 0.0)
+    if mnt_bal >= 0.50:
+        mnt_status_str = f"🟢 `{mnt_bal:.3f} MNT` (В норме)"
+        mnt_alert = ""
+    elif mnt_bal >= 0.05:
+        mnt_status_str = f"🟡 `{mnt_bal:.3f} MNT` (Снижается)"
+        mnt_alert = ""
+    else:
+        mnt_status_str = f"🔴 `{mnt_bal:.4f} MNT` ⚠️ *(Заканчивается!)*"
+        mnt_alert = "\n💡 _Совет: Топливо MNT почти на нуле. Рекомендуется купить 1–2 MNT (~$1.50) для скидки 25% на комиссии и чистых сделок без пыли._\n"
+
     return (
         f"🎛️ *BYBIT SPOT BOT: ПУЛЬТ УПРАВЛЕНИЯ*\n\n"
         f"Статус: {mode_str}\n"
@@ -863,12 +879,14 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
         f"💰 *Баланс: ${total_usd:.2f} USDT*\n"
         f"• Свободно: `${avail:.2f} USDT`\n"
         f"• В ордерах: `${locked:.2f} USDT`\n"
-        f"• SUI на руках: `{sui_free}`\n\n"
+        f"• SUI на руках: `{sui_free}`\n"
+        f"• Топливо (MNT): {mnt_status_str}\n\n"
         f"🛡️ *Защита депозита:* {guard_str}\n"
         f"• Импульс BTC 1m: `{btc_1m:+.2f}%` | SUI 1m: `{sui_1m:+.2f}%`\n"
         f"• Сетка: -{step1}% / -{step2}% / -{step3}%\n"
         f"• Режим ТП: *{tp_mode}*\n\n"
-        f"📖 *Ордера в стакане:*\n{orders_str}\n\n"
+        f"📖 *Ордера в стакане:*\n{orders_str}\n"
+        f"{mnt_alert}"
         f"⏱ _Обновлено: {updated}_"
     )
 
