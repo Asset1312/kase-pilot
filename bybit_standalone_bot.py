@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """
-Bybit Kazakhstan Spot V5 Standalone Micro-Grid Scalper with Crash Protection.
+Bybit Kazakhstan Spot V5 Standalone Multi-Token Portfolio Engine with Crash Protection.
 Engineered for 24/7 autonomous operation on Android (Termux) / Linux / Windows.
 Strictly isolated to Bybit Kazakhstan (api.bybit.kz) - Zero Tradernet/KASE overhead.
 
-Enhanced with 4-Layer Deposit Crash Protection:
-1. Dual Dump Guard: BTC Lead-Lag (-0.35%) + SUI Idiosyncratic (-0.60%)
-2. Smart Cooldown Exit: 10 min minimum + Candle Stabilization (no lower lows)
-3. Dynamic Volatility Spacing: Normal (-0.55% / -1.75%) vs Storm (-1.20% / -2.80%)
-4. Inventory-Aware Sizing: Step 2 reserved, minOrderAmt = 5 USDT guaranteed
-5. Fee-Proof Soft Breakeven: Stale position (>8h) TP reduced to +0.38% (net +0.18% after fees)
-6. Circuit Breaker: 5% maximum daily equity drawdown guard
+Enhanced with Multi-Token Portfolio Management:
+1. Multi-Token Scalping: SUIUSDT (Primary) + APTUSDT (Secondary)
+2. Dynamic Capital Scaling Milestones:
+   - < $70 USDT: 100% Capital on SUIUSDT (3-step geometric grid)
+   - >= $70 USDT: Dual-Pair Scalping (50% SUI / 50% APT)
+   - Hysteresis Gate: Deactivates APT into EXIT_ONLY if equity drops below $62 (no panic selling)
+3. Continuous Adaptive Volatility Spacing:
+   - Dynamically scales grid steps based on 15m True Range Index (0.75x to 2.00x)
+4. Multi-Layer Deposit Crash Protection:
+   - Global BTC Lead-Lag flash dump guard (-0.35% 1m / -0.70% 3m)
+   - Idiosyncratic token dump guard (-0.60% 1m / -1.20% 3m) per asset
+   - Smart Cooldown Exit: 10 min minimum + Candle Stabilization check
+   - Circuit Breaker: 5% maximum daily equity drawdown guard
+5. Fee-Proof Soft Breakeven:
+   - Stale position (>8h) TP reduced to +0.38% (net +0.18% after fees)
+6. MNT Fuel Tracker & Telegram Remote Control Panel
 """
 
 from __future__ import annotations
@@ -43,6 +52,13 @@ logger = logging.getLogger("BybitBot")
 # Ensure bybit_client import
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEPLOY_DIR = os.path.join(SCRIPT_DIR, "deploy", "tradernet-cloud-bot")
+if not os.path.exists(DEPLOY_DIR):
+    cwd_deploy = os.path.join(os.getcwd(), "deploy", "tradernet-cloud-bot")
+    if os.path.exists(cwd_deploy):
+        DEPLOY_DIR = cwd_deploy
+    elif os.path.exists(r"C:\1\KASE-Pilot\deploy\tradernet-cloud-bot"):
+        DEPLOY_DIR = r"C:\1\KASE-Pilot\deploy\tradernet-cloud-bot"
+
 if DEPLOY_DIR not in sys.path:
     sys.path.insert(0, DEPLOY_DIR)
 
@@ -58,20 +74,25 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppg
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "455103299").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
-SYMBOL = "SUIUSDT"
+# Pair Architecture
+PRIMARY_SYMBOL = "SUIUSDT"
+SECONDARY_SYMBOL = "APTUSDT"
 LEAD_LAG_SYMBOL = "BTCUSDT"
 
 # Protection Thresholds
 BTC_1M_DUMP_THRESHOLD = -0.0035     # -0.35% BTC drop in 1 min
 BTC_3M_DUMP_THRESHOLD = -0.0070     # -0.70% BTC drop in 3 min
-SUI_1M_DUMP_THRESHOLD = -0.0060     # -0.60% SUI drop in 1 min
-SUI_3M_DUMP_THRESHOLD = -0.0120     # -1.20% SUI drop in 3 min
 COOLDOWN_MIN_SECONDS = 600          # 10 minutes minimum freeze
 
-# Spacing Regimes (3-Step Micro-Grid)
-SPACING_NORMAL = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}   # Normal: -0.55% / -1.75% / -3.20%
-SPACING_STORM = {"step_1": 0.0120, "step_2": 0.0280, "step_3": 0.0450}    # High Vol / Storm: -1.20% / -2.80% / -4.50%
-VOL_STORM_THRESHOLD = 0.0120                            # 15m Range > 1.20% -> Storm
+# Capital Scaling Milestones & Hysteresis Gate
+DUAL_PAIR_ACTIVATION_EQUITY = 70.00   # Auto-activate secondary pair (APT) when equity >= $70
+DUAL_PAIR_DEACTIVATION_EQUITY = 62.00 # Deactivate secondary pair (EXIT_ONLY) when equity < $62
+
+# Continuous Adaptive Spacing Benchmarks
+BASE_SPACING = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}
+VOLATILITY_BENCHMARK_15M = 0.0080    # 0.80% 15m range is baseline (multiplier = 1.0)
+MIN_VOL_MULTIPLIER = 0.75            # in calm market, step1 tightens to ~0.41%
+MAX_VOL_MULTIPLIER = 2.00            # in storm market, step1 widens to ~1.10%
 
 # Take-Profit & Soft Breakeven
 STANDARD_TP_PCT = 0.0090            # +0.90% (Net +0.70% after 0.20% fees)
@@ -79,9 +100,32 @@ SOFT_BREAKEVEN_TP_PCT = 0.0038      # +0.38% (Net +0.18% after 0.20% fees)
 STALE_POSITION_HOURS = 8.0          # Switch to Soft Breakeven after 8 hours
 CIRCUIT_BREAKER_MAX_DD = 0.05       # 5% max drawdown from peak equity
 
+TOKEN_METADATA = {
+    PRIMARY_SYMBOL: {
+        "base_coin": "SUI",
+        "name": "Sui",
+        "badge_color": "#38bdf8",     # Cyan
+        "min_order_amt": 5.00,
+        "qty_decimals": 2,
+        "price_decimals": 4,
+        "dump_1m_threshold": -0.0060,
+        "dump_3m_threshold": -0.0120,
+    },
+    SECONDARY_SYMBOL: {
+        "base_coin": "APT",
+        "name": "Aptos",
+        "badge_color": "#a855f7",     # Purple
+        "min_order_amt": 5.00,
+        "qty_decimals": 2,
+        "price_decimals": 4,
+        "dump_1m_threshold": -0.0060,
+        "dump_3m_threshold": -0.0120,
+    }
+}
+
 
 def send_telegram(text: str) -> None:
-    """Sends high-priority trade alerts to Telegram."""
+    """Sends high-priority trade alerts to Telegram with graceful fallback."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -93,24 +137,46 @@ def send_telegram(text: str) -> None:
         }).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=5)
+    except urllib.error.HTTPError as he:
+        if he.code == 400:
+            try:
+                payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode("utf-8")
+                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=5)
+            except Exception as e2:
+                logger.warning(f"Telegram plain alert fallback error: {e2}")
+        else:
+            logger.warning(f"Telegram alert delivery error: {he}")
     except Exception as e:
         logger.warning(f"Telegram alert delivery error: {e}")
 
 
 class MarketGuard:
-    """Market crash detection, lead-lag spillover, and dynamic spacing engine."""
+    """Market crash detection, lead-lag spillover, and dynamic adaptive spacing engine."""
 
     def __init__(self) -> None:
-        self.cooldown_active = False
-        self.cooldown_start_time = 0.0
-        self.cooldown_reason = ""
-        self.volatility_regime = "NORMAL"  # "NORMAL" or "STORM"
-        self.step1_discount = SPACING_NORMAL["step_1"]
-        self.step2_discount = SPACING_NORMAL["step_2"]
-        self.step3_discount = SPACING_NORMAL["step_3"]
+        self.global_cooldown_active = False
+        self.global_cooldown_start_time = 0.0
+        self.global_cooldown_reason = ""
         self.last_btc_1m_chg = 0.0
-        self.last_sui_1m_chg = 0.0
-        self.last_sui_15m_range = 0.0
+        self.last_btc_3m_chg = 0.0
+
+        # Per-token metrics
+        self.token_metrics: Dict[str, Dict[str, Any]] = {}
+        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+            self.token_metrics[sym] = {
+                "last_1m_chg": 0.0,
+                "last_3m_chg": 0.0,
+                "range_15m": 0.0,
+                "vol_multiplier": 1.0,
+                "volatility_regime": "NORMAL",
+                "step1_discount": BASE_SPACING["step_1"],
+                "step2_discount": BASE_SPACING["step_2"],
+                "step3_discount": BASE_SPACING["step_3"],
+                "cooldown_active": False,
+                "cooldown_start_time": 0.0,
+                "cooldown_reason": "",
+            }
 
     @staticmethod
     def fetch_klines(symbol: str, limit: int = 15) -> List[List[Any]]:
@@ -126,195 +192,250 @@ class MarketGuard:
             logger.debug(f"Kline fetch failed for {symbol}: {e}")
         return []
 
-    def update_market_state(self) -> Tuple[bool, str]:
+    def update_market_state(self, active_symbols: List[str]) -> Tuple[bool, str, Dict[str, Tuple[bool, str]]]:
         """
-        Updates market metrics, checks dump triggers and stabilization.
-        Returns (dump_triggered_now, trigger_reason).
+        Updates market metrics, checks BTC lead-lag and idiosyncratic dump triggers.
+        Returns:
+            (global_dump_fired, global_reason, {symbol: (token_dump_fired, token_reason)})
         """
         btc_klines = self.fetch_klines(LEAD_LAG_SYMBOL, limit=5)
-        sui_klines = self.fetch_klines(SYMBOL, limit=15)
+        now = time.time()
 
-        if not btc_klines or not sui_klines:
-            return False, ""
+        if btc_klines:
+            btc_c0, btc_o0 = float(btc_klines[0][4]), float(btc_klines[0][1])
+            self.last_btc_1m_chg = (btc_c0 - btc_o0) / btc_o0 if btc_o0 > 0 else 0.0
+            if len(btc_klines) >= 3:
+                btc_o2 = float(btc_klines[2][1])
+                self.last_btc_3m_chg = (btc_c0 - btc_o2) / btc_o2 if btc_o2 > 0 else 0.0
 
-        # Bybit klines: index 0 is newest (current forming candle), index 1 is previous completed candle
-        btc_c0, btc_o0 = float(btc_klines[0][4]), float(btc_klines[0][1])
-        btc_1m_chg = (btc_c0 - btc_o0) / btc_o0 if btc_o0 > 0 else 0.0
-        self.last_btc_1m_chg = btc_1m_chg
+        global_dump_fired = False
+        global_dump_reason = ""
 
-        btc_3m_chg = 0.0
-        if len(btc_klines) >= 3:
-            btc_o2 = float(btc_klines[2][1])
-            btc_3m_chg = (btc_c0 - btc_o2) / btc_o2 if btc_o2 > 0 else 0.0
+        # Check Global BTC Flash Dump
+        if not self.global_cooldown_active:
+            if self.last_btc_1m_chg <= BTC_1M_DUMP_THRESHOLD:
+                global_dump_reason = f"BTC 1m Flash Dump ({self.last_btc_1m_chg*100:.2f}%)"
+            elif self.last_btc_3m_chg <= BTC_3M_DUMP_THRESHOLD:
+                global_dump_reason = f"BTC 3m Cumulative Dump ({self.last_btc_3m_chg*100:.2f}%)"
 
-        sui_c0, sui_o0 = float(sui_klines[0][4]), float(sui_klines[0][1])
-        sui_1m_chg = (sui_c0 - sui_o0) / sui_o0 if sui_o0 > 0 else 0.0
-        self.last_sui_1m_chg = sui_1m_chg
-
-        sui_3m_chg = 0.0
-        if len(sui_klines) >= 3:
-            sui_o2 = float(sui_klines[2][1])
-            sui_3m_chg = (sui_c0 - sui_o2) / sui_o2 if sui_o2 > 0 else 0.0
-
-        # Dynamic Volatility calculation (15-minute high/low range on SUI)
-        highs = [float(k[2]) for k in sui_klines]
-        lows = [float(k[3]) for k in sui_klines]
-        min_low = min(lows) if lows else 1.0
-        max_high = max(highs) if highs else 1.0
-        sui_15m_range = (max_high - min_low) / min_low if min_low > 0 else 0.0
-        self.last_sui_15m_range = sui_15m_range
-
-        if sui_15m_range >= VOL_STORM_THRESHOLD:
-            self.volatility_regime = "STORM"
-            self.step1_discount = SPACING_STORM["step_1"]
-            self.step2_discount = SPACING_STORM["step_2"]
-            self.step3_discount = SPACING_STORM["step_3"]
+            if global_dump_reason:
+                self.global_cooldown_active = True
+                self.global_cooldown_start_time = now
+                self.global_cooldown_reason = global_dump_reason
+                global_dump_fired = True
         else:
-            self.volatility_regime = "NORMAL"
-            self.step1_discount = SPACING_NORMAL["step_1"]
-            self.step2_discount = SPACING_NORMAL["step_2"]
-            self.step3_discount = SPACING_NORMAL["step_3"]
-
-        # Dump Trigger Evaluation (When not in cooldown)
-        if not self.cooldown_active:
-            reason = ""
-            if btc_1m_chg <= BTC_1M_DUMP_THRESHOLD:
-                reason = f"BTC 1m Flash Dump ({btc_1m_chg*100:.2f}%)"
-            elif btc_3m_chg <= BTC_3M_DUMP_THRESHOLD:
-                reason = f"BTC 3m Cumulative Dump ({btc_3m_chg*100:.2f}%)"
-            elif sui_1m_chg <= SUI_1M_DUMP_THRESHOLD:
-                reason = f"SUI 1m Idiosyncratic Dump ({sui_1m_chg*100:.2f}%)"
-            elif sui_3m_chg <= SUI_3M_DUMP_THRESHOLD:
-                reason = f"SUI 3m Cumulative Dump ({sui_3m_chg*100:.2f}%)"
-
-            if reason:
-                self.cooldown_active = True
-                self.cooldown_start_time = time.time()
-                self.cooldown_reason = reason
-                return True, reason
-
-        # Smart Cooldown Exit Evaluation (When currently in cooldown)
-        else:
-            elapsed = time.time() - self.cooldown_start_time
-            if elapsed >= COOLDOWN_MIN_SECONDS:
-                # Stabilization conditions:
-                # 1. Neither BTC nor SUI made a lower low on last 2 candles
+            # Check stabilization for Global Cooldown
+            elapsed = now - self.global_cooldown_start_time
+            if elapsed >= COOLDOWN_MIN_SECONDS and btc_klines and len(btc_klines) >= 2:
                 btc_l0 = float(btc_klines[0][3])
-                btc_l1 = float(btc_klines[1][3]) if len(btc_klines) > 1 else btc_l0
-                sui_l0 = float(sui_klines[0][3])
-                sui_l1 = float(sui_klines[1][3]) if len(sui_klines) > 1 else sui_l0
-
-                btc_stabilized = btc_l0 >= btc_l1
-                sui_stabilized = (sui_l0 >= sui_l1) and (sui_1m_chg >= -0.0010)
-
-                if btc_stabilized and sui_stabilized:
-                    logger.info(
-                        f"🟢 [MarketGuard] Рынок стабилизировался! Пауза {int(elapsed)}с завершена. "
-                        f"BTC L: {btc_l0}>={btc_l1}, SUI L: {sui_l0}>={sui_l1}"
-                    )
-                    self.cooldown_active = False
-                    self.cooldown_reason = ""
+                btc_l1 = float(btc_klines[1][3])
+                if btc_l0 >= btc_l1 and self.last_btc_1m_chg >= -0.0010:
+                    logger.info(f"🟢 [MarketGuard] Общий рынок (BTC) стабилизировался! Пауза {int(elapsed)}с снята.")
+                    self.global_cooldown_active = False
+                    self.global_cooldown_reason = ""
                     send_telegram(
                         "🟢 **[ЗАЩИТА ДЕПОЗИТА: РЫНОК СТАБИЛИЗИРОВАН]**\n\n"
-                        f"Пара: **{SYMBOL}**\n"
-                        f"Защитная пауза ({int(elapsed)}с) успешно завершена.\n"
-                        "Свечи зафиксировали локальное дно. Сетка ордеров возобновлена."
-                    )
-                else:
-                    logger.debug(
-                        f"MarketGuard: В кулдауне {int(elapsed)}с, ждем стабилизации (BTC: {btc_stabilized}, SUI: {sui_stabilized})"
+                        f"Биткоин зафиксировал локальное дно после паузы {int(elapsed)}с.\n"
+                        "Общесистемная блокировка покупок снята."
                     )
 
-        return False, ""
+        # Check per-token metrics and idiosyncratic dumps
+        token_dumps: Dict[str, Tuple[bool, str]] = {}
+        for sym in active_symbols:
+            meta = TOKEN_METADATA.get(sym, {})
+            m = self.token_metrics.setdefault(sym, {
+                "last_1m_chg": 0.0, "last_3m_chg": 0.0, "range_15m": 0.0,
+                "vol_multiplier": 1.0, "volatility_regime": "NORMAL",
+                "step1_discount": BASE_SPACING["step_1"],
+                "step2_discount": BASE_SPACING["step_2"],
+                "step3_discount": BASE_SPACING["step_3"],
+                "cooldown_active": False, "cooldown_start_time": 0.0, "cooldown_reason": "",
+            })
+
+            klines = self.fetch_klines(sym, limit=15)
+            if not klines:
+                token_dumps[sym] = (False, "")
+                continue
+
+            c0, o0 = float(klines[0][4]), float(klines[0][1])
+            chg_1m = (c0 - o0) / o0 if o0 > 0 else 0.0
+            m["last_1m_chg"] = chg_1m
+
+            chg_3m = 0.0
+            if len(klines) >= 3:
+                o2 = float(klines[2][1])
+                chg_3m = (c0 - o2) / o2 if o2 > 0 else 0.0
+            m["last_3m_chg"] = chg_3m
+
+            # Continuous Volatility Spacing
+            highs = [float(k[2]) for k in klines]
+            lows = [float(k[3]) for k in klines]
+            min_l = min(lows) if lows else 1.0
+            max_h = max(highs) if highs else 1.0
+            range_15m = (max_h - min_l) / min_l if min_l > 0 else 0.0
+            m["range_15m"] = range_15m
+
+            mult = max(MIN_VOL_MULTIPLIER, min(MAX_VOL_MULTIPLIER, range_15m / VOLATILITY_BENCHMARK_15M))
+            m["vol_multiplier"] = round(mult, 2)
+            m["volatility_regime"] = "STORM" if range_15m >= 0.0120 else "NORMAL"
+            m["step1_discount"] = round(BASE_SPACING["step_1"] * mult, 4)
+            m["step2_discount"] = round(BASE_SPACING["step_2"] * mult, 4)
+            m["step3_discount"] = round(BASE_SPACING["step_3"] * mult, 4)
+
+            # Idiosyncratic Dump Trigger
+            dump_fired_tok = False
+            dump_reason_tok = ""
+            d1_thresh = meta.get("dump_1m_threshold", -0.0060)
+            d3_thresh = meta.get("dump_3m_threshold", -0.0120)
+
+            if not m["cooldown_active"]:
+                if chg_1m <= d1_thresh:
+                    dump_reason_tok = f"{meta.get('base_coin', sym)} 1m Flash Dump ({chg_1m*100:.2f}%)"
+                elif chg_3m <= d3_thresh:
+                    dump_reason_tok = f"{meta.get('base_coin', sym)} 3m Cumulative Dump ({chg_3m*100:.2f}%)"
+
+                if dump_reason_tok:
+                    m["cooldown_active"] = True
+                    m["cooldown_start_time"] = now
+                    m["cooldown_reason"] = dump_reason_tok
+                    dump_fired_tok = True
+            else:
+                # Stabilization Check
+                el = now - m["cooldown_start_time"]
+                if el >= COOLDOWN_MIN_SECONDS and len(klines) >= 2:
+                    l0 = float(klines[0][3])
+                    l1 = float(klines[1][3])
+                    if l0 >= l1 and chg_1m >= -0.0010:
+                        logger.info(f"🟢 [MarketGuard] Актив {sym} стабилизировался после {int(el)}с паузы.")
+                        m["cooldown_active"] = False
+                        m["cooldown_reason"] = ""
+                        send_telegram(
+                            f"🟢 **[ЗАЩИТА ДЕПОЗИТА: {sym} СТАБИЛИЗИРОВАН]**\n\n"
+                            f"Свечи {meta.get('base_coin', sym)} сформировали поддержку.\n"
+                            "Сетка ордеров для актива возобновлена."
+                        )
+
+            token_dumps[sym] = (dump_fired_tok, dump_reason_tok)
+
+        return global_dump_fired, global_dump_reason, token_dumps
 
 
 class StandaloneBybitBot:
-    """Autonomous 2-Step Spot Micro-Grid Engine for Bybit Kazakhstan with Crash Protection."""
+    """Autonomous Multi-Token Spot Micro-Grid Portfolio Engine for Bybit Kazakhstan."""
 
     def __init__(self) -> None:
         self.client = BybitV5Client(BYBIT_API_KEY, BYBIT_API_SECRET, domain="api.bybit.kz")
         self.guard = MarketGuard()
-        self.bybit_last_cycles: Optional[int] = None
+        self.dual_mode_active = False
         self.last_sync_ts = 0.0
         self.peak_equity = 0.0
         self.circuit_breaker_active = False
         self.is_paused = False
         self.running = True
-        self.stats = {
-            "symbol": SYMBOL,
+
+        # Per-token execution and PnL trackers
+        self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0}
+        self.token_profits: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0}
+        self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None}
+
+        # Unified live statistics
+        self.stats: Dict[str, Any] = {
+            "portfolio_mode": "Single (SUI)",
+            "dual_mode_active": False,
             "total_usd": 0.0,
             "available_usdt": 0.0,
             "locked_usdt": 0.0,
-            "sui_free": 0.0,
-            "sui_locked": 0.0,
-            "completed_cycles": 0,
-            "net_profit_usd": 0.0,
-            "open_orders": [],
-            "last_price": 0.0,
-            "guard_status": "🟢 Норма",
-            "volatility_regime": "NORMAL",
-            "cooldown_active": False,
-            "cooldown_reason": "",
-            "is_paused": False,
             "mnt_balance": 0.0,
-            "position_age_hours": 0.0,
-            "tp_mode": "Standard (+0.90%)",
+            "is_paused": False,
+            "circuit_breaker_active": False,
+            "global_guard_status": "🟢 Норма",
+            "btc_1m_chg": 0.0,
+            "tokens": {},
+            "all_open_orders": [],
             "updated_at": "",
         }
 
-    def get_market_price(self) -> float:
-        """Fetches current spot ticker price for SYMBOL."""
+    def get_market_price(self, symbol: str) -> float:
+        """Fetches current spot ticker price for symbol."""
         try:
-            res = self.client._request("GET", "/v5/market/tickers", params={"category": "spot", "symbol": SYMBOL})
+            res = self.client._request("GET", "/v5/market/tickers", params={"category": "spot", "symbol": symbol.upper()})
             if res.get("retCode") == 0:
                 tickers = res.get("result", {}).get("list", [])
                 if tickers:
                     return float(tickers[0].get("lastPrice") or 0.0)
         except Exception as e:
-            logger.warning(f"Failed to fetch market ticker: {e}")
+            logger.warning(f"Failed to fetch market ticker for {symbol}: {e}")
         return 0.0
 
-    def cancel_all_buys(self, open_buys: List[Dict[str, Any]]) -> None:
-        """Instantly cancels all resting BUY orders to avoid catching falling knives."""
+    def cancel_all_buys(self, symbol: str, open_buys: List[Dict[str, Any]]) -> None:
+        """Instantly cancels resting BUY orders for symbol."""
         for b_ord in open_buys:
             ord_id = b_ord.get("orderId")
             if ord_id:
-                logger.warning(f"🚨 [MarketGuard] Экстренная отмена BUY-ордера {ord_id} @ ${b_ord.get('price')}")
-                self.client.cancel_order(SYMBOL, ord_id)
+                logger.warning(f"🚨 [MarketGuard] Экстренная отмена BUY-ордера {ord_id} ({symbol}) @ ${b_ord.get('price')}")
+                self.client.cancel_order(symbol, ord_id)
+
+    def cancel_all_portfolio_buys(self) -> None:
+        """Cancels all BUY orders across all managed symbols."""
+        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+            try:
+                open_orders = self.client.get_open_orders(sym)
+                buys = [o for o in open_orders if o.get("side") == "Buy"]
+                if buys:
+                    self.cancel_all_buys(sym, buys)
+            except Exception as e:
+                logger.warning(f"Error canceling buys for {sym}: {e}")
 
     def step(self) -> None:
-        """Single execution step of micro-grid trading cycle."""
+        """Single execution step of portfolio micro-grid trading cycle."""
         if not self.client.is_configured:
             logger.error("Bybit credentials not configured in environment!")
             return
 
         try:
+            now = time.time()
+
             # 1. Sync Wallet Balance
             bal = self.client.get_wallet_balance("UNIFIED")
             if bal.get("retCode") != 0:
                 logger.warning(f"Wallet sync error ({bal.get('retCode')}): {bal.get('retMsg')}")
                 return
 
-            avail_usdt = bal.get("available_usdt", 0.0)
-            locked_usdt = bal.get("locked_usdt", 0.0)
-            total_usd = bal.get("total_usd", 0.0)
-            sui_coin = bal.get("coins", {}).get("SUI", {})
-            sui_free = sui_coin.get("free", 0.0)
-            sui_locked = sui_coin.get("locked", 0.0)
+            avail_usdt = float(bal.get("available_usdt", 0.0))
+            locked_usdt = float(bal.get("locked_usdt", 0.0))
+            total_usd = float(bal.get("total_usd", 0.0))
+
+            coins = bal.get("coins", {})
+            sui_coin = coins.get("SUI", {})
+            sui_free = float(sui_coin.get("free", 0.0))
+            sui_locked = float(sui_coin.get("locked", 0.0))
             total_sui = sui_free + sui_locked
-            mnt_coin = bal.get("coins", {}).get("MNT", {})
+
+            apt_coin = coins.get("APT", {})
+            apt_free = float(apt_coin.get("free", 0.0))
+            apt_locked = float(apt_coin.get("locked", 0.0))
+            total_apt = apt_free + apt_locked
+
+            mnt_coin = coins.get("MNT", {})
             mnt_bal = float(mnt_coin.get("balance") or mnt_coin.get("free") or 0.0)
 
-            # 2. Market Price
-            sui_price = self.get_market_price()
+            # 2. Fetch Spot Market Prices
+            sui_price = self.get_market_price(PRIMARY_SYMBOL)
+            apt_price = self.get_market_price(SECONDARY_SYMBOL)
             if sui_price <= 0:
                 return
 
-            # Update Peak Equity & Circuit Breaker
-            est_total_equity = total_usd + (total_sui * sui_price)
+            prices = {PRIMARY_SYMBOL: sui_price, SECONDARY_SYMBOL: apt_price}
+            free_coins = {PRIMARY_SYMBOL: sui_free, SECONDARY_SYMBOL: apt_free}
+            total_coins = {PRIMARY_SYMBOL: total_sui, SECONDARY_SYMBOL: total_apt}
+
+            # 3. Calculate Total Portfolio Equity
+            est_total_equity = total_usd + (total_sui * sui_price) + (total_apt * (apt_price if apt_price > 0 else 0.0))
+
             if est_total_equity > self.peak_equity:
                 self.peak_equity = est_total_equity
 
+            # Circuit Breaker Check (5% Equity Drawdown Guard)
             if self.peak_equity > 0 and est_total_equity < (self.peak_equity * (1.0 - CIRCUIT_BREAKER_MAX_DD)):
                 if not self.circuit_breaker_active:
                     self.circuit_breaker_active = True
@@ -323,304 +444,345 @@ class StandaloneBybitBot:
                         f"🚨 **[CIRCUIT BREAKER: ЛИМИТ ПРОСАДКИ 5%]**\n\n"
                         f"Текущий капитал: **${est_total_equity:.2f} USDT**\n"
                         f"Пиковый капитал: **${self.peak_equity:.2f} USDT**\n"
-                        "Покупки заблокированы до ручного перезапуска или стабилизации."
+                        "Все покупки заблокированы до ручного перезапуска или стабилизации."
                     )
             elif est_total_equity >= (self.peak_equity * (1.0 - CIRCUIT_BREAKER_MAX_DD)):
                 self.circuit_breaker_active = False
 
-            # 3. MarketGuard: Check Dumps & Spacing
-            dump_fired, dump_reason = self.guard.update_market_state()
+            # 4. Capital Allocator & Hysteresis Gate
+            if self.dual_mode_active:
+                if est_total_equity < DUAL_PAIR_DEACTIVATION_EQUITY:
+                    self.dual_mode_active = False
+                    logger.warning(
+                        f"📉 [Capital Allocator] Equity ${est_total_equity:.2f} < ${DUAL_PAIR_DEACTIVATION_EQUITY:.2f}! "
+                        f"{SECONDARY_SYMBOL} switching to EXIT_ONLY."
+                    )
+                    send_telegram(
+                        f"📉 *[МЕНЕДЖЕР КАПИТАЛА: ДЕАКТИВАЦИЯ {SECONDARY_SYMBOL}]*\n\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог $62.00)\n"
+                        f"Пара **{SECONDARY_SYMBOL}** переведена в режим *EXIT-ONLY*.\n"
+                        "Новые покупки заморожены, открытые позиции закроются по тейк-профиту в плюс."
+                    )
+            else:
+                if est_total_equity >= DUAL_PAIR_ACTIVATION_EQUITY:
+                    self.dual_mode_active = True
+                    logger.info(
+                        f"🚀 [Capital Allocator] Equity ${est_total_equity:.2f} >= ${DUAL_PAIR_ACTIVATION_EQUITY:.2f}! "
+                        f"{SECONDARY_SYMBOL} ACTIVATED!"
+                    )
+                    send_telegram(
+                        f"🚀 **[МЕНЕДЖЕР КАПИТАЛА: АКТИВАЦИЯ КОРЗИНЫ ТОКЕНОВ]**\n\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог $70.00)!\n"
+                        f"Активирован портфельный режим **DUAL (50% {PRIMARY_SYMBOL} / 50% {SECONDARY_SYMBOL})**.\n"
+                        "Сетки работают независимо, удваивая точки входа и распределяя риски!"
+                    )
 
-            # 4. Sync Open Orders
-            open_orders = self.client.get_open_orders(SYMBOL)
-            open_buys = [o for o in open_orders if o.get("side") == "Buy"]
-            open_sells = [o for o in open_orders if o.get("side") == "Sell"]
+            # Determine Active Managed Symbols
+            symbols_to_process = [PRIMARY_SYMBOL]
+            apt_has_holdings = (apt_free * apt_price >= 4.5) or (total_apt * apt_price >= 4.5)
+            if self.dual_mode_active or apt_has_holdings:
+                symbols_to_process.append(SECONDARY_SYMBOL)
 
-            # Emergency BUY cancellation if dump just triggered
-            if dump_fired:
-                logger.warning(f"🚨 [MarketGuard Triggered] {dump_reason} -> Снятие всех BUY-ордеров!")
-                self.cancel_all_buys(open_buys)
-                open_buys.clear()
+            # 5. MarketGuard: Update Klines, BTC Lead-Lag & Idiosyncratic Dumps
+            global_dump, global_reason, token_dumps = self.guard.update_market_state(symbols_to_process)
+
+            # 6. Global Dump Action: Cancel all BUYs if BTC dumped
+            if global_dump:
+                logger.warning(f"🚨 [MarketGuard Global Trigger] {global_reason} -> Снятие ВСЕХ BUY-ордеров!")
+                self.cancel_all_portfolio_buys()
                 send_telegram(
-                    f"🚨 **[ЗАЩИТА ДЕПОЗИТА: ОБНАРУЖЕН ПРОЛИВ!]**\n\n"
-                    f"Причина: **{dump_reason}**\n"
-                    f"Срочное действие: **Все BUY-ордера отозваны**\n"
-                    f"Режим: Включена защитная пауза на 10 мин (до стабилизации свечей)."
+                    f"🚨 **[ЗАЩИТА ДЕПОЗИТА: ОБЩЕРЫНОЧНЫЙ ПРОЛИВ!]**\n\n"
+                    f"Причина: **{global_reason}**\n"
+                    "Срочное действие: **Все BUY-ордера во всех парах отозваны**\n"
+                    "Режим: Включена защитная пауза на 10 мин (до стабилизации свечей)."
                 )
 
-            # If still in cooldown, ensure no BUY orders linger
-            if self.guard.cooldown_active and open_buys:
-                self.cancel_all_buys(open_buys)
-                open_buys.clear()
-
-            # 5. Sync Executions & Realized Profit
-            now = time.time()
-            recent_buys: List[Dict[str, Any]] = []
+            # 7. Sync Executions & Realized Profit per Token (every 30s)
+            recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: []}
             if now - self.last_sync_ts > 30:
                 self.last_sync_ts = now
-                execs = self.client.get_execution_history(SYMBOL, limit=20)
-                if execs:
-                    tot_fees = sum(float(e.get("execFee") or 0.0) for e in execs)
-                    sell_execs = [e for e in execs if e.get("side") == "Sell"]
-                    recent_buys = [e for e in execs if e.get("side") == "Buy"]
-                    cycles = len(sell_execs)
+                for sym in symbols_to_process:
+                    execs = self.client.get_execution_history(sym, limit=20)
+                    if execs:
+                        tot_fees = sum(float(e.get("execFee") or 0.0) for e in execs)
+                        sell_execs = [e for e in execs if e.get("side") == "Sell"]
+                        recent_buys[sym] = [e for e in execs if e.get("side") == "Buy"]
+                        cycles = len(sell_execs)
 
-                    gross = 0.0
-                    for s in sell_execs:
-                        s_p = float(s.get("execPrice") or 0.0)
-                        s_q = float(s.get("execQty") or 0.0)
-                        gross += s_p * s_q * 0.0090
+                        gross = 0.0
+                        for s in sell_execs:
+                            s_p = float(s.get("execPrice") or 0.0)
+                            s_q = float(s.get("execQty") or 0.0)
+                            gross += s_p * s_q * 0.0090
 
-                    net = max(0.0, gross - tot_fees)
-                    self.stats["completed_cycles"] = cycles
-                    self.stats["net_profit_usd"] = round(net, 4)
+                        net = max(0.0, gross - tot_fees)
+                        self.token_cycles[sym] = cycles
+                        self.token_profits[sym] = round(net, 4)
 
-                    if self.bybit_last_cycles is not None and cycles > self.bybit_last_cycles:
-                        last_sell = sell_execs[0] if sell_execs else {}
-                        s_p = last_sell.get("execPrice", "")
-                        s_q = last_sell.get("execQty", "")
-                        send_telegram(
-                            f"🏆 **[BYBIT.KZ: ЦИКЛ ЗАКРЫТ В ПЛЮС!]**\n\n"
-                            f"Пара: **{SYMBOL}**\n"
-                            f"Продано: **{s_q} SUI** @ **${s_p}**\n"
-                            f"Чистая прибыль: **+${net:.4f} USDT**\n"
-                            f"Всего закрыто циклов: **{cycles}**\n"
-                            f"Баланс аккаунта: **${est_total_equity:.2f} USDT**"
-                        )
-                    self.bybit_last_cycles = cycles
-
-            # 6. Take-Profit & Soft Breakeven Management
-            current_pos_val = sui_free * sui_price
-            holding_pos_val = total_sui * sui_price
-            entry_price = sui_price
-
-            # Estimate entry price from latest buy execution
-            if recent_buys:
-                entry_price = float(recent_buys[0].get("execPrice") or sui_price)
-
-            position_age_hours = 0.0
-            tp_mode = "Standard (+0.90%)"
-
-            # Check existing Sell orders for Stale Position Soft Breakeven
-            for s_ord in list(open_sells):
-                s_id = s_ord.get("orderId")
-                s_price = float(s_ord.get("price", 0.0))
-                s_created = float(s_ord.get("createdTime", now * 1000)) / 1000.0
-                age_h = (now - s_created) / 3600.0
-                position_age_hours = max(position_age_hours, age_h)
-
-                if age_h >= STALE_POSITION_HOURS:
-                    tp_mode = f"Soft Breakeven ({age_h:.1f}ч)"
-                    soft_tp_price = round(entry_price * (1.0 + SOFT_BREAKEVEN_TP_PCT), 4)
-                    # If current TP price is higher than soft TP, adjust downwards
-                    if s_price > soft_tp_price and (soft_tp_price * float(s_ord.get("qty", 0.0))) >= 5.00:
-                        logger.info(
-                            f"🛡️ [Bybit.kz] Зависание {age_h:.1f}ч! Снижаем ТП с ${s_price} до ${soft_tp_price} (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)"
-                        )
-                        self.client.cancel_order(SYMBOL, s_id)
-                        open_sells.remove(s_ord)
-                        resp_soft = self.client.create_limit_order(
-                            SYMBOL, "Sell", float(s_ord.get("qty", 0.0)), soft_tp_price, post_only=True
-                        )
-                        if resp_soft.get("retCode") == 0:
+                        last_c = self.token_last_cycles.get(sym)
+                        if last_c is not None and cycles > last_c:
+                            last_sell = sell_execs[0] if sell_execs else {}
+                            s_p = last_sell.get("execPrice", "")
+                            s_q = last_sell.get("execQty", "")
+                            base_c = TOKEN_METADATA.get(sym, {}).get("base_coin", sym)
                             send_telegram(
-                                f"🛡️ **[ЗАЩИТА ДЕПОЗИТА: SOFT BREAKEVEN]**\n\n"
-                                f"Пара: **{SYMBOL}**\n"
-                                f"Позиция удерживается: **{age_h:.1f} ч**\n"
-                                f"Тейк-профит снижен до: **${soft_tp_price}** (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)\n"
-                                "Цель: Гарантированный выход в плюс (+0.18% чистыми после комиссий) при первом локальном отскоке."
+                                f"🏆 **[BYBIT.KZ: ЦИКЛ {sym} ЗАКРЫТ В ПЛЮС!]**\n\n"
+                                f"Пара: **{sym}**\n"
+                                f"Продано: **{s_q} {base_c}** @ **${s_p}**\n"
+                                f"Чистая прибыль: **+${net:.4f} USDT**\n"
+                                f"Всего закрыто циклов ({sym}): **{cycles}**\n"
+                                f"Баланс фонда: **${est_total_equity:.2f} USDT**"
+                            )
+                        self.token_last_cycles[sym] = cycles
+
+            # 8. Token Order Processing Loop
+            token_stats_map: Dict[str, Dict[str, Any]] = {}
+            all_open_orders_list: List[Dict[str, Any]] = []
+
+            for sym in symbols_to_process:
+                meta = TOKEN_METADATA.get(sym, {})
+                base_c = meta.get("base_coin", sym)
+                cur_price = prices.get(sym, 0.0)
+                cur_free = free_coins.get(sym, 0.0)
+                cur_total = total_coins.get(sym, 0.0)
+                holding_val = cur_total * cur_price
+                free_val = cur_free * cur_price
+                t_metric = self.guard.token_metrics.get(sym, {})
+
+                open_orders = self.client.get_open_orders(sym)
+                for o in open_orders:
+                    o["symbol"] = sym
+                    all_open_orders_list.append(o)
+
+                open_buys = [o for o in open_orders if o.get("side") == "Buy"]
+                open_sells = [o for o in open_orders if o.get("side") == "Sell"]
+
+                # Handle Idiosyncratic Dump for this token
+                tok_dump_fired, tok_dump_reason = token_dumps.get(sym, (False, ""))
+                if tok_dump_fired:
+                    logger.warning(f"🚨 [Idiosyncratic Dump: {sym}] {tok_dump_reason} -> Снятие BUY-ордеров {sym}!")
+                    self.cancel_all_buys(sym, open_buys)
+                    open_buys.clear()
+                    send_telegram(
+                        f"🚨 **[ЗАЩИТА ДЕПОЗИТА: ПРОЛИВ {sym}!]**\n\n"
+                        f"Причина: **{tok_dump_reason}**\n"
+                        f"Срочное действие: **Все BUY-ордера {sym} отозваны**\n"
+                        "Включена защитная пауза на 10 мин (до стабилизации свечей)."
+                    )
+
+                # If token or global guard is in cooldown, ensure no BUY orders linger
+                is_in_cooldown = self.guard.global_cooldown_active or t_metric.get("cooldown_active", False)
+                if is_in_cooldown and open_buys:
+                    self.cancel_all_buys(sym, open_buys)
+                    open_buys.clear()
+
+                # Estimate Entry Price
+                entry_price = cur_price
+                sym_buys = recent_buys.get(sym, [])
+                if sym_buys:
+                    entry_price = float(sym_buys[0].get("execPrice") or cur_price)
+
+                # Soft Breakeven Evaluation (>8 hours)
+                position_age_hours = 0.0
+                tp_mode = "Standard (+0.90%)"
+
+                for s_ord in list(open_sells):
+                    s_id = s_ord.get("orderId")
+                    s_price = float(s_ord.get("price", 0.0))
+                    s_created = float(s_ord.get("createdTime", now * 1000)) / 1000.0
+                    age_h = (now - s_created) / 3600.0
+                    position_age_hours = max(position_age_hours, age_h)
+
+                    if age_h >= STALE_POSITION_HOURS:
+                        tp_mode = f"Soft Breakeven ({age_h:.1f}ч)"
+                        soft_tp_price = round(entry_price * (1.0 + SOFT_BREAKEVEN_TP_PCT), meta.get("price_decimals", 4))
+                        if s_price > soft_tp_price and (soft_tp_price * float(s_ord.get("qty", 0.0))) >= 5.00:
+                            logger.info(
+                                f"🛡️ [{sym}] Зависание {age_h:.1f}ч! Снижаем ТП с ${s_price} до ${soft_tp_price} (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)"
+                            )
+                            self.client.cancel_order(sym, s_id)
+                            open_sells.remove(s_ord)
+                            resp_soft = self.client.create_limit_order(
+                                sym, "Sell", float(s_ord.get("qty", 0.0)), soft_tp_price, post_only=True
+                            )
+                            if resp_soft.get("retCode") == 0:
+                                send_telegram(
+                                    f"🛡️ **[ЗАЩИТА ДЕПОЗИТА: SOFT BREAKEVEN {sym}]**\n\n"
+                                    f"Пара: **{sym}**\n"
+                                    f"Позиция удерживается: **{age_h:.1f} ч**\n"
+                                    f"Тейк-профит снижен до: **${soft_tp_price}** (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)\n"
+                                    "Цель: Гарантированный выход в плюс (+0.18% чистыми) при первом отскоке."
+                                )
+
+                # Place Fresh Take-Profit SELL Order
+                if free_val >= 5.00 and len(open_sells) < 2:
+                    tp_pct = STANDARD_TP_PCT
+                    tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
+                    sell_qty = math.floor(cur_free * 100) / 100.0
+
+                    if (sell_qty * tp_price) >= 5.00:
+                        logger.info(f"🟢 [{sym}] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} {base_c} @ ${tp_price} (+{tp_pct*100:.2f}%)")
+                        resp = self.client.create_limit_order(sym, "Sell", sell_qty, tp_price, post_only=True)
+                        if resp.get("retCode") == 0:
+                            send_telegram(
+                                f"🟢 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
+                                f"Пара: **{sym}**\n"
+                                f"Объем: **{sell_qty} {base_c}** (~${round(sell_qty * tp_price, 2)})\n"
+                                f"Цена выхода: **${tp_price}** (+{tp_pct*100:.2f}%)\n"
+                                f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
                             )
 
-            # Place fresh Take-Profit if coins are free and no active sell order covers them
-            if current_pos_val >= 5.00 and len(open_sells) < 2:
-                tp_pct = STANDARD_TP_PCT
-                tp_price = round(entry_price * (1.0 + tp_pct), 4)
-                sell_qty = math.floor(sui_free * 100) / 100.0
+                # Dynamic Adaptive Spacing Targets
+                s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
+                s2_disc = t_metric.get("step2_discount", BASE_SPACING["step_2"])
+                s3_disc = t_metric.get("step3_discount", BASE_SPACING["step_3"])
+                p_dec = meta.get("price_decimals", 4)
+                t1 = round(cur_price * (1.0 - s1_disc), p_dec)
+                t2 = round(cur_price * (1.0 - s2_disc), p_dec)
+                t3 = round(cur_price * (1.0 - s3_disc), p_dec)
 
-                if (sell_qty * tp_price) >= 5.00:
-                    logger.info(f"🟢 [Bybit.kz] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} SUI @ ${tp_price} (+{tp_pct*100:.2f}%)")
-                    resp = self.client.create_limit_order(SYMBOL, "Sell", sell_qty, tp_price, post_only=True)
-                    if resp.get("retCode") == 0:
-                        send_telegram(
-                            f"🟢 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
-                            f"Пара: **{SYMBOL}**\n"
-                            f"Объем: **{sell_qty} SUI** (~${round(sell_qty * tp_price, 2)})\n"
-                            f"Цена выхода: **${tp_price}** (+{tp_pct*100:.2f}%)\n"
-                            f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
+                # Drift & TTL Management for resting BUY orders
+                for b_ord in list(open_buys):
+                    ord_id = b_ord.get("orderId")
+                    ord_price = float(b_ord.get("price", 0.0))
+                    if not ord_id or ord_price <= 0:
+                        continue
+
+                    created_time = float(b_ord.get("createdTime", now * 1000)) / 1000.0
+                    is_expired = (now - created_time) > 1200
+
+                    d1 = abs(t1 - ord_price) / ord_price
+                    d2 = abs(t2 - ord_price) / ord_price
+                    d3 = abs(t3 - ord_price) / ord_price
+                    target_drift_pct = min(d1, d2, d3)
+
+                    if target_drift_pct > 0.015 or is_expired:
+                        logger.info(
+                            f"🟡 [{sym}] Ре-пеггинг ордера {ord_id} "
+                            f"(Дрейф цели: {target_drift_pct*100:.2f}%, Возраст: {int(now - created_time)}с)"
                         )
+                        resp_c = self.client.cancel_order(sym, ord_id)
+                        if resp_c.get("retCode") == 0 and b_ord in open_buys:
+                            open_buys.remove(b_ord)
 
-            # 7. Drift & TTL Management for resting BUY orders
-            step1_disc = self.guard.step1_discount
-            step2_disc = self.guard.step2_discount
-            step3_disc = self.guard.step3_discount
-            t1 = round(sui_price * (1.0 - step1_disc), 4)
-            t2 = round(sui_price * (1.0 - step2_disc), 4)
-            t3 = round(sui_price * (1.0 - step3_disc), 4)
+                # BUY Order Placement Eligibility
+                can_buy_token = True
+                token_mode_label = "ACTIVE"
+                if self.is_paused or self.circuit_breaker_active or is_in_cooldown:
+                    can_buy_token = False
+                    if self.is_paused:
+                        token_mode_label = "PAUSED"
+                    elif self.circuit_breaker_active:
+                        token_mode_label = "CIRCUIT_BREAKER"
+                    elif is_in_cooldown:
+                        token_mode_label = "COOLDOWN"
+                elif sym == SECONDARY_SYMBOL and not self.dual_mode_active:
+                    can_buy_token = False
+                    token_mode_label = "EXIT_ONLY" if apt_has_holdings else "DORMANT"
+                    # If in EXIT_ONLY, ensure all BUYs are cancelled
+                    if open_buys:
+                        self.cancel_all_buys(sym, open_buys)
+                        open_buys.clear()
 
-            for b_ord in list(open_buys):
-                ord_id = b_ord.get("orderId")
-                ord_price = float(b_ord.get("price", 0.0))
-                if not ord_id or ord_price <= 0:
-                    continue
+                # Sizing & Order Placement
+                if can_buy_token:
+                    # Budget per pair based on portfolio mode
+                    if self.dual_mode_active:
+                        pair_total_equity = est_total_equity * 0.50
+                        step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
+                    else:
+                        step_budget = max(5.05, round(est_total_equity * 0.30, 2))
 
-                created_time = float(b_ord.get("createdTime", now * 1000)) / 1000.0
-                is_expired = (now - created_time) > 1200
+                    step1_held = holding_val >= 5.00
+                    step2_held = holding_val >= (step_budget * 1.5)
 
-                d1 = abs(t1 - ord_price) / ord_price
-                d2 = abs(t2 - ord_price) / ord_price
-                d3 = abs(t3 - ord_price) / ord_price
-                target_drift_pct = min(d1, d2, d3)
-
-                if target_drift_pct > 0.015 or is_expired:
-                    logger.info(
-                        f"🟡 [Bybit.kz] Ре-пеггинг ордера {ord_id} "
-                        f"(Дрейф цели: {target_drift_pct*100:.2f}%, Возраст: {int(now - created_time)}с)"
-                    )
-                    resp_c = self.client.cancel_order(SYMBOL, ord_id)
-                    if resp_c.get("retCode") == 0 and b_ord in open_buys:
-                        open_buys.remove(b_ord)
-
-            # 8. Inventory-Aware Sizing & Grid Entry (minOrderAmt = 5 USDT Guard)
-            # If cooldown, circuit breaker, or manual pause is active, DO NOT place any BUY orders!
-            can_buy = (not self.guard.cooldown_active) and (not self.circuit_breaker_active) and (not self.is_paused)
-
-            if can_buy:
-                # Dynamic sizing based on total available funds
-                # When capital is >= $16.50, activate 3-Step Grid (30% / 30% / 30% / 10% buffer)
-                # When capital is < $16.50, fallback to 2-Step Grid (45% / 45% / 10% buffer)
-                use_3_steps = (avail_usdt + (holding_pos_val if holding_pos_val >= 5.0 else 0.0)) >= 16.50
-
-                if use_3_steps:
-                    # Sizing per step: 30% of total capital (minimum $5.05)
-                    step_budget = max(5.05, round(est_total_equity * 0.30, 2))
-
-                    step1_held = holding_pos_val >= 5.00
-                    step2_held = holding_pos_val >= (step_budget * 1.5)
-
+                    # Step 1
                     if not step1_held:
                         has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
                         if not has_step1 and avail_usdt >= step_budget:
                             clip_1 = math.floor((step_budget / t1) * 100) / 100.0
                             val_1 = clip_1 * t1
                             if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                logger.info(f"🟡 [Bybit.kz][Ступень 1] Покупка: {clip_1} SUI @ ${t1} (-{step1_disc*100:.2f}%)")
-                                resp1 = self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
+                                logger.info(f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} (-{s1_disc*100:.2f}%)")
+                                resp1 = self.client.create_limit_order(sym, "Buy", clip_1, t1, post_only=True)
                                 if resp1.get("retCode") == 0:
                                     avail_usdt -= val_1
 
+                    # Step 2
                     if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
                         if not has_step2 and avail_usdt >= step_budget:
                             clip_2 = math.floor((step_budget / t2) * 100) / 100.0
                             val_2 = clip_2 * t2
                             if val_2 >= 5.00 and val_2 <= avail_usdt:
-                                logger.info(f"🟡 [Bybit.kz][Ступень 2] Покупка: {clip_2} SUI @ ${t2} (-{step2_disc*100:.2f}%)")
-                                resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
+                                logger.info(f"🟡 [{sym}][Ступень 2] Покупка: {clip_2} {base_c} @ ${t2} (-{s2_disc*100:.2f}%)")
+                                resp2 = self.client.create_limit_order(sym, "Buy", clip_2, t2, post_only=True)
                                 if resp2.get("retCode") == 0:
                                     avail_usdt -= val_2
 
-                    # Place Step 3 (Deepest Protection Floor)
+                    # Step 3 (Deepest Protection Floor)
                     has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
                     alloc_3 = min(avail_usdt, step_budget)
                     if not has_step3 and avail_usdt >= 5.00:
                         clip_3 = math.floor((alloc_3 / t3) * 100) / 100.0
                         val_3 = clip_3 * t3
                         if val_3 >= 5.00 and val_3 <= avail_usdt:
-                            logger.info(f"🟡 [Bybit.kz][Ступень 3 Защита] Покупка: {clip_3} SUI @ ${t3} (-{step3_disc*100:.2f}%)")
-                            resp3 = self.client.create_limit_order(SYMBOL, "Buy", clip_3, t3, post_only=True)
+                            logger.info(f"🟡 [{sym}][Ступень 3 Защита] Покупка: {clip_3} {base_c} @ ${t3} (-{s3_disc*100:.2f}%)")
+                            resp3 = self.client.create_limit_order(sym, "Buy", clip_3, t3, post_only=True)
                             if resp3.get("retCode") == 0:
                                 avail_usdt -= val_3
 
-                else:
-                    # 2-Step Grid Fallback for deposits < $16.50
-                    step1_already_held = holding_pos_val >= 5.00
-                    if step1_already_held:
-                        has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                        if not has_step2 and avail_usdt >= 5.00:
-                            alloc_2 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
-                            clip_2 = math.floor((alloc_2 / t2) * 100) / 100.0
-                            val_2 = clip_2 * t2
-                            if val_2 >= 5.00 and val_2 <= avail_usdt:
-                                logger.info(
-                                    f"🟡 [Bybit.kz][Ступень 2 Усреднение] Покупка: {clip_2} SUI @ ${t2} "
-                                    f"(-{step2_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
-                                )
-                                resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
-                                if resp2.get("retCode") == 0:
-                                    avail_usdt -= val_2
-                    else:
-                        if avail_usdt >= 10.10:
-                            alloc_1 = max(5.05, round(avail_usdt * 0.45, 2))
-                            alloc_2 = max(5.05, round(avail_usdt * 0.45, 2))
-                            has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                            if not has_step1 and avail_usdt >= alloc_1:
-                                clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
-                                val_1 = clip_1 * t1
-                                if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                    logger.info(
-                                        f"🟡 [Bybit.kz][Ступень 1] Покупка: {clip_1} SUI @ ${t1} "
-                                        f"(-{step1_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
-                                    )
-                                    resp1 = self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
-                                    if resp1.get("retCode") == 0:
-                                        avail_usdt -= val_1
+                # Assemble token statistics
+                token_stats_map[sym] = {
+                    "symbol": sym,
+                    "name": meta.get("name", sym),
+                    "base_coin": base_c,
+                    "badge_color": meta.get("badge_color", "#38bdf8"),
+                    "mode": token_mode_label,
+                    "price": cur_price,
+                    "free_coin": round(cur_free, 4),
+                    "locked_coin": round(cur_total - cur_free, 4),
+                    "holding_value_usd": round(holding_val, 2),
+                    "completed_cycles": self.token_cycles.get(sym, 0),
+                    "net_profit_usd": self.token_profits.get(sym, 0.0),
+                    "tp_mode": tp_mode,
+                    "position_age_hours": round(position_age_hours, 1),
+                    "step1_discount_pct": round(s1_disc * 100, 2),
+                    "step2_discount_pct": round(s2_disc * 100, 2),
+                    "step3_discount_pct": round(s3_disc * 100, 2),
+                    "vol_multiplier": t_metric.get("vol_multiplier", 1.0),
+                    "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
+                    "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
+                    "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                    "cooldown_active": t_metric.get("cooldown_active", False),
+                    "cooldown_reason": t_metric.get("cooldown_reason", ""),
+                }
 
-                            has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                            if not has_step2 and avail_usdt >= alloc_2:
-                                clip_2 = math.floor((alloc_2 / t2) * 100) / 100.0
-                                val_2 = clip_2 * t2
-                                if val_2 >= 5.00 and val_2 <= avail_usdt:
-                                    logger.info(
-                                        f"🟡 [Bybit.kz][Ступень 2] Покупка: {clip_2} SUI @ ${t2} "
-                                        f"(-{step2_disc*100:.2f}%, Режим: {self.guard.volatility_regime})"
-                                    )
-                                    resp2 = self.client.create_limit_order(SYMBOL, "Buy", clip_2, t2, post_only=True)
-                                    if resp2.get("retCode") == 0:
-                                        avail_usdt -= val_2
-
-                        elif avail_usdt >= 5.05:
-                            has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                            if not has_step1:
-                                alloc_1 = min(avail_usdt, max(5.05, round(avail_usdt * 0.95, 2)))
-                                clip_1 = math.floor((alloc_1 / t1) * 100) / 100.0
-                                val_1 = clip_1 * t1
-                                if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                    logger.info(f"🟡 [Bybit.kz][Ступень 1 (Одиночная)] Покупка: {clip_1} SUI @ ${t1} (-{step1_disc*100:.2f}%)")
-                                    self.client.create_limit_order(SYMBOL, "Buy", clip_1, t1, post_only=True)
-
-            # 9. Update live statistics for dashboard
-            guard_status_str = "🟢 Норма"
+            # 9. Update Unified Stats
+            global_guard_str = "🟢 Норма"
             if self.is_paused:
-                guard_status_str = "⏸️ На паузе (Покупки остановлены)"
+                global_guard_str = "⏸️ На паузе (Все покупки заморожены)"
             elif self.circuit_breaker_active:
-                guard_status_str = "🚨 Circuit Breaker (Drawdown > 5%)"
-            elif self.guard.cooldown_active:
-                elapsed_cd = int(now - self.guard.cooldown_start_time)
-                guard_status_str = f"🚨 Защитная Пауза ({self.guard.cooldown_reason}) [{elapsed_cd}с]"
-            elif self.guard.volatility_regime == "STORM":
-                guard_status_str = f"🟡 Шторм (15m размах: {self.guard.last_sui_15m_range*100:.2f}%)"
+                global_guard_str = "🚨 Circuit Breaker (Просадка > 5%)"
+            elif self.guard.global_cooldown_active:
+                el = int(now - self.guard.global_cooldown_start_time)
+                global_guard_str = f"🚨 Рыночный Шторм ({self.guard.global_cooldown_reason}) [{el}с]"
+
+            port_mode_str = "🚀 Dual (SUI + APT 50/50)" if self.dual_mode_active else "🔥 Single (SUI 100%)"
 
             self.stats.update({
+                "portfolio_mode": port_mode_str,
+                "dual_mode_active": self.dual_mode_active,
                 "total_usd": round(est_total_equity, 4),
                 "available_usdt": round(avail_usdt, 4),
                 "locked_usdt": round(locked_usdt, 4),
-                "sui_free": round(sui_free, 4),
-                "sui_locked": round(sui_locked, 4),
-                "is_paused": self.is_paused,
                 "mnt_balance": round(mnt_bal, 4),
-                "open_orders": self.client.get_open_orders(SYMBOL),
-                "last_price": sui_price,
-                "guard_status": guard_status_str,
-                "volatility_regime": self.guard.volatility_regime,
-                "cooldown_active": self.guard.cooldown_active,
-                "cooldown_reason": self.guard.cooldown_reason,
-                "position_age_hours": round(position_age_hours, 1),
-                "tp_mode": tp_mode,
+                "is_paused": self.is_paused,
+                "circuit_breaker_active": self.circuit_breaker_active,
+                "global_guard_status": global_guard_str,
                 "btc_1m_chg": round(self.guard.last_btc_1m_chg * 100, 2),
-                "sui_1m_chg": round(self.guard.last_sui_1m_chg * 100, 2),
-                "step1_discount_pct": round(self.guard.step1_discount * 100, 2),
-                "step2_discount_pct": round(self.guard.step2_discount * 100, 2),
-                "step3_discount_pct": round(self.guard.step3_discount * 100, 2),
+                "tokens": token_stats_map,
+                "all_open_orders": all_open_orders_list,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
@@ -629,8 +791,8 @@ class StandaloneBybitBot:
 
     def run_forever(self) -> None:
         """Main execution loop (runs every 10 seconds)."""
-        logger.info("🚀 [Bybit Kazakhstan Standalone Bot] Запущен с 4-уровневой защитой депозита!")
-        logger.info(f"Пара: {SYMBOL} | Lead-Lag: {LEAD_LAG_SYMBOL} | Эндпоинт: api.bybit.kz")
+        logger.info("🚀 [Bybit Kazakhstan Standalone Portfolio Bot] Запущен с Multi-Token Engine!")
+        logger.info(f"Базовый: {PRIMARY_SYMBOL} | Вторичный: {SECONDARY_SYMBOL} | Lead-Lag: {LEAD_LAG_SYMBOL}")
 
         while self.running:
             self.step()
@@ -654,18 +816,41 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         st = self.bot_instance.stats if self.bot_instance else {}
+
+        # Orders Table HTML
         orders_html = "".join([
-            f"<tr><td class='{o.get('side', '').lower()}'>{o.get('side')}</td>"
+            f"<tr>"
+            f"<td><span class='badge' style='background: {TOKEN_METADATA.get(o.get('symbol', ''), {}).get('badge_color', '#38bdf8')}22; color: {TOKEN_METADATA.get(o.get('symbol', ''), {}).get('badge_color', '#38bdf8')};'>{o.get('symbol')}</span></td>"
+            f"<td class='{o.get('side', '').lower()}'>{o.get('side')}</td>"
             f"<td>${float(o.get('price', 0)):.4f}</td>"
             f"<td>{float(o.get('qty', 0)):.2f}</td>"
-            f"<td>${float(o.get('qty', 0))*float(o.get('price', 0)):.2f}</td></tr>"
-            for o in st.get('open_orders', [])
+            f"<td>${float(o.get('qty', 0))*float(o.get('price', 0)):.2f}</td>"
+            f"</tr>"
+            for o in st.get('all_open_orders', [])
         ])
 
+        tokens_html = ""
+        for sym, t in st.get("tokens", {}).items():
+            col = t.get("badge_color", "#38bdf8")
+            mode_badge = t.get("mode", "ACTIVE")
+            tokens_html += f"""
+            <div class="card" style="border-left: 4px solid {col};">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; color: {col};">{t.get('name')} ({sym})</h3>
+                    <span class="badge" style="background: {col}22; color: {col}; border: 1px solid {col};">{mode_badge}</span>
+                </div>
+                <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: {t.get('range_15m_pct', 0.0):.2f}%)</div>
+                <div class="label" style="margin-top: 4px;">На руках: <b>{t.get('free_coin', 0.0)} {t.get('base_coin')}</b> (~${t.get('holding_value_usd', 0.0):.2f})</div>
+                <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто циклов: <b>{t.get('completed_cycles', 0)}</b> | Профит: <b>+${t.get('net_profit_usd', 0.0):.4f} USDT</b></div>
+                <div class="label" style="margin-top: 4px;">Сетка ({t.get('volatility_regime')} x{t.get('vol_multiplier')}): -{t.get('step1_discount_pct')}% / -{t.get('step2_discount_pct')}% / -{t.get('step3_discount_pct')}%</div>
+                <div class="label" style="margin-top: 4px;">Тейк-профит: <b>{t.get('tp_mode')}</b> (удержание: {t.get('position_age_hours')}ч)</div>
+            </div>
+            """
+
         guard_color = "#10b981"
-        if "🚨" in st.get("guard_status", ""):
+        if "🚨" in st.get("global_guard_status", ""):
             guard_color = "#ef4444"
-        elif "🟡" in st.get("guard_status", ""):
+        elif "⏸️" in st.get("global_guard_status", ""):
             guard_color = "#f59e0b"
 
         html = f"""<!DOCTYPE html>
@@ -673,14 +858,14 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Bybit KZ Bot Dashboard</title>
+    <title>Bybit KZ Multi-Token Dashboard</title>
     <style>
         body {{ background: #0f172a; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; padding: 15px; margin: 0; }}
         .card {{ background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #334155; }}
         h2 {{ margin-top: 0; color: #38bdf8; font-size: 1.15rem; }}
         .metric {{ font-size: 1.8rem; font-weight: bold; color: #10b981; }}
         .label {{ font-size: 0.85rem; color: #94a3b8; }}
-        .badge {{ display: inline-block; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; margin-top: 4px; }}
+        .badge {{ display: inline-block; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85rem; }}
         th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #334155; }}
         th {{ color: #94a3b8; }}
@@ -690,35 +875,23 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 </head>
 <body>
     <div class="card">
-        <h2>⚡ Bybit Kazakhstan Bot</h2>
-        <div class="label">Пара: {st.get('symbol')} | Спот: ${st.get('last_price')}</div>
+        <h2>⚡ Bybit Kazakhstan Autonomous Fund</h2>
+        <div class="label">Режим портфеля: <b>{st.get('portfolio_mode')}</b></div>
         <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
         <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
-        <div class="label" style="margin-top: 6px; color: #10b981;">Закрыто циклов: {st.get('completed_cycles', 0)} | Профит: +${st.get('net_profit_usd', 0.0):.4f} USDT</div>
-        <div class="label" style="margin-top: 4px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
-    </div>
-
-    <div class="card">
-        <h2>🛡️ Защита депозита</h2>
-        <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color};">
-            {st.get('guard_status')}
-        </div>
-        <div class="label" style="margin-top: 8px;">
-            Импульс BTC 1m: <b>{st.get('btc_1m_chg', 0.0):+.2f}%</b> | SUI 1m: <b>{st.get('sui_1m_chg', 0.0):+.2f}%</b>
-        </div>
-        <div class="label" style="margin-top: 4px;">
-            Сетка: 1 (-{st.get('step1_discount_pct', 0.55)}%) | 2 (-{st.get('step2_discount_pct', 1.75)}%) | 3 (-{st.get('step3_discount_pct', 3.20)}%)
-        </div>
-        <div class="label" style="margin-top: 4px;">
-            Режим ТП: <b>{st.get('tp_mode')}</b> (Удержание: {st.get('position_age_hours', 0.0)}ч)
+        <div class="label" style="margin-top: 6px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
+        <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">
+            {st.get('global_guard_status')} (BTC 1m: {st.get('btc_1m_chg', 0.0):+.2f}%)
         </div>
     </div>
 
+    {tokens_html}
+
     <div class="card">
-        <h2>📖 Активные ордера в стакане</h2>
+        <h2>📖 Активные ордера портфеля</h2>
         <table>
-            <tr><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th></tr>
-            {orders_html}
+            <tr><th>Пара</th><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th></tr>
+            {orders_html if orders_html else "<tr><td colspan='5' style='text-align: center; color: #94a3b8;'>Нет активных ордеров</td></tr>"}
         </table>
         <div class="label" style="margin-top: 8px;">Обновлено: {st.get('updated_at')}</div>
     </div>
@@ -737,7 +910,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 MAIN_REPLY_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Статус и Баланс"}, {"text": "📈 Сделки и PnL"}],
-        [{"text": "⏸️ Пауза (только ТП)"}, {"text": "▶️ Возобновить"}],
+        [{"text": "⏸️ Пауза (все BUY)"}, {"text": "▶️ Возобновить"}],
         [{"text": "🚨 Panic Stop"}, {"text": "🔄 Обновить пульт"}]
     ],
     "resize_keyboard": True,
@@ -765,6 +938,7 @@ PANIC_CONFIRM_KEYBOARD = {
         ]
     ]
 }
+
 
 def send_telegram_reply(
     text: str,
@@ -804,9 +978,24 @@ def send_telegram_reply(
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("ok"):
                 return int(data.get("result", {}).get("message_id") or 0)
+    except urllib.error.HTTPError as he:
+        if he.code == 400 and "parse_mode" in payload_dict:
+            try:
+                payload_dict.pop("parse_mode", None)
+                payload = json.dumps(payload_dict).encode("utf-8")
+                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("ok"):
+                        return int(data.get("result", {}).get("message_id") or 0)
+            except Exception as e2:
+                logger.warning(f"Telegram plain reply fallback error: {e2}")
+        else:
+            logger.warning(f"Telegram reply/edit error: {he}")
     except Exception as e:
         logger.warning(f"Telegram reply/edit error: {e}")
     return None
+
 
 def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
     """Acknowledges an inline button click to dismiss the loading animation."""
@@ -827,39 +1016,17 @@ def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
     except Exception as e:
         logger.debug(f"Callback answer error: {e}")
 
+
 def format_status_text(bot: StandaloneBybitBot) -> str:
     st = bot.stats
-    mode_str = "⏸️ *НА ПАУЗЕ (Покупки заморожены)*" if bot.is_paused else "▶️ *АКТИВЕН (Сетка работает)*"
+    mode_str = "⏸️ *НА ПАУЗЕ (Все покупки заморожены)*" if bot.is_paused else "▶️ *АКТИВЕН (Портфель работает)*"
     total_usd = st.get("total_usd", 0.0)
     avail = st.get("available_usdt", 0.0)
     locked = st.get("locked_usdt", 0.0)
-    sui_free = st.get("sui_free", 0.0)
-    price = st.get("last_price", 0.0)
-    guard_str = st.get("guard_status", "🟢 Норма")
+    port_mode = st.get("portfolio_mode", "Single")
+    global_guard = st.get("global_guard_status", "🟢 Норма")
     btc_1m = st.get("btc_1m_chg", 0.0)
-    sui_1m = st.get("sui_1m_chg", 0.0)
-    step1 = st.get("step1_discount_pct", 0.55)
-    step2 = st.get("step2_discount_pct", 1.75)
-    step3 = st.get("step3_discount_pct", 3.20)
-    tp_mode = st.get("tp_mode", "Standard (+0.90%)")
     updated = st.get("updated_at", "")
-
-    orders = st.get("open_orders", [])
-    if orders:
-        lines = []
-        for o in orders:
-            side = o.get("side", "")
-            q = o.get("qty", "")
-            p = o.get("price", "")
-            icon = "🟢" if side == "Buy" else "🔴"
-            try:
-                val = float(q) * float(p)
-                lines.append(f"• {icon} {side} {q} SUI @ ${p} (${val:.2f})")
-            except Exception:
-                lines.append(f"• {icon} {side} {q} SUI @ ${p}")
-        orders_str = "\n".join(lines)
-    else:
-        orders_str = "• Нет активных ордеров в стакане"
 
     mnt_bal = float(st.get("mnt_balance") or 0.0)
     if mnt_bal >= 0.50:
@@ -872,49 +1039,98 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
         mnt_status_str = f"🔴 `{mnt_bal:.4f} MNT` ⚠️ *(Заканчивается!)*"
         mnt_alert = "\n💡 _Совет: Топливо MNT почти на нуле. Рекомендуется купить 1–2 MNT (~$1.50) для скидки 25% на комиссии и чистых сделок без пыли._\n"
 
+    # Token blocks
+    token_blocks = []
+    for sym, t in st.get("tokens", {}).items():
+        base_c = t.get("base_coin", sym)
+        p = t.get("price", 0.0)
+        fc = t.get("free_coin", 0.0)
+        hv = t.get("holding_value_usd", 0.0)
+        t_mode = t.get("mode", "ACTIVE")
+        cyc = t.get("completed_cycles", 0)
+        prof = t.get("net_profit_usd", 0.0)
+        tp_m = t.get("tp_mode", "Standard (+0.90%)")
+        s1 = t.get("step1_discount_pct", 0.55)
+        s2 = t.get("step2_discount_pct", 1.75)
+        s3 = t.get("step3_discount_pct", 3.20)
+        vol_reg = t.get("volatility_regime", "NORMAL")
+        mult = t.get("vol_multiplier", 1.0)
+        icon = "🔷" if base_c == "SUI" else "🟣"
+
+        token_blocks.append(
+            f"{icon} *{sym}* [{t_mode}]\n"
+            f"• Спот: `${p:.4f}` | 1m: `{t.get('chg_1m_pct', 0.0):+.2f}%`\n"
+            f"• Позиция: `{fc} {base_c}` (~`${hv:.2f}`)\n"
+            f"• Сетка ({vol_reg} x{mult}): -{s1}% / -{s2}% / -{s3}%\n"
+            f"• Тейк-профит: *{tp_m}*\n"
+            f"• Закрыто циклов: *{cyc}* (+$`{prof:.4f}` USDT)"
+        )
+
+    tokens_str = "\n\n".join(token_blocks)
+
+    orders = st.get("all_open_orders", [])
+    if orders:
+        lines = []
+        for o in orders:
+            side = o.get("side", "")
+            sym = o.get("symbol", "")
+            q = o.get("qty", "")
+            p = o.get("price", "")
+            icon = "🟢" if side == "Buy" else "🔴"
+            try:
+                val = float(q) * float(p)
+                lines.append(f"• {icon} {sym} {side} {q} @ ${p} (${val:.2f})")
+            except Exception:
+                lines.append(f"• {icon} {sym} {side} {q} @ ${p}")
+        orders_str = "\n".join(lines)
+    else:
+        orders_str = "• Нет активных ордеров в стакане"
+
     return (
-        f"🎛️ *BYBIT SPOT BOT: ПУЛЬТ УПРАВЛЕНИЯ*\n\n"
-        f"Статус: {mode_str}\n"
-        f"Пара: *{st.get('symbol')}* | Спот: *${price:.4f}*\n\n"
+        f"🎛️ *BYBIT КАЗАХСТАН: МИКРО-ФОНД*\n\n"
+        f"Режим: *{port_mode}*\n"
+        f"Статус: {mode_str}\n\n"
         f"💰 *Баланс: ${total_usd:.2f} USDT*\n"
         f"• Свободно: `${avail:.2f} USDT`\n"
         f"• В ордерах: `${locked:.2f} USDT`\n"
-        f"• SUI на руках: `{sui_free}`\n"
-        f"• Топливо (MNT): {mnt_status_str}\n\n"
-        f"🛡️ *Защита депозита:* {guard_str}\n"
-        f"• Импульс BTC 1m: `{btc_1m:+.2f}%` | SUI 1m: `{sui_1m:+.2f}%`\n"
-        f"• Сетка: -{step1}% / -{step2}% / -{step3}%\n"
-        f"• Режим ТП: *{tp_mode}*\n\n"
+        f"• Топливо (MNT): {mnt_status_str}\n"
+        f"• Lead-Lag (BTC): `{btc_1m:+.2f}%` ({global_guard})\n\n"
+        f"{tokens_str}\n\n"
         f"📖 *Ордера в стакане:*\n{orders_str}\n"
         f"{mnt_alert}"
         f"⏱ _Обновлено: {updated}_"
     )
 
+
 def format_trades_text(bot: StandaloneBybitBot) -> str:
     st = bot.stats
-    cycles = st.get("completed_cycles", 0)
-    profit = st.get("net_profit_usd", 0.0)
-    try:
-        execs = bot.client.get_execution_history(SYMBOL, limit=8)
-        lines = []
-        for e in execs:
-            dt = datetime.datetime.fromtimestamp(float(e.get("execTime", 0)) / 1000.0).strftime("%d.%m %H:%M")
-            side = e.get("side", "")
-            icon = "🟢" if side == "Buy" else "🎯"
-            q = e.get("execQty", "")
-            p = e.get("execPrice", "")
-            v = float(e.get("execValue", 0.0))
-            lines.append(f"{icon} `[{dt}]` {side:<4} {q:>5} @ ${p} (${v:.2f})")
-        execs_str = "\n".join(lines) if lines else "Нет недавних сделок"
-    except Exception as e:
-        execs_str = f"Ошибка загрузки истории: {e}"
+    total_prof = sum(t.get("net_profit_usd", 0.0) for t in st.get("tokens", {}).values())
+    total_cyc = sum(t.get("completed_cycles", 0) for t in st.get("tokens", {}).values())
+
+    lines = []
+    for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+        try:
+            execs = bot.client.get_execution_history(sym, limit=5)
+            for e in execs:
+                dt = datetime.datetime.fromtimestamp(float(e.get("execTime", 0)) / 1000.0).strftime("%d.%m %H:%M")
+                side = e.get("side", "")
+                icon = "🟢" if side == "Buy" else "🎯"
+                q = e.get("execQty", "")
+                p = e.get("execPrice", "")
+                v = float(e.get("execValue", 0.0))
+                lines.append(f"{icon} `[{dt}]` {sym[:3]} {side:<4} {q:>5} @ ${p} (${v:.2f})")
+        except Exception:
+            pass
+
+    execs_str = "\n".join(lines) if lines else "Нет недавних сделок"
 
     return (
-        f"📈 *ИСТОРИЯ СДЕЛОК {SYMBOL}*\n\n"
-        f"• Закрыто циклов: *{cycles}* (100% Win Rate)\n"
-        f"• Общий профит: *+${profit:.4f} USDT*\n\n"
-        f"📋 *Последние исполнения:*\n{execs_str}"
+        f"📈 *ИСТОРИЯ СДЕЛОК ПОРТФЕЛЯ*\n\n"
+        f"• Всего циклов закрыто: *{total_cyc}* (100% Win Rate)\n"
+        f"• Общий чистый PnL: *+${total_prof:.4f} USDT*\n\n"
+        f"📋 *Последние сделки:*\n{execs_str}"
     )
+
 
 def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> None:
     t = text.strip().lower()
@@ -922,16 +1138,12 @@ def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> No
         send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD)
     elif t in ["📈 сделки и pnl", "/trades", "/pnl", "сделки", "профит"]:
         send_telegram_reply(format_trades_text(bot), chat_id=chat_id, reply_markup=MAIN_REPLY_KEYBOARD)
-    elif t in ["⏸️ пауза (только тп)", "/pause", "пауза", "pause"]:
+    elif t in ["⏸️ пауза (все buy)", "⏸️ пауза (только тп)", "/pause", "пауза", "pause"]:
         bot.is_paused = True
-        try:
-            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
-            bot.cancel_all_buys(open_buys)
-        except Exception as e:
-            logger.warning(f"Pause buy cancel error: {e}")
+        bot.cancel_all_portfolio_buys()
         send_telegram_reply(
-            "⏸️ *БОТ ПОСТАВЛЕН НА ПАУЗУ*\n\n"
-            "• Все активные BUY-ордера немедленно сняты из стакана.\n"
+            "⏸️ *ПОРТФЕЛЬ ПОСТАВЛЕН НА ПАУЗУ*\n\n"
+            "• Все активные BUY-ордера во всех парах сняты из стакана.\n"
             "• Тейк-профиты (SELL) остаются активными и ждут закрытия в плюс.\n"
             "• Новые покупки заблокированы.\n\n"
             "Нажмите *«▶️ Возобновить»*, чтобы вернуть сетку в работу.",
@@ -942,7 +1154,7 @@ def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> No
         bot.is_paused = False
         send_telegram_reply(
             "▶️ *ТОРГОВЛЯ ВОЗОБНОВЛЕНА!*\n\n"
-            "• Бот снова в строю.\n"
+            "• Портфель снова в строю.\n"
             "• В течение 10 секунд алгоритм оценит рынок и выставит свежие ордера сетки.",
             chat_id=chat_id,
             reply_markup=MAIN_REPLY_KEYBOARD
@@ -950,7 +1162,7 @@ def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> No
     elif t in ["🚨 panic stop", "/panic", "panic", "паника"]:
         send_telegram_reply(
             "⚠️ *ПОДТВЕРЖДЕНИЕ ЭКСТРЕННОЙ ОСТАНОВКИ*\n\n"
-            "Вы уверены, что хотите снять ВСЕ лимитные ордера на покупку и заморозить бота?",
+            "Вы уверены, что хотите снять ВСЕ ордера на покупку по всем токенам и заморозить бота?",
             chat_id=chat_id,
             reply_markup=PANIC_CONFIRM_KEYBOARD
         )
@@ -967,6 +1179,7 @@ def handle_telegram_text(bot: StandaloneBybitBot, text: str, chat_id: str) -> No
             reply_markup=MAIN_REPLY_KEYBOARD
         )
 
+
 def handle_telegram_callback(
     bot: StandaloneBybitBot,
     cb_id: str,
@@ -982,12 +1195,8 @@ def handle_telegram_callback(
         send_telegram_reply(format_trades_text(bot), chat_id=chat_id, message_id_to_edit=msg_id)
     elif data == "btn_pause":
         bot.is_paused = True
-        try:
-            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
-            bot.cancel_all_buys(open_buys)
-        except Exception:
-            pass
-        answer_callback_query(cb_id, "Бот на паузе ⏸️")
+        bot.cancel_all_portfolio_buys()
+        answer_callback_query(cb_id, "Портфель на паузе ⏸️")
         send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
     elif data == "btn_resume":
         bot.is_paused = False
@@ -995,15 +1204,11 @@ def handle_telegram_callback(
         send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
     elif data == "btn_confirm_panic":
         bot.is_paused = True
-        try:
-            open_buys = [o for o in bot.client.get_open_orders(SYMBOL) if o.get("side") == "Buy"]
-            bot.cancel_all_buys(open_buys)
-        except Exception:
-            pass
-        answer_callback_query(cb_id, "Ордера отменены! 🚨")
+        bot.cancel_all_portfolio_buys()
+        answer_callback_query(cb_id, "Все BUY отменены! 🚨")
         send_telegram_reply(
             "🚨 *АВАРИЙНАЯ ОСТАНОВКА ВЫПОЛНЕНА*\n\n"
-            "• Все BUY-ордера отозваны.\n"
+            "• Все BUY-ордера во всех токенах отозваны.\n"
             "• Бот заморожен. Чтобы вернуться к торгам, нажмите «▶️ Возобновить».",
             chat_id=chat_id,
             reply_markup=MAIN_REPLY_KEYBOARD,
@@ -1013,6 +1218,7 @@ def handle_telegram_callback(
         answer_callback_query(cb_id, "Отмена действия ❌")
         send_telegram_reply(format_status_text(bot), chat_id=chat_id, reply_markup=STATUS_INLINE_KEYBOARD, message_id_to_edit=msg_id)
 
+
 def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram controller disabled: token or chat_id missing.")
@@ -1020,7 +1226,7 @@ def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
 
     logger.info("📱 [Telegram Control Panel] Поток запущен. Слушаем команды...")
     send_telegram_reply(
-        "🎛️ *Bybit Spot Bot на связи!*\n"
+        "🎛️ *Bybit Spot Multi-Token Bot на связи!*\n"
         "Пульт управления активирован. Кнопки добавлены в нижнее меню.",
         chat_id=TELEGRAM_CHAT_ID,
         reply_markup=MAIN_REPLY_KEYBOARD,
