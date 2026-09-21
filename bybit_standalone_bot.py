@@ -668,7 +668,7 @@ class StandaloneBybitBot:
             global_dump, global_reason, token_dumps = self.guard.update_market_state(symbols_to_process)
 
             # 6. Global Dump Action: Cancel all BUYs if BTC dumped
-            if global_dump:
+            if global_dump and self.is_active_controller:
                 logger.warning(f"🚨 [MarketGuard Global Trigger] {global_reason} -> Снятие ВСЕХ BUY-ордеров!")
                 self.cancel_all_portfolio_buys()
                 send_telegram(
@@ -737,6 +737,38 @@ class StandaloneBybitBot:
 
                 open_buys = [o for o in open_orders if o.get("side") == "Buy"]
                 open_sells = [o for o in open_orders if o.get("side") == "Sell"]
+
+                # PASSIVE OBSERVER: Strictly observe and collect telemetry.
+                # NEVER place, modify, or cancel orders on the shared Bybit account!
+                if not self.is_active_controller:
+                    s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
+                    s2_disc = t_metric.get("step2_discount", BASE_SPACING["step_2"])
+                    s3_disc = t_metric.get("step3_discount", BASE_SPACING["step_3"])
+                    token_stats_map[sym] = {
+                        "symbol": sym,
+                        "name": meta.get("name", sym),
+                        "base_coin": base_c,
+                        "badge_color": meta.get("badge_color", "#38bdf8"),
+                        "mode": "PASSIVE_OBSERVER",
+                        "price": cur_price,
+                        "free_coin": round(cur_free, 4),
+                        "locked_coin": round(cur_total - cur_free, 4),
+                        "holding_value_usd": round(holding_val, 2),
+                        "completed_cycles": self.token_cycles.get(sym, 0),
+                        "net_profit_usd": self.token_profits.get(sym, 0.0),
+                        "tp_mode": "Standard (+0.90%)",
+                        "position_age_hours": 0.0,
+                        "step1_discount_pct": round(s1_disc * 100, 2),
+                        "step2_discount_pct": round(s2_disc * 100, 2),
+                        "step3_discount_pct": round(s3_disc * 100, 2),
+                        "vol_multiplier": t_metric.get("vol_multiplier", 1.0),
+                        "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
+                        "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
+                        "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                        "cooldown_active": t_metric.get("cooldown_active", False),
+                        "cooldown_reason": t_metric.get("cooldown_reason", ""),
+                    }
+                    continue
 
                 # Handle Idiosyncratic Dump for this token
                 tok_dump_fired, tok_dump_reason = token_dumps.get(sym, (False, ""))
@@ -886,13 +918,7 @@ class StandaloneBybitBot:
                 # BUY Order Placement Eligibility
                 can_buy_token = True
                 token_mode_label = "ACTIVE"
-                if not self.is_active_controller:
-                    can_buy_token = False
-                    token_mode_label = "PASSIVE_OBSERVER"
-                    if open_buys:
-                        self.cancel_all_buys(sym, open_buys)
-                        open_buys.clear()
-                elif self.is_paused or self.circuit_breaker_active or is_in_cooldown:
+                if self.is_paused or self.circuit_breaker_active or is_in_cooldown:
                     can_buy_token = False
                     if self.is_paused:
                         token_mode_label = "PAUSED"
@@ -1628,7 +1654,6 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         logger.info("🖥️ [Handover Detected] Desktop активен в рабочее время Астаны. Mobile уступает смену -> PASSIVE_OBSERVER.")
                         bot.is_active_controller = False
                         bot.role = "PASSIVE_OBSERVER"
-                        bot.cancel_all_portfolio_buys()
                         time.sleep(10)
                         continue
 
