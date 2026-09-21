@@ -24,6 +24,7 @@ Enhanced with Multi-Token Portfolio Management:
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import http.server
 import json
@@ -87,6 +88,14 @@ COOLDOWN_MIN_SECONDS = 600          # 10 minutes minimum freeze
 # Capital Scaling Milestones & Hysteresis Gate
 DUAL_PAIR_ACTIVATION_EQUITY = 70.00   # Auto-activate secondary pair (APT) when equity >= $70
 DUAL_PAIR_DEACTIVATION_EQUITY = 62.00 # Deactivate secondary pair (EXIT_ONLY) when equity < $62
+
+# Desktop Profile Parameters (Smart Step & Liquidity Buffer)
+DESKTOP_RESERVE_USDT = 10.00          # Untouchable liquidity buffer in desktop mode ($10.00)
+DESKTOP_STEP_WEIGHTS = {
+    "step_1": 0.18,                   # ~18% of deployable capital (~$6 on $33 deployable)
+    "step_2": 0.32,                   # ~32% of deployable capital (~$10.50 on $33 deployable)
+    "step_3": 0.50,                   # ~50% of deployable capital (~$16.50 on $33 deployable)
+}
 
 # Continuous Adaptive Spacing Benchmarks
 BASE_SPACING = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}
@@ -323,7 +332,14 @@ class MarketGuard:
 class StandaloneBybitBot:
     """Autonomous Multi-Token Spot Micro-Grid Portfolio Engine for Bybit Kazakhstan."""
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "mobile") -> None:
+        self.mode = (mode or "mobile").strip().lower()
+        self.role = "ACTIVE_CONTROLLER"
+        self.is_active_controller = True
+        self.last_heartbeat_ts = time.time()
+        self.peer_heartbeat_ts = 0.0
+        self.reserve_usdt = DESKTOP_RESERVE_USDT if self.mode == "desktop" else 0.0
+
         self.client = BybitV5Client(BYBIT_API_KEY, BYBIT_API_SECRET, domain="api.bybit.kz")
         self.guard = MarketGuard()
         self.dual_mode_active = False
@@ -339,7 +355,12 @@ class StandaloneBybitBot:
         self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None}
 
         # Unified live statistics
+        profile_label = "DESKTOP / SMART-STEP" if self.mode == "desktop" else "MOBILE / STORM"
         self.stats: Dict[str, Any] = {
+            "mode": self.mode,
+            "profile": profile_label,
+            "role": self.role,
+            "reserve_usdt": self.reserve_usdt,
             "portfolio_mode": "Single (SUI)",
             "dual_mode_active": False,
             "total_usd": 0.0,
@@ -641,15 +662,26 @@ class StandaloneBybitBot:
                 t2 = round(cur_price * (1.0 - s2_disc), p_dec)
                 t3 = round(cur_price * (1.0 - s3_disc), p_dec)
 
-                # Budget per pair based on portfolio mode
-                if self.dual_mode_active:
-                    pair_total_equity = est_total_equity * 0.50
-                    step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
+                # Budget allocation based on active profile and portfolio mode
+                if self.mode == "desktop":
+                    # Desktop Asymmetric Smart Step with Reserve Buffer
+                    eff_equity = max(15.00, est_total_equity - self.reserve_usdt)
+                    deployable = eff_equity * 0.50 if self.dual_mode_active else eff_equity
+                    step_budget_1 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_1"], 2))
+                    step_budget_2 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_2"], 2))
+                    step_budget_3 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_3"], 2))
+                    spendable_usdt = max(0.0, avail_usdt - self.reserve_usdt)
                 else:
-                    step_budget = max(5.05, round(est_total_equity * 0.30, 2))
+                    # Mobile Symmetric Conservative Grid
+                    pair_total_equity = est_total_equity * 0.50 if self.dual_mode_active else est_total_equity
+                    step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
+                    step_budget_1 = step_budget
+                    step_budget_2 = step_budget
+                    step_budget_3 = step_budget
+                    spendable_usdt = avail_usdt
 
                 step1_held = holding_val >= 5.00
-                step2_held = holding_val >= (step_budget * 1.5)
+                step2_held = holding_val >= (step_budget_2 * 1.5)
 
                 # Valid buy targets based on inventory
                 valid_targets: List[Tuple[str, float]] = []
@@ -694,7 +726,10 @@ class StandaloneBybitBot:
                 # BUY Order Placement Eligibility
                 can_buy_token = True
                 token_mode_label = "ACTIVE"
-                if self.is_paused or self.circuit_breaker_active or is_in_cooldown:
+                if not self.is_active_controller:
+                    can_buy_token = False
+                    token_mode_label = "PASSIVE_OBSERVER"
+                elif self.is_paused or self.circuit_breaker_active or is_in_cooldown:
                     can_buy_token = False
                     if self.is_paused:
                         token_mode_label = "PAUSED"
@@ -713,41 +748,53 @@ class StandaloneBybitBot:
                 # Sizing & Order Placement
                 if can_buy_token:
 
-                    # Step 1
+                    # Step 1 (Micro-Scalp / First Dip)
                     if not step1_held:
                         has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                        if not has_step1 and avail_usdt >= step_budget:
-                            clip_1 = math.floor((step_budget / t1) * 100) / 100.0
+                        if not has_step1 and spendable_usdt >= step_budget_1:
+                            clip_1 = math.floor((step_budget_1 / t1) * 100) / 100.0
                             val_1 = clip_1 * t1
-                            if val_1 >= 5.00 and val_1 <= avail_usdt:
-                                logger.info(f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} (-{s1_disc*100:.2f}%)")
+                            if val_1 >= 5.00 and val_1 <= spendable_usdt:
+                                logger.info(
+                                    f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} "
+                                    f"(-{s1_disc*100:.2f}%) [Бюджет: ${step_budget_1:.2f}]"
+                                )
                                 resp1 = self.client.create_limit_order(sym, "Buy", clip_1, t1, post_only=True)
                                 if resp1.get("retCode") == 0:
                                     avail_usdt -= val_1
+                                    spendable_usdt -= val_1
 
-                    # Step 2
+                    # Step 2 (Medium Pullback)
                     if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                        if not has_step2 and avail_usdt >= step_budget:
-                            clip_2 = math.floor((step_budget / t2) * 100) / 100.0
+                        if not has_step2 and spendable_usdt >= step_budget_2:
+                            clip_2 = math.floor((step_budget_2 / t2) * 100) / 100.0
                             val_2 = clip_2 * t2
-                            if val_2 >= 5.00 and val_2 <= avail_usdt:
-                                logger.info(f"🟡 [{sym}][Ступень 2] Покупка: {clip_2} {base_c} @ ${t2} (-{s2_disc*100:.2f}%)")
+                            if val_2 >= 5.00 and val_2 <= spendable_usdt:
+                                logger.info(
+                                    f"🟡 [{sym}][Ступень 2] Покупка: {clip_2} {base_c} @ ${t2} "
+                                    f"(-{s2_disc*100:.2f}%) [Бюджет: ${step_budget_2:.2f}]"
+                                )
                                 resp2 = self.client.create_limit_order(sym, "Buy", clip_2, t2, post_only=True)
                                 if resp2.get("retCode") == 0:
                                     avail_usdt -= val_2
+                                    spendable_usdt -= val_2
 
                     # Step 3 (Deepest Protection Floor)
                     has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
-                    alloc_3 = min(avail_usdt, step_budget)
-                    if not has_step3 and avail_usdt >= 5.00:
+                    alloc_3 = min(spendable_usdt, step_budget_3)
+                    if not has_step3 and spendable_usdt >= 5.00:
                         clip_3 = math.floor((alloc_3 / t3) * 100) / 100.0
                         val_3 = clip_3 * t3
-                        if val_3 >= 5.00 and val_3 <= avail_usdt:
-                            logger.info(f"🟡 [{sym}][Ступень 3 Защита] Покупка: {clip_3} {base_c} @ ${t3} (-{s3_disc*100:.2f}%)")
+                        if val_3 >= 5.00 and val_3 <= spendable_usdt:
+                            logger.info(
+                                f"🟡 [{sym}][Ступень 3 Защита] Покупка: {clip_3} {base_c} @ ${t3} "
+                                f"(-{s3_disc*100:.2f}%) [Бюджет: ${alloc_3:.2f}]"
+                            )
                             resp3 = self.client.create_limit_order(sym, "Buy", clip_3, t3, post_only=True)
                             if resp3.get("retCode") == 0:
                                 avail_usdt -= val_3
+                                spendable_usdt -= val_3
 
                 # Assemble token statistics
                 token_stats_map[sym] = {
@@ -786,8 +833,13 @@ class StandaloneBybitBot:
                 global_guard_str = f"🚨 Рыночный Шторм ({self.guard.global_cooldown_reason}) [{el}с]"
 
             port_mode_str = "🚀 Dual (SUI + APT 50/50)" if self.dual_mode_active else "🔥 Single (SUI 100%)"
+            profile_label = "DESKTOP / SMART-STEP" if self.mode == "desktop" else "MOBILE / STORM"
 
             self.stats.update({
+                "mode": self.mode,
+                "profile": profile_label,
+                "role": self.role,
+                "reserve_usdt": round(self.reserve_usdt, 2),
                 "portfolio_mode": port_mode_str,
                 "dual_mode_active": self.dual_mode_active,
                 "total_usd": round(est_total_equity, 4),
@@ -808,7 +860,12 @@ class StandaloneBybitBot:
 
     def run_forever(self) -> None:
         """Main execution loop (runs every 10 seconds)."""
-        logger.info("🚀 [Bybit Kazakhstan Standalone Portfolio Bot] Запущен с Multi-Token Engine!")
+        profile_banner = (
+            f"🖥️ [DESKTOP / SMART-STEP] (Асимметричная сетка + буфер ${self.reserve_usdt:.2f} USDT)"
+            if self.mode == "desktop"
+            else "📱 [MOBILE / STORM] (Консервативный эшелон STORM x2.0)"
+        )
+        logger.info(f"🚀 [Bybit Kazakhstan Standalone Portfolio Bot] Запуск профиля: {profile_banner}")
         logger.info(f"Базовый: {PRIMARY_SYMBOL} | Вторичный: {SECONDARY_SYMBOL} | Lead-Lag: {LEAD_LAG_SYMBOL}")
 
         while self.running:
@@ -870,6 +927,16 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         elif "⏸️" in st.get("global_guard_status", ""):
             guard_color = "#f59e0b"
 
+        profile_badge_html = (
+            f"<span class='badge' style='background: #0284c733; color: #38bdf8; border: 1px solid #38bdf8; font-size: 0.75rem; vertical-align: middle; margin-left: 6px;'>"
+            f"{st.get('profile', 'MOBILE / STORM')}</span>"
+        )
+        reserve_html = (
+            f" | Резерв: <b>${st.get('reserve_usdt', 0.0):.2f} USDT</b> 🛡️"
+            if float(st.get("reserve_usdt") or 0.0) > 0
+            else ""
+        )
+
         html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -892,10 +959,10 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 </head>
 <body>
     <div class="card">
-        <h2>⚡ Bybit Kazakhstan Autonomous Fund</h2>
+        <h2>⚡ Bybit Kazakhstan Autonomous Fund {profile_badge_html}</h2>
         <div class="label">Режим портфеля: <b>{st.get('portfolio_mode')}</b></div>
         <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
-        <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
+        <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f}{reserve_html} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
         <div class="label" style="margin-top: 6px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
         <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">
             {st.get('global_guard_status')} (BTC 1m: {st.get('btc_1m_chg', 0.0):+.2f}%)
@@ -1037,6 +1104,12 @@ def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
 def format_status_text(bot: StandaloneBybitBot) -> str:
     st = bot.stats
     mode_str = "⏸️ *НА ПАУЗЕ (Все покупки заморожены)*" if bot.is_paused else "▶️ *АКТИВЕН (Портфель работает)*"
+    if not bot.is_active_controller:
+        mode_str = "👁️ *PASSIVE OBSERVER (Дежурный режим)*"
+
+    profile_badge = "🖥️ *[DESKTOP / SMART-STEP]*" if bot.mode == "desktop" else "📱 *[MOBILE / STORM]*"
+    reserve_badge = f"\n• Резервный буфер: `${bot.reserve_usdt:.2f} USDT` 🛡️" if bot.reserve_usdt > 0 else ""
+
     total_usd = st.get("total_usd", 0.0)
     avail = st.get("available_usdt", 0.0)
     locked = st.get("locked_usdt", 0.0)
@@ -1105,11 +1178,13 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
 
     return (
         f"🎛️ *BYBIT КАЗАХСТАН: МИКРО-ФОНД*\n\n"
+        f"Профиль: {profile_badge}\n"
         f"Режим: *{port_mode}*\n"
         f"Статус: {mode_str}\n\n"
         f"💰 *Баланс: ${total_usd:.2f} USDT*\n"
         f"• Свободно: `${avail:.2f} USDT`\n"
-        f"• В ордерах: `${locked:.2f} USDT`\n"
+        f"• В ордерах: `${locked:.2f} USDT`"
+        f"{reserve_badge}\n"
         f"• Топливо (MNT): {mnt_status_str}\n"
         f"• Lead-Lag (BTC): `{btc_1m:+.2f}%` ({global_guard})\n\n"
         f"{tokens_str}\n\n"
@@ -1308,7 +1383,16 @@ def start_server(bot: StandaloneBybitBot) -> None:
 
 
 if __name__ == "__main__":
-    bot = StandaloneBybitBot()
+    parser = argparse.ArgumentParser(description="Bybit Kazakhstan Standalone Multi-Token Trading Bot")
+    parser.add_argument(
+        "--mode",
+        choices=["mobile", "desktop"],
+        default="mobile",
+        help="Execution profile: 'mobile' (conservative STORM, default) or 'desktop' (aggressive Smart Step + $10 reserve)",
+    )
+    args = parser.parse_args()
+
+    bot = StandaloneBybitBot(mode=args.mode)
     t_web = threading.Thread(target=start_server, args=(bot,), daemon=True)
     t_web.start()
     t_tg = threading.Thread(target=telegram_polling_thread, args=(bot,), daemon=True, name="TelegramControl")
