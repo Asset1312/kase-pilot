@@ -1985,6 +1985,11 @@ def init_cluster_role(bot: StandaloneBybitBot) -> None:
             logger.info("📱 [Mobile Startup] Офисные часы Астаны (08:00 - 17:30). Запуск Mobile в режиме PASSIVE_OBSERVER...")
             bot.is_active_controller = False
             bot.role = "PASSIVE_OBSERVER"
+            bot.cluster_board_msg_id = write_cluster_state(
+                "desktop",
+                "Офисные часы Астаны (08:00 - 17:30)",
+                bot.cluster_board_msg_id,
+            )
         else:
             logger.info("📱 [Mobile Startup] Вне офисных часов. Активация Mobile...")
             bot.handover_to("mobile", "Старт телефона (дефолтный узел вне офиса)")
@@ -2031,6 +2036,11 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                     bot.is_active_controller = False
                     bot.role = "PASSIVE_OBSERVER"
                     bot.cancel_all_portfolio_buys()
+                    bot.cluster_board_msg_id = write_cluster_state(
+                        "desktop",
+                        "Офисные часы Астаны (08:00 - 17:30)",
+                        bot.cluster_board_msg_id,
+                    )
                     send_telegram(
                         "📱 *[КЛАСТЕР: СМЕНА СДАНА ПО ГРАФИКУ]*\n\n"
                         "Наступило 08:00 по Астане.\n"
@@ -2067,6 +2077,10 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                 hb_age = now - hb_ts
 
                 if active_host == bot.mode:
+                    if bot.mode == "mobile" and is_desktop_schedule_window():
+                        # Strictly do NOT activate mobile during desktop office hours
+                        time.sleep(10)
+                        continue
                     # Handover was requested for us!
                     logger.info(f"🔔 [Handover Detected] Получен сигнал смены на {bot.mode.upper()}!")
                     bot.is_active_controller = True

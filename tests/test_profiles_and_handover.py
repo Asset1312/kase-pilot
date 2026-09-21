@@ -221,6 +221,7 @@ def test_init_cluster_role_mobile_startup_when_desktop_active():
     }
 
     with patch("bybit_standalone_bot.read_cluster_state", return_value=mock_state), \
+         patch("bybit_standalone_bot.write_cluster_state", return_value=1234), \
          patch("bybit_standalone_bot.is_desktop_schedule_window", return_value=True):
         init_cluster_role(bot)
         assert bot.role == "PASSIVE_OBSERVER"
