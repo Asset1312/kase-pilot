@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import queue
 import socketserver
 import sys
 import threading
@@ -146,8 +147,8 @@ TOKEN_METADATA = {
 }
 
 
-def send_telegram(text: str) -> None:
-    """Sends high-priority trade alerts to Telegram with graceful fallback and network retry."""
+def _raw_send_telegram(text: str) -> None:
+    """Synchronous HTTP worker for delivering Telegram trade alerts."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -179,6 +180,34 @@ def send_telegram(text: str) -> None:
                 time.sleep(1)
             else:
                 logger.warning(f"Telegram alert delivery error: {e}")
+
+
+_telegram_alert_queue: queue.Queue[str] = queue.Queue(maxsize=100)
+
+
+def _telegram_alert_worker() -> None:
+    while True:
+        try:
+            msg = _telegram_alert_queue.get()
+            _raw_send_telegram(msg)
+        except Exception:
+            pass
+        finally:
+            _telegram_alert_queue.task_done()
+
+
+_t_tg_worker = threading.Thread(target=_telegram_alert_worker, daemon=True, name="TelegramAlertWorker")
+_t_tg_worker.start()
+
+
+def send_telegram(text: str) -> None:
+    """Enqueues trade alert for asynchronous delivery, preventing network stalls in trading loop."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        _telegram_alert_queue.put_nowait(text)
+    except queue.Full:
+        logger.warning("Telegram alert queue is full; dropping alert to protect trading loop.")
 
 
 # =====================================================================
