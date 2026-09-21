@@ -33,3 +33,9 @@ def test_bybit_client_order_payload():
     # Calling create_limit_order against invalid domain will fail gracefully
     res = client.create_limit_order("SUIUSDT", "Buy", 3.0, 0.70)
     assert "retCode" in res
+
+
+def test_bybit_client_market_order_payload():
+    client = BybitV5Client(api_key="my_key", api_secret="my_secret")
+    res = client.create_market_order("SUIUSDT", "Sell", 10.5)
+    assert "retCode" in res

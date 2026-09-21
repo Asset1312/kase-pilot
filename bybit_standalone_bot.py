@@ -25,6 +25,7 @@ Enhanced with Multi-Token Portfolio Management:
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import datetime
 import http.server
 import json
@@ -115,6 +116,11 @@ STANDARD_TP_PCT = 0.0090            # +0.90% (Net +0.70% after 0.20% fees)
 SOFT_BREAKEVEN_TP_PCT = 0.0038      # +0.38% (Net +0.18% after 0.20% fees)
 STALE_POSITION_HOURS = 8.0          # Switch to Soft Breakeven after 8 hours
 CIRCUIT_BREAKER_MAX_DD = 0.05       # 5% max drawdown from peak equity
+
+# Trailing Take-Profit (Rocket Rider) - Desktop Profile
+TRAILING_ACTIVATION_PCT = 0.0100    # +1.00% gain from entry triggers TRAILING_ACTIVE
+TRAILING_CALLBACK_PCT = 0.0045      # 0.45% pullback from peak triggers market sell
+TRAILING_MIN_FLOOR_PCT = 0.0050     # +0.50% minimum profit floor (guaranteed net profit)
 
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
@@ -286,6 +292,122 @@ def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optio
     except Exception as e:
         logger.warning(f"write_cluster_state send/pin error: {e}")
     return None
+
+# =====================================================================
+# TRAILING TAKE-PROFIT CONTROLLER (ROCKET RIDER) - DESKTOP PROFILE
+# =====================================================================
+
+@dataclass
+class TrailingPositionState:
+    symbol: str
+    status: str = "IDLE"              # "IDLE" or "TRAILING_ACTIVE"
+    entry_price: float = 0.0
+    peak_price: float = 0.0
+    stop_price: float = 0.0
+    activation_price: float = 0.0
+    floor_price: float = 0.0
+    activated_at: float = 0.0
+
+
+class TrailingTakeProfitController:
+    """Manages dynamic Trailing Take-Profit (Rocket Rider) for desktop profile.
+
+    Tracks high water mark (peak_price), maintains guaranteed profit floor (+0.50%),
+    and triggers instant execution when price pulls back by 0.45% from the peak.
+    """
+
+    def __init__(
+        self,
+        activation_pct: float = TRAILING_ACTIVATION_PCT,
+        callback_pct: float = TRAILING_CALLBACK_PCT,
+        min_floor_pct: float = TRAILING_MIN_FLOOR_PCT,
+    ) -> None:
+        self.activation_pct = activation_pct
+        self.callback_pct = callback_pct
+        self.min_floor_pct = min_floor_pct
+        self.states: Dict[str, TrailingPositionState] = {}
+
+    def get_state(self, symbol: str) -> TrailingPositionState:
+        if symbol not in self.states:
+            self.states[symbol] = TrailingPositionState(symbol=symbol)
+        return self.states[symbol]
+
+    def reset(self, symbol: str) -> None:
+        if symbol in self.states:
+            self.states[symbol] = TrailingPositionState(symbol=symbol)
+
+    def is_any_trailing_active(self) -> bool:
+        return any(s.status == "TRAILING_ACTIVE" for s in self.states.values())
+
+    def update_price(
+        self,
+        symbol: str,
+        cur_price: float,
+        entry_price: float,
+        free_qty: float,
+        holding_val_usd: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Updates trailing state with current price and returns event or action if triggered."""
+        if holding_val_usd < 5.00 or free_qty <= 0 or entry_price <= 0 or cur_price <= 0:
+            if symbol in self.states and self.states[symbol].status != "IDLE":
+                self.reset(symbol)
+            return None
+
+        state = self.get_state(symbol)
+        state.entry_price = entry_price
+        gain_pct = (cur_price - entry_price) / entry_price
+
+        if state.status == "IDLE":
+            # Activation condition: gain >= activation_pct (+1.00%)
+            if gain_pct >= self.activation_pct:
+                state.status = "TRAILING_ACTIVE"
+                state.peak_price = cur_price
+                state.activation_price = entry_price * (1.0 + self.activation_pct)
+                state.floor_price = entry_price * (1.0 + self.min_floor_pct)
+                raw_stop = cur_price * (1.0 - self.callback_pct)
+                state.stop_price = max(raw_stop, state.floor_price)
+                state.activated_at = time.time()
+
+                return {
+                    "event": "ACTIVATED",
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "cur_price": cur_price,
+                    "peak_price": cur_price,
+                    "stop_price": state.stop_price,
+                    "floor_price": state.floor_price,
+                    "gain_pct": gain_pct,
+                    "qty": free_qty,
+                }
+            return None
+
+        elif state.status == "TRAILING_ACTIVE":
+            # High Water Mark tracking: update peak and ratchet up stop
+            if cur_price > state.peak_price:
+                state.peak_price = cur_price
+                raw_stop = cur_price * (1.0 - self.callback_pct)
+                state.floor_price = entry_price * (1.0 + self.min_floor_pct)
+                # Ratchet up: stop price strictly never decreases
+                state.stop_price = max(raw_stop, state.floor_price, state.stop_price)
+
+            # Execution condition: pullback hits or breaches stop price
+            if cur_price <= state.stop_price:
+                trigger_data = {
+                    "action": "TRIGGER_EXIT",
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "peak_price": state.peak_price,
+                    "exit_price": cur_price,
+                    "stop_price": state.stop_price,
+                    "floor_price": state.floor_price,
+                    "gain_pct": gain_pct,
+                    "peak_gain_pct": (state.peak_price - entry_price) / entry_price,
+                    "qty": free_qty,
+                }
+                self.reset(symbol)
+                return trigger_data
+
+            return None
 
 
 class MarketGuard:
@@ -479,6 +601,7 @@ class StandaloneBybitBot:
         self.circuit_breaker_active = False
         self.is_paused = False
         self.running = True
+        self.trailing_controller = TrailingTakeProfitController()
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0}
@@ -556,6 +679,8 @@ class StandaloneBybitBot:
             self.is_active_controller = False
             self.role = "PASSIVE_OBSERVER"
             self.cancel_all_portfolio_buys()
+            self.trailing_controller.reset(PRIMARY_SYMBOL)
+            self.trailing_controller.reset(SECONDARY_SYMBOL)
             self.cluster_board_msg_id = write_cluster_state(target, f"Передано на {target} ({reason})", self.cluster_board_msg_id)
             send_telegram(
                 f"🔄 *[КЛАСТЕР: ПЕРЕДАЧА СМЕНЫ]*\n\n"
@@ -795,55 +920,156 @@ class StandaloneBybitBot:
                 if sym_buys:
                     entry_price = float(sym_buys[0].get("execPrice") or cur_price)
 
+                # =============================================================
+                # TAKE-PROFIT LOGIC: TRAILING (DESKTOP) VS STATIC LIMIT (MOBILE)
+                # =============================================================
+                trailing_active = False
+                position_closed_by_trailing = False
+
+                if self.mode == "desktop":
+                    trailing_res = self.trailing_controller.update_price(
+                        sym, cur_price, entry_price, cur_free, free_val
+                    )
+                    tr_state = self.trailing_controller.get_state(sym)
+                    trailing_active = (tr_state.status == "TRAILING_ACTIVE")
+
+                    if trailing_res:
+                        ev_name = trailing_res.get("event") or trailing_res.get("action")
+                        if ev_name == "ACTIVATED":
+                            tp_mode = f"🚀 Trailing Active (+{trailing_res['gain_pct']*100:.2f}%)"
+                            logger.info(
+                                f"🚀 [{sym}][TRAILING АКТИВИРОВАН] Вход: ${entry_price:.4f} | "
+                                f"Текущая: ${cur_price:.4f} (+{trailing_res['gain_pct']*100:.2f}%) | "
+                                f"Стоп: ${trailing_res['stop_price']:.4f} (Пол: ${trailing_res['floor_price']:.4f})"
+                            )
+                            send_telegram(
+                                f"🚀 **[TRAILING TP: РАКЕТА АКТИВИРОВАНА]**\n\n"
+                                f"Пара: **{sym}**\n"
+                                f"Вход: **${entry_price:.4f}**\n"
+                                f"Текущая цена: **${cur_price:.4f}** (+{trailing_res['gain_pct']*100:.2f}%)\n"
+                                f"Начальный стоп: **${trailing_res['stop_price']:.4f}** (Откат: 0.45%)\n"
+                                f"Гарантированный пол: **${trailing_res['floor_price']:.4f}** (+0.50%)\n\n"
+                                "Режим: Сопровождение импульса до первого разворота."
+                            )
+                            if open_sells:
+                                for s_ord in list(open_sells):
+                                    self.client.cancel_order(sym, s_ord.get("orderId"))
+                                    open_sells.remove(s_ord)
+
+                        elif ev_name == "TRIGGER_EXIT":
+                            sell_qty = math.floor(cur_free * 100) / 100.0
+                            logger.info(
+                                f"🚀 [{sym}][TRAILING СБРОС] Излом импульса! "
+                                f"Пик: ${trailing_res['peak_price']:.4f} (+{trailing_res['peak_gain_pct']*100:.2f}%) | "
+                                f"Продажа: {sell_qty} {base_c} @ ${cur_price:.4f} (+{trailing_res['gain_pct']*100:.2f}%)"
+                            )
+                            resp_exit = self.client.create_market_order(sym, "Sell", sell_qty)
+                            if resp_exit.get("retCode") == 0:
+                                net_p = round((cur_price - entry_price) * sell_qty, 4)
+                                self.token_cycles[sym] = self.token_cycles.get(sym, 0) + 1
+                                self.token_profits[sym] = round(self.token_profits.get(sym, 0.0) + max(0.0, net_p), 4)
+                                send_telegram(
+                                    f"🚀 **[TRAILING TP: РАКЕТА УСПЕШНО ЗАФИКСИРОВАНА!]**\n\n"
+                                    f"Пара: **{sym}**\n"
+                                    f"Объем: **{sell_qty} {base_c}**\n"
+                                    f"• Вход: `${entry_price:.4f}`\n"
+                                    f"• Пик: `${trailing_res['peak_price']:.4f}` (+{trailing_res['peak_gain_pct']*100:.2f}%)\n"
+                                    f"• Продажа: `${cur_price:.4f}` (+{trailing_res['gain_pct']*100:.2f}%)\n"
+                                    f"• Итоговый профит: **+{trailing_res['gain_pct']*100:.2f}%** (чистыми +${net_p:.4f} USDT)\n"
+                                    f"Всего закрыто циклов ({sym}): **{self.token_cycles[sym]}**"
+                                )
+                                position_closed_by_trailing = True
+
+                    elif trailing_active:
+                        tp_mode = f"🚀 Trailing (+{(cur_price - entry_price)/entry_price*100:.2f}% / Стоп: ${tr_state.stop_price:.4f})"
+                        if open_sells:
+                            for s_ord in list(open_sells):
+                                self.client.cancel_order(sym, s_ord.get("orderId"))
+                                open_sells.remove(s_ord)
+                    elif free_val >= 5.00:
+                        tp_mode = "🚀 Rocket Rider (Цель: +1.00%)"
+                        if open_sells:
+                            for s_ord in list(open_sells):
+                                self.client.cancel_order(sym, s_ord.get("orderId"))
+                                open_sells.remove(s_ord)
+
+                if position_closed_by_trailing:
+                    token_stats_map[sym] = {
+                        "symbol": sym,
+                        "name": meta.get("name", sym),
+                        "base_coin": base_c,
+                        "badge_color": meta.get("badge_color", "#38bdf8"),
+                        "mode": "ACTIVE",
+                        "price": cur_price,
+                        "free_coin": 0.0,
+                        "locked_coin": 0.0,
+                        "holding_value_usd": 0.0,
+                        "completed_cycles": self.token_cycles.get(sym, 0),
+                        "net_profit_usd": self.token_profits.get(sym, 0.0),
+                        "tp_mode": "Standard (+0.90%)",
+                        "position_age_hours": 0.0,
+                        "step1_discount_pct": round(t_metric.get("step1_discount", BASE_SPACING["step_1"]) * 100, 2),
+                        "step2_discount_pct": round(t_metric.get("step2_discount", BASE_SPACING["step_2"]) * 100, 2),
+                        "step3_discount_pct": round(t_metric.get("step3_discount", BASE_SPACING["step_3"]) * 100, 2),
+                        "vol_multiplier": t_metric.get("vol_multiplier", 1.0),
+                        "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
+                        "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
+                        "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                        "cooldown_active": t_metric.get("cooldown_active", False),
+                        "cooldown_reason": t_metric.get("cooldown_reason", ""),
+                    }
+                    continue
+
                 # Soft Breakeven Evaluation (>8 hours)
                 position_age_hours = 0.0
-                tp_mode = "Standard (+0.90%)"
+                if not trailing_active:
+                    for s_ord in list(open_sells):
+                        s_id = s_ord.get("orderId")
+                        s_price = float(s_ord.get("price", 0.0))
+                        s_created = float(s_ord.get("createdTime", now * 1000)) / 1000.0
+                        age_h = (now - s_created) / 3600.0
+                        position_age_hours = max(position_age_hours, age_h)
 
-                for s_ord in list(open_sells):
-                    s_id = s_ord.get("orderId")
-                    s_price = float(s_ord.get("price", 0.0))
-                    s_created = float(s_ord.get("createdTime", now * 1000)) / 1000.0
-                    age_h = (now - s_created) / 3600.0
-                    position_age_hours = max(position_age_hours, age_h)
-
-                    if age_h >= STALE_POSITION_HOURS:
-                        tp_mode = f"Soft Breakeven ({age_h:.1f}ч)"
-                        soft_tp_price = round(entry_price * (1.0 + SOFT_BREAKEVEN_TP_PCT), meta.get("price_decimals", 4))
-                        if s_price > soft_tp_price and (soft_tp_price * float(s_ord.get("qty", 0.0))) >= 5.00:
-                            logger.info(
-                                f"🛡️ [{sym}] Зависание {age_h:.1f}ч! Снижаем ТП с ${s_price} до ${soft_tp_price} (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)"
-                            )
-                            self.client.cancel_order(sym, s_id)
-                            open_sells.remove(s_ord)
-                            resp_soft = self.client.create_limit_order(
-                                sym, "Sell", float(s_ord.get("qty", 0.0)), soft_tp_price, post_only=True
-                            )
-                            if resp_soft.get("retCode") == 0:
-                                send_telegram(
-                                    f"🛡️ **[ЗАЩИТА ДЕПОЗИТА: SOFT BREAKEVEN {sym}]**\n\n"
-                                    f"Пара: **{sym}**\n"
-                                    f"Позиция удерживается: **{age_h:.1f} ч**\n"
-                                    f"Тейк-профит снижен до: **${soft_tp_price}** (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)\n"
-                                    "Цель: Гарантированный выход в плюс (+0.18% чистыми) при первом отскоке."
+                        if age_h >= STALE_POSITION_HOURS:
+                            tp_mode = f"Soft Breakeven ({age_h:.1f}ч)"
+                            soft_tp_price = round(entry_price * (1.0 + SOFT_BREAKEVEN_TP_PCT), meta.get("price_decimals", 4))
+                            if s_price > soft_tp_price and (soft_tp_price * float(s_ord.get("qty", 0.0))) >= 5.00:
+                                logger.info(
+                                    f"🛡️ [{sym}] Зависание {age_h:.1f}ч! Снижаем ТП с ${s_price} до ${soft_tp_price} (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)"
                                 )
+                                self.client.cancel_order(sym, s_id)
+                                open_sells.remove(s_ord)
+                                resp_soft = self.client.create_limit_order(
+                                    sym, "Sell", float(s_ord.get("qty", 0.0)), soft_tp_price, post_only=True
+                                )
+                                if resp_soft.get("retCode") == 0:
+                                    send_telegram(
+                                        f"🛡️ **[ЗАЩИТА ДЕПОЗИТА: SOFT BREAKEVEN {sym}]**\n\n"
+                                        f"Пара: **{sym}**\n"
+                                        f"Позиция удерживается: **{age_h:.1f} ч**\n"
+                                        f"Тейк-профит снижен до: **${soft_tp_price}** (+{SOFT_BREAKEVEN_TP_PCT*100:.2f}%)\n"
+                                        "Цель: Гарантированный выход в плюс (+0.18% чистыми) при первом отскоке."
+                                    )
 
-                # Place Fresh Take-Profit SELL Order
-                if free_val >= 5.00 and len(open_sells) < 2:
-                    tp_pct = STANDARD_TP_PCT
-                    tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
-                    sell_qty = math.floor(cur_free * 100) / 100.0
+                # Place Fresh Take-Profit SELL Order (Mobile profile only; Desktop uses Trailing)
+                if self.mode != "desktop":
+                    if free_val >= 5.00 and len(open_sells) < 2:
+                        tp_pct = STANDARD_TP_PCT
+                        tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
+                        sell_qty = math.floor(cur_free * 100) / 100.0
+                        use_post_only = tp_price > cur_price
 
-                    if (sell_qty * tp_price) >= 5.00:
-                        logger.info(f"🟢 [{sym}] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} {base_c} @ ${tp_price} (+{tp_pct*100:.2f}%)")
-                        resp = self.client.create_limit_order(sym, "Sell", sell_qty, tp_price, post_only=True)
-                        if resp.get("retCode") == 0:
-                            send_telegram(
-                                f"🟢 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
-                                f"Пара: **{sym}**\n"
-                                f"Объем: **{sell_qty} {base_c}** (~${round(sell_qty * tp_price, 2)})\n"
-                                f"Цена выхода: **${tp_price}** (+{tp_pct*100:.2f}%)\n"
-                                f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
-                            )
+                        if (sell_qty * tp_price) >= 5.00:
+                            logger.info(f"🟢 [{sym}] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} {base_c} @ ${tp_price} (+{tp_pct*100:.2f}%)")
+                            resp = self.client.create_limit_order(sym, "Sell", sell_qty, tp_price, post_only=use_post_only)
+                            if resp.get("retCode") == 0:
+                                send_telegram(
+                                    f"🟢 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
+                                    f"Пара: **{sym}**\n"
+                                    f"Объем: **{sell_qty} {base_c}** (~${round(sell_qty * tp_price, 2)})\n"
+                                    f"Цена выхода: **${tp_price}** (+{tp_pct*100:.2f}%)\n"
+                                    f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
+                                )
 
                 # Dynamic Adaptive Spacing Targets
                 s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
@@ -1059,7 +1285,13 @@ class StandaloneBybitBot:
 
         while self.running:
             self.step()
-            time.sleep(10)
+            is_fast = (
+                self.mode == "desktop"
+                and hasattr(self, "trailing_controller")
+                and self.trailing_controller.is_any_trailing_active()
+            )
+            sleep_time = 1.5 if is_fast else 10.0
+            time.sleep(sleep_time)
 
 
 class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):

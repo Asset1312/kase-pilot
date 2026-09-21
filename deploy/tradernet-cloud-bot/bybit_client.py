@@ -171,6 +171,23 @@ class BybitV5Client:
         }
         return self._request("POST", "/v5/order/create", data=data)
 
+    def create_market_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        category: str = "spot",
+    ) -> Dict[str, Any]:
+        """Places a market Taker order on Bybit Spot for immediate execution."""
+        data = {
+            "category": category,
+            "symbol": symbol.upper(),
+            "side": side.capitalize(),
+            "orderType": "Market",
+            "qty": f"{qty:.2f}",
+        }
+        return self._request("POST", "/v5/order/create", data=data)
+
     def cancel_order(self, symbol: str, order_id: str, category: str = "spot") -> Dict[str, Any]:
         """Cancels an active order by orderId."""
         data = {
