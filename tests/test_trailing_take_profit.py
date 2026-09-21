@@ -172,3 +172,32 @@ def test_trailing_reset_on_position_close():
     # Position sold or dust remaining (< $5.00)
     controller.update_price(PRIMARY_SYMBOL, 0.8585, entry, 0.5, 0.42)
     assert controller.get_state(PRIMARY_SYMBOL).status == "IDLE"
+
+
+def test_desktop_step_no_unbound_local_error_tp_mode():
+    """Verifies that step() executes without UnboundLocalError when holding value is 0.0."""
+    bot = StandaloneBybitBot(mode="desktop")
+    bot.client.get_wallet_balance = MagicMock(return_value={
+        "retCode": 0,
+        "total_usd": 50.0,
+        "available_usdt": 50.0,
+        "locked_usdt": 0.0,
+        "coins": {
+            "USDT": {"balance": 50.0, "free": 50.0, "locked": 0.0},
+            "SUI": {"balance": 0.0, "free": 0.0, "locked": 0.0},
+            "APT": {"balance": 0.0, "free": 0.0, "locked": 0.0},
+            "MNT": {"balance": 1.0, "free": 1.0, "locked": 0.0},
+        }
+    })
+    bot.client.get_open_orders = MagicMock(return_value=[])
+    bot.client.get_execution_history = MagicMock(return_value=[])
+    bot.client.create_limit_order = MagicMock(return_value={"retCode": 0})
+    bot.get_market_price = MagicMock(return_value=0.90)
+
+    with patch.object(bot.guard, "update_market_state", return_value=(False, "", {"SUIUSDT": (False, "")})):
+        bot.step()
+
+    # Verify stats were populated with tp_mode defined
+    assert "SUIUSDT" in bot.stats["tokens"]
+    assert bot.stats["tokens"]["SUIUSDT"]["tp_mode"] == "Standard (+0.90%)"
+    assert bot.stats["tokens"]["SUIUSDT"]["position_age_hours"] == 0.0

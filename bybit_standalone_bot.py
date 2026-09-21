@@ -147,30 +147,38 @@ TOKEN_METADATA = {
 
 
 def send_telegram(text: str) -> None:
-    """Sends high-priority trade alerts to Telegram with graceful fallback."""
+    """Sends high-priority trade alerts to Telegram with graceful fallback and network retry."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = json.dumps({
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown",
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=5)
-    except urllib.error.HTTPError as he:
-        if he.code == 400:
-            try:
-                payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode("utf-8")
-                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=5)
-            except Exception as e2:
-                logger.warning(f"Telegram plain alert fallback error: {e2}")
-        else:
-            logger.warning(f"Telegram alert delivery error: {he}")
-    except Exception as e:
-        logger.warning(f"Telegram alert delivery error: {e}")
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = json.dumps({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    for attempt in range(2):
+        try:
+            urllib.request.urlopen(req, timeout=12)
+            return
+        except urllib.error.HTTPError as he:
+            if he.code == 400:
+                try:
+                    payload_plain = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode("utf-8")
+                    req_plain = urllib.request.Request(url, data=payload_plain, headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req_plain, timeout=12)
+                    return
+                except Exception as e2:
+                    logger.warning(f"Telegram plain alert fallback error: {e2}")
+                    return
+            else:
+                logger.warning(f"Telegram alert delivery error (HTTP {he.code}): {he}")
+                return
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1)
+            else:
+                logger.warning(f"Telegram alert delivery error: {e}")
 
 
 # =====================================================================
@@ -199,7 +207,7 @@ def read_cluster_state() -> Dict[str, Any]:
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChat?chat_id={TELEGRAM_CHAT_ID}"
         req = urllib.request.Request(url, headers={"User-Agent": "BybitCluster/2.0"})
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=12) as r:
             d = json.loads(r.read().decode("utf-8"))
         pm = d.get("result", {}).get("pinned_message")
         if not pm:
@@ -233,7 +241,7 @@ def read_cluster_state() -> Dict[str, Any]:
 
 
 def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optional[int] = None) -> Optional[int]:
-    """Updates or pins the cluster coordination board message in Telegram."""
+    """Updates or pins the cluster coordination board message in Telegram with retry resilience."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return None
     now_ts = time.time()
@@ -258,13 +266,14 @@ def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optio
             "parse_mode": "Markdown"
         }).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", "User-Agent": "BybitCluster/2.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as r:
-                res = json.loads(r.read().decode("utf-8"))
-                if res.get("ok"):
-                    return existing_msg_id
-        except Exception:
-            pass
+        for _ in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=12) as r:
+                    res = json.loads(r.read().decode("utf-8"))
+                    if res.get("ok"):
+                        return existing_msg_id
+            except Exception:
+                time.sleep(1)
 
     # Send new message and pin it
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -274,11 +283,20 @@ def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optio
         "parse_mode": "Markdown"
     }).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", "User-Agent": "BybitCluster/2.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            res = json.loads(r.read().decode("utf-8"))
-        new_id = res.get("result", {}).get("message_id")
-        if new_id:
+    new_id = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=12) as r:
+                res = json.loads(r.read().decode("utf-8"))
+            if res.get("ok"):
+                new_id = res.get("result", {}).get("message_id")
+                break
+        except Exception as e:
+            logger.warning(f"write_cluster_state attempt {attempt+1} failed: {e}")
+            time.sleep(1.5)
+
+    if new_id:
+        try:
             pin_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/pinChatMessage"
             pin_data = json.dumps({
                 "chat_id": TELEGRAM_CHAT_ID,
@@ -286,11 +304,12 @@ def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optio
                 "disable_notification": True
             }).encode("utf-8")
             req_pin = urllib.request.Request(pin_url, data=pin_data, headers={"Content-Type": "application/json", "User-Agent": "BybitCluster/2.0"})
-            with urllib.request.urlopen(req_pin, timeout=5):
+            with urllib.request.urlopen(req_pin, timeout=12):
                 pass
-            return new_id
-    except Exception as e:
-        logger.warning(f"write_cluster_state send/pin error: {e}")
+        except Exception as pe:
+            logger.debug(f"pinChatMessage notice: {pe}")
+        return new_id
+
     return None
 
 # =====================================================================
@@ -607,6 +626,7 @@ class StandaloneBybitBot:
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0}
         self.token_profits: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0}
         self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None}
+        self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: []}
 
         # Unified live statistics
         profile_label = "DESKTOP / SMART-STEP" if self.mode == "desktop" else "MOBILE / STORM"
@@ -804,7 +824,6 @@ class StandaloneBybitBot:
                 )
 
             # 7. Sync Executions & Realized Profit per Token (every 30s)
-            recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: []}
             if now - self.last_sync_ts > 30:
                 self.last_sync_ts = now
                 for sym in symbols_to_process:
@@ -812,7 +831,7 @@ class StandaloneBybitBot:
                     if execs:
                         tot_fees = sum(float(e.get("execFee") or 0.0) for e in execs)
                         sell_execs = [e for e in execs if e.get("side") == "Sell"]
-                        recent_buys[sym] = [e for e in execs if e.get("side") == "Buy"]
+                        self.recent_buys[sym] = [e for e in execs if e.get("side") == "Buy"]
                         cycles = len(sell_execs)
 
                         gross = 0.0
@@ -916,13 +935,15 @@ class StandaloneBybitBot:
 
                 # Estimate Entry Price
                 entry_price = cur_price
-                sym_buys = recent_buys.get(sym, [])
+                sym_buys = self.recent_buys.get(sym, [])
                 if sym_buys:
                     entry_price = float(sym_buys[0].get("execPrice") or cur_price)
 
                 # =============================================================
                 # TAKE-PROFIT LOGIC: TRAILING (DESKTOP) VS STATIC LIMIT (MOBILE)
                 # =============================================================
+                position_age_hours = 0.0
+                tp_mode = "Standard (+0.90%)"
                 trailing_active = False
                 position_closed_by_trailing = False
 
@@ -1484,7 +1505,7 @@ def send_telegram_reply(
             data=payload,
             headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"},
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("ok"):
                 return int(data.get("result", {}).get("message_id") or 0)
@@ -1494,7 +1515,7 @@ def send_telegram_reply(
                 payload_dict.pop("parse_mode", None)
                 payload = json.dumps(payload_dict).encode("utf-8")
                 req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                with urllib.request.urlopen(req, timeout=12) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     if data.get("ok"):
                         return int(data.get("result", {}).get("message_id") or 0)
@@ -1522,7 +1543,7 @@ def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
             data=payload,
             headers={"Content-Type": "application/json", "User-Agent": "BybitBotControl/2.0"},
         )
-        urllib.request.urlopen(req, timeout=5)
+        urllib.request.urlopen(req, timeout=12)
     except Exception as e:
         logger.debug(f"Callback answer error: {e}")
 
@@ -1886,6 +1907,14 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         logger.info("🖥️ [Handover Detected] Desktop активен в рабочее время Астаны. Mobile уступает смену -> PASSIVE_OBSERVER.")
                         bot.is_active_controller = False
                         bot.role = "PASSIVE_OBSERVER"
+                        bot.cancel_all_portfolio_buys()
+                        send_telegram(
+                            "📱 *[КЛАСТЕР: СМЕНА СДАНА]*\n\n"
+                            "Телефон перешел в режим `PASSIVE_OBSERVER`.\n"
+                            "• Все BUY-ордера мобильной сетки сняты.\n"
+                            "• Управление передано Desktop (Smart-Step + $10 буфер).\n"
+                            "• Тейк-профиты сохранены."
+                        )
                         time.sleep(10)
                         continue
 
