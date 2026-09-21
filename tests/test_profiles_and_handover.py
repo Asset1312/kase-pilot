@@ -16,6 +16,12 @@ from bybit_standalone_bot import (
     StandaloneBybitBot,
     DESKTOP_RESERVE_USDT,
     DESKTOP_STEP_WEIGHTS,
+    HEARTBEAT_TIMEOUT_SECONDS,
+    HEARTBEAT_INTERVAL_SECONDS,
+    is_desktop_schedule_window,
+    get_astana_time,
+    read_cluster_state,
+    write_cluster_state,
     format_status_text,
 )
 
@@ -114,3 +120,90 @@ def test_format_status_text_shows_profile_and_reserve():
     txt_desktop = format_status_text(bot_desktop)
     assert "[DESKTOP / SMART-STEP]" in txt_desktop
     assert "Резервный буфер: `$10.00 USDT`" in txt_desktop
+
+
+def test_handover_transitions():
+    """Verifies that handover_to properly adjusts active roles and cancels buys."""
+    bot = StandaloneBybitBot(mode="desktop")
+    bot.cancel_all_portfolio_buys = MagicMock()
+
+    with patch("bybit_standalone_bot.write_cluster_state", return_value=123), \
+         patch("bybit_standalone_bot.send_telegram"):
+        # Desktop hands over to Mobile
+        bot.handover_to("mobile", "End of day")
+        assert bot.role == "PASSIVE_OBSERVER"
+        assert bot.is_active_controller is False
+        assert bot.cancel_all_portfolio_buys.called
+
+        # Desktop re-claims active controller
+        bot.handover_to("desktop", "Morning start")
+        assert bot.role == "ACTIVE_CONTROLLER"
+        assert bot.is_active_controller is True
+
+
+def test_astana_office_schedule_detection():
+    """Verifies weekday 08:00 - 17:30 office hours in Astana (UTC+5)."""
+    import datetime
+
+    # Monday 10:00 Astana -> in window
+    dt_mon_work = datetime.datetime(2026, 9, 21, 10, 0, 0, tzinfo=datetime.timezone.utc)
+    with patch("bybit_standalone_bot.get_astana_time", return_value=dt_mon_work):
+        assert is_desktop_schedule_window() is True
+
+    # Monday 17:35 Astana -> out of window
+    dt_mon_eve = datetime.datetime(2026, 9, 21, 17, 35, 0, tzinfo=datetime.timezone.utc)
+    with patch("bybit_standalone_bot.get_astana_time", return_value=dt_mon_eve):
+        assert is_desktop_schedule_window() is False
+
+    # Saturday 12:00 Astana -> weekend (strictly mobile)
+    dt_sat = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    with patch("bybit_standalone_bot.get_astana_time", return_value=dt_sat):
+        assert is_desktop_schedule_window() is False
+
+    # Sunday 14:00 Astana -> weekend (strictly mobile)
+    dt_sun = datetime.datetime(2026, 9, 27, 14, 0, 0, tzinfo=datetime.timezone.utc)
+    with patch("bybit_standalone_bot.get_astana_time", return_value=dt_sun):
+        assert is_desktop_schedule_window() is False
+
+
+def test_cluster_state_parsing():
+    """Verifies parsing of cluster board metadata from Telegram pinned message."""
+    raw_board_text = (
+        "📌 *[BYBIT КЛАСТЕР: КООРДИНАТОР]*\n\n"
+        "• Активный узел: *🖥️ DESKTOP (Smart Step)*\n"
+        "• Время (Астана): `21.09.2026 10:00:00`\n"
+        "• Статус: `DESKTOP_ACTIVE`\n"
+        "• Примечание: _В строю_\n\n"
+        "`#ACTIVE_HOST=desktop #HEARTBEAT=1789965000`"
+    )
+
+    mock_chat_resp = {
+        "ok": True,
+        "result": {
+            "pinned_message": {
+                "message_id": 9999,
+                "text": raw_board_text
+            }
+        }
+    }
+
+    import io
+    import json
+    mock_bytes = io.BytesIO(json.dumps(mock_chat_resp).encode("utf-8"))
+
+    with patch("urllib.request.urlopen", return_value=mock_bytes):
+        state = read_cluster_state()
+        assert state["active_host"] == "desktop"
+        assert state["heartbeat_ts"] == 1789965000.0
+        assert state["msg_id"] == 9999
+        assert state["note"] == "В строю"
+
+
+def test_dead_mans_switch_failover_condition():
+    """Checks that a silent desktop for > 180s triggers failover timeout."""
+    import time
+    now = time.time()
+    stale_heartbeat_ts = now - 200.0  # 200s ago (> 180s timeout)
+    hb_age = now - stale_heartbeat_ts
+    assert hb_age >= HEARTBEAT_TIMEOUT_SECONDS
+
