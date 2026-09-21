@@ -23,6 +23,7 @@ from bybit_standalone_bot import (
     read_cluster_state,
     write_cluster_state,
     format_status_text,
+    init_cluster_role,
 )
 
 
@@ -206,4 +207,56 @@ def test_dead_mans_switch_failover_condition():
     stale_heartbeat_ts = now - 200.0  # 200s ago (> 180s timeout)
     hb_age = now - stale_heartbeat_ts
     assert hb_age >= HEARTBEAT_TIMEOUT_SECONDS
+
+
+def test_init_cluster_role_mobile_startup_when_desktop_active():
+    """Ensures mobile starts directly in PASSIVE_OBSERVER if desktop is active during office hours."""
+    import time
+    bot = StandaloneBybitBot(mode="mobile")
+    mock_state = {
+        "active_host": "desktop",
+        "heartbeat_ts": time.time() - 15.0,  # 15s ago
+        "msg_id": 1234,
+        "note": "Office run"
+    }
+
+    with patch("bybit_standalone_bot.read_cluster_state", return_value=mock_state), \
+         patch("bybit_standalone_bot.is_desktop_schedule_window", return_value=True):
+        init_cluster_role(bot)
+        assert bot.role == "PASSIVE_OBSERVER"
+        assert bot.is_active_controller is False
+
+
+def test_mobile_yields_when_desktop_claims_board_in_office_hours():
+    """Ensures mobile in ACTIVE_CONTROLLER yields and cancels buys when desktop claims board."""
+    import time
+    bot = StandaloneBybitBot(mode="mobile")
+    bot.is_active_controller = True
+    bot.role = "ACTIVE_CONTROLLER"
+    bot.cancel_all_portfolio_buys = MagicMock()
+
+    mock_state = {
+        "active_host": "desktop",
+        "heartbeat_ts": time.time() - 10.0,
+        "msg_id": 5678,
+        "note": "Desktop started"
+    }
+
+    # Simulate one iteration of the watchdog check
+    now = time.time()
+    hb_ts = float(mock_state.get("heartbeat_ts", 0.0))
+    hb_age = now - hb_ts
+    active_host = mock_state.get("active_host")
+
+    with patch("bybit_standalone_bot.is_desktop_schedule_window", return_value=True):
+        in_win = is_desktop_schedule_window()
+        if active_host == "desktop" and hb_age < HEARTBEAT_TIMEOUT_SECONDS and in_win:
+            bot.is_active_controller = False
+            bot.role = "PASSIVE_OBSERVER"
+            bot.cancel_all_portfolio_buys()
+
+    assert bot.role == "PASSIVE_OBSERVER"
+    assert bot.is_active_controller is False
+    assert bot.cancel_all_portfolio_buys.called
+
 

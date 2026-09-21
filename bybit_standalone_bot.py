@@ -889,6 +889,9 @@ class StandaloneBybitBot:
                 if not self.is_active_controller:
                     can_buy_token = False
                     token_mode_label = "PASSIVE_OBSERVER"
+                    if open_buys:
+                        self.cancel_all_buys(sym, open_buys)
+                        open_buys.clear()
                 elif self.is_paused or self.circuit_breaker_active or is_in_cooldown:
                     can_buy_token = False
                     if self.is_paused:
@@ -1574,9 +1577,8 @@ def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
             time.sleep(3)
 
 
-def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
-    """Monitors heartbeat, enforces Astana office schedule, and triggers automatic failover."""
-    logger.info("🌐 [Cluster Watchdog] Поток мониторинга кластера запущен.")
+def init_cluster_role(bot: StandaloneBybitBot) -> None:
+    """Arbitrates initial cluster role on startup before Telegram polling begins."""
     init_state = read_cluster_state()
     bot.cluster_board_msg_id = init_state.get("msg_id")
 
@@ -1585,23 +1587,28 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
         if is_desktop_schedule_window():
             logger.info("🖥️ [Desktop Startup] Офисное время Астаны (08:00 - 17:30). Активация Desktop...")
             bot.handover_to("desktop", "Запуск рабочего ПК в офисе")
+            time.sleep(2)
         else:
             logger.info("🖥️ [Desktop Startup] Вне офисных часов. Запуск в режиме PASSIVE_OBSERVER...")
             bot.is_active_controller = False
             bot.role = "PASSIVE_OBSERVER"
     else:
         # Mobile mode: check if desktop is already active
-        if init_state.get("active_host") == "desktop":
-            age = time.time() - float(init_state.get("heartbeat_ts", 0.0))
-            if age < HEARTBEAT_TIMEOUT_SECONDS:
-                logger.info(f"📱 [Mobile Startup] Desktop активен (heartbeat {int(age)}с назад). Переход в PASSIVE_OBSERVER.")
-                bot.is_active_controller = False
-                bot.role = "PASSIVE_OBSERVER"
-            else:
-                logger.info("📱 [Mobile Startup] Desktop не обнаружен / устарел. Активация Mobile.")
-                bot.handover_to("mobile", "Старт телефона (десктоп оффлайн)")
+        active_host = init_state.get("active_host")
+        hb_ts = float(init_state.get("heartbeat_ts", 0.0))
+        hb_age = time.time() - hb_ts
+        if active_host == "desktop" and hb_age < HEARTBEAT_TIMEOUT_SECONDS and is_desktop_schedule_window():
+            logger.info(f"📱 [Mobile Startup] Desktop активен (heartbeat {int(hb_age)}с назад). Переход в PASSIVE_OBSERVER.")
+            bot.is_active_controller = False
+            bot.role = "PASSIVE_OBSERVER"
         else:
+            logger.info("📱 [Mobile Startup] Desktop оффлайн / вне графика. Активация Mobile.")
             bot.handover_to("mobile", "Старт телефона (дефолтный узел)")
+
+
+def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
+    """Monitors heartbeat, enforces Astana office schedule, and triggers automatic failover."""
+    logger.info("🌐 [Cluster Watchdog] Поток мониторинга кластера запущен.")
 
     while bot.running:
         try:
@@ -1609,6 +1616,22 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
             astana_dt = get_astana_time()
 
             if bot.role == "ACTIVE_CONTROLLER":
+                # Check if Mobile needs to yield to Desktop during Astana office hours
+                if bot.mode == "mobile":
+                    state = read_cluster_state()
+                    if state.get("msg_id"):
+                        bot.cluster_board_msg_id = state.get("msg_id")
+                    active_host = state.get("active_host")
+                    hb_ts = float(state.get("heartbeat_ts", 0.0))
+                    hb_age = now - hb_ts
+                    if active_host == "desktop" and hb_age < HEARTBEAT_TIMEOUT_SECONDS and is_desktop_schedule_window():
+                        logger.info("🖥️ [Handover Detected] Desktop активен в рабочее время Астаны. Mobile уступает смену -> PASSIVE_OBSERVER.")
+                        bot.is_active_controller = False
+                        bot.role = "PASSIVE_OBSERVER"
+                        bot.cancel_all_portfolio_buys()
+                        time.sleep(10)
+                        continue
+
                 # Active host sends periodic heartbeat
                 if now - bot.last_heartbeat_sent_ts >= HEARTBEAT_INTERVAL_SECONDS:
                     bot.last_heartbeat_sent_ts = now
@@ -1625,7 +1648,7 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         bot.handover_to("mobile", "Окончание офисного дня (17:30 по Астане)")
 
             elif bot.role == "PASSIVE_OBSERVER":
-                # Passive host polls cluster board every 20-30s via getChat (zero 409 conflict)
+                # Passive host polls cluster board every 10s via getChat (zero 409 conflict)
                 state = read_cluster_state()
                 if state.get("msg_id"):
                     bot.cluster_board_msg_id = state.get("msg_id")
@@ -1640,12 +1663,27 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                     bot.role = "ACTIVE_CONTROLLER"
                     send_telegram(
                         f"📱 *[КЛАСТЕР: СМЕНА ПРИНЯТА]*\n\n"
-                        f"Телефон перешел в режим `ACTIVE_CONTROLLER`.\n"
-                        f"Развертывание сетки STORM x2.0."
+                        f"Узел {bot.mode.upper()} перешел в режим `ACTIVE_CONTROLLER`.\n"
+                        f"Развертывание торговой сетки."
                     )
                 elif bot.mode == "mobile" and active_host == "desktop":
-                    # Dead Man's Switch / Failover: check if desktop died
-                    if hb_age >= HEARTBEAT_TIMEOUT_SECONDS:
+                    # Check if office window has ended, even if desktop failed to cleanly handover
+                    if not is_desktop_schedule_window():
+                        logger.info("📱 [Desktop Schedule End] Наступило 17:30 по Астане. Телефон принимает управление.")
+                        bot.is_active_controller = True
+                        bot.role = "ACTIVE_CONTROLLER"
+                        bot.cluster_board_msg_id = write_cluster_state(
+                            "mobile",
+                            "Окончание офисных часов (17:30 по Астане)",
+                            bot.cluster_board_msg_id,
+                        )
+                        send_telegram(
+                            "📱 *[КЛАСТЕР: ВЕЧЕРНЯЯ СМЕНА]*\n\n"
+                            "Наступило 17:30 по Астане (окончание рабочего дня ПК).\n"
+                            "Телефон автоматически активировал `ACTIVE_CONTROLLER` и перешел на сетку STORM x2.0."
+                        )
+                    # Dead Man's Switch / Failover: check if desktop died during office hours
+                    elif hb_age >= HEARTBEAT_TIMEOUT_SECONDS:
                         logger.warning(f"🚨 [Cluster Failover] Desktop не отвечает {int(hb_age)}с! Аварийный перехват...")
                         bot.is_active_controller = True
                         bot.role = "ACTIVE_CONTROLLER"
@@ -1660,7 +1698,7 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                             f"Телефон автоматически активировал роль `ACTIVE_CONTROLLER` и поднял защитную сетку!"
                         )
 
-            time.sleep(20)
+            time.sleep(10)
         except Exception as e:
             logger.debug(f"cluster_watchdog_thread loop error: {e}")
             time.sleep(10)
@@ -1688,6 +1726,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     bot = StandaloneBybitBot(mode=args.mode)
+    init_cluster_role(bot)
     t_web = threading.Thread(target=start_server, args=(bot,), daemon=True)
     t_web.start()
     t_tg = threading.Thread(target=telegram_polling_thread, args=(bot,), daemon=True, name="TelegramControl")
