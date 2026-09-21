@@ -542,7 +542,7 @@ class MarketGuard:
             if elapsed >= COOLDOWN_MIN_SECONDS and btc_klines and len(btc_klines) >= 2:
                 btc_l0 = float(btc_klines[0][3])
                 btc_l1 = float(btc_klines[1][3])
-                if btc_l0 >= btc_l1 and self.last_btc_1m_chg >= -0.0010:
+                if (btc_l0 >= btc_l1 and self.last_btc_1m_chg >= -0.0010) or self.last_btc_1m_chg >= 0.0010 or elapsed >= 900:
                     logger.info(f"🟢 [MarketGuard] Общий рынок (BTC) стабилизировался! Пауза {int(elapsed)}с снята.")
                     self.global_cooldown_active = False
                     self.global_cooldown_reason = ""
@@ -618,7 +618,7 @@ class MarketGuard:
                 if el >= COOLDOWN_MIN_SECONDS and len(klines) >= 2:
                     l0 = float(klines[0][3])
                     l1 = float(klines[1][3])
-                    if l0 >= l1 and chg_1m >= -0.0010:
+                    if (l0 >= l1 and chg_1m >= -0.0010) or chg_1m >= 0.0010 or el >= 900:
                         logger.info(f"🟢 [MarketGuard] Актив {sym} стабилизировался после {int(el)}с паузы.")
                         m["cooldown_active"] = False
                         m["cooldown_reason"] = ""
