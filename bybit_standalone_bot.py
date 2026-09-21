@@ -636,9 +636,11 @@ class MarketGuard:
 class StandaloneBybitBot:
     """Autonomous Multi-Token Spot Micro-Grid Portfolio Engine for Bybit Kazakhstan."""
 
-    def __init__(self, mode: str = "mobile", enable_telegram: bool = True) -> None:
+    def __init__(self, mode: str = "mobile", enable_telegram: bool = True, is_24x7: bool = False) -> None:
         self.mode = (mode or "mobile").strip().lower()
         self.enable_telegram = bool(enable_telegram and ENABLE_TELEGRAM)
+        self.is_24x7 = bool(is_24x7 or os.getenv("DESKTOP_24X7", "false").lower() in ("1", "true", "yes"))
+        self.last_hourly_alert_ts: float = time.time()
         self.role = "ACTIVE_CONTROLLER"
         self.is_active_controller = True
         self.last_heartbeat_ts = time.time()
@@ -665,10 +667,14 @@ class StandaloneBybitBot:
         self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: []}
 
         # Unified live statistics
-        profile_label = "DESKTOP / SMART-STEP" if self.mode == "desktop" else "MOBILE / STORM"
+        if self.mode == "desktop":
+            profile_label = "DESKTOP / 24x7 SMART-STEP" if self.is_24x7 else "DESKTOP / SMART-STEP"
+        else:
+            profile_label = "MOBILE / STORM"
         self.stats: Dict[str, Any] = {
             "mode": self.mode,
             "profile": profile_label,
+            "is_24x7": self.is_24x7,
             "role": self.role,
             "reserve_usdt": self.reserve_usdt,
             "portfolio_mode": "Single (SUI)",
@@ -1947,8 +1953,9 @@ def init_cluster_role(bot: StandaloneBybitBot) -> None:
     """Arbitrates initial cluster role on startup before Telegram polling begins."""
     if not bot.enable_telegram:
         if bot.mode == "desktop":
-            if is_desktop_schedule_window():
-                logger.info("🖥️ [Desktop Startup] Офисное время Астаны (08:00 - 17:30). Активация Desktop (Standalone)...")
+            if bot.is_24x7 or is_desktop_schedule_window():
+                label = "Режим 24/7" if bot.is_24x7 else "Офисное время Астаны (08:00 - 17:30)"
+                logger.info(f"🖥️ [Desktop Startup] {label}. Активация Desktop (Standalone)...")
                 bot.is_active_controller = True
                 bot.role = "ACTIVE_CONTROLLER"
             else:
@@ -1969,11 +1976,12 @@ def init_cluster_role(bot: StandaloneBybitBot) -> None:
     init_state = read_cluster_state()
     bot.cluster_board_msg_id = init_state.get("msg_id")
 
-    # If desktop starts up during office hours, request/claim active controller
+    # If desktop starts up during office hours or in 24/7 mode, claim active controller
     if bot.mode == "desktop":
-        if is_desktop_schedule_window():
-            logger.info("🖥️ [Desktop Startup] Офисное время Астаны (08:00 - 17:30). Активация Desktop...")
-            bot.handover_to("desktop", "Запуск рабочего ПК в офисе")
+        if bot.is_24x7 or is_desktop_schedule_window():
+            reason = "Режим 24/7 (круглосуточный ПК)" if bot.is_24x7 else "Запуск рабочего ПК в офисе"
+            logger.info(f"🖥️ [Desktop Startup] {reason}. Активация Desktop...")
+            bot.handover_to("desktop", reason)
             time.sleep(2)
         else:
             logger.info("🖥️ [Desktop Startup] Вне офисных часов. Запуск в режиме PASSIVE_OBSERVER...")
@@ -2007,7 +2015,12 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
 
             if not bot.enable_telegram:
                 if bot.mode == "desktop":
-                    if in_win and not bot.is_active_controller:
+                    if bot.is_24x7:
+                        if not bot.is_active_controller:
+                            logger.info("🖥️ [Desktop 24/7] Активация роли ACTIVE_CONTROLLER в режиме 24/7.")
+                            bot.is_active_controller = True
+                            bot.role = "ACTIVE_CONTROLLER"
+                    elif in_win and not bot.is_active_controller:
                         logger.info("🖥️ [Desktop Schedule] Наступило 08:00 по Астане. Активация Desktop.")
                         bot.is_active_controller = True
                         bot.role = "ACTIVE_CONTROLLER"
@@ -2061,9 +2074,26 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         bot.cluster_board_msg_id,
                     )
 
-                # Desktop schedule enforcement: auto-handover at 17:30
+                # Periodic Hourly Heartbeat for Telegram remote observer (every 60 mins)
+                if bot.enable_telegram and (now - bot.last_hourly_alert_ts >= 3600):
+                    bot.last_hourly_alert_ts = now
+                    st = bot.stats
+                    eq = st.get("total_usd", 0.0)
+                    cycles = bot.token_cycles.get(PRIMARY_SYMBOL, 0)
+                    tok_sui = st.get("tokens", {}).get(PRIMARY_SYMBOL, {})
+                    p_val = tok_sui.get("price", 0.0)
+                    send_telegram(
+                        f"💓 **[ПУЛЬС БОТА: ДЕСКТОП В СТРОЮ]**\n\n"
+                        f"• Время (Астана): `{astana_dt.strftime('%H:%M')}`\n"
+                        f"• Статус: `24/7 ACTIVE` (Экран погашен, ПК молотит)\n"
+                        f"• Баланс: **${eq:.2f} USDT**\n"
+                        f"• SUI: **${p_val:.4f}** (Закрыто циклов: {cycles})\n"
+                        f"• Ночной дежурный на посту! 🚀"
+                    )
+
+                # Desktop schedule enforcement: auto-handover at 17:30 (bypassed in 24/7 mode)
                 if bot.mode == "desktop":
-                    if not is_desktop_schedule_window():
+                    if not bot.is_24x7 and not is_desktop_schedule_window():
                         logger.info("🖥️ [Desktop Schedule] Наступило 17:30 (или выходной). Авто-передача смены на телефон...")
                         bot.handover_to("mobile", "Окончание офисного дня (17:30 по Астане)")
 
@@ -2152,11 +2182,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable all Telegram API calls and remote listener (pure standalone mode without network dependencies)",
     )
+    parser.add_argument(
+        "--24x7",
+        dest="is_24x7",
+        action="store_true",
+        help="Run desktop in 24/7 round-the-clock mode without handing over or stopping at 17:30",
+    )
     args = parser.parse_args()
     if args.no_telegram:
         ENABLE_TELEGRAM = False
 
-    bot = StandaloneBybitBot(mode=args.mode, enable_telegram=not args.no_telegram)
+    bot = StandaloneBybitBot(mode=args.mode, enable_telegram=not args.no_telegram, is_24x7=args.is_24x7)
     init_cluster_role(bot)
     t_web = threading.Thread(target=start_server, args=(bot,), daemon=True)
     t_web.start()
