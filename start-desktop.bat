@@ -17,5 +17,5 @@ echo.
 echo Локальный веб-дашборд: http://localhost:8080/
 echo.
 
-"%PYTHON_EXE%" bybit_standalone_bot.py --mode=desktop
+"%PYTHON_EXE%" bybit_standalone_bot.py --mode=desktop --no-telegram
 pause

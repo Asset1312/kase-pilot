@@ -75,6 +75,8 @@ BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "").strip()
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8661844936:AAGObMUpSRrnppgtY2I6-JQFiM-mgcnZ36U").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "455103299").strip()
+ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "true").lower() not in ("0", "false", "no")
+ENABLE_AUTO_FAILOVER = os.getenv("ENABLE_AUTO_FAILOVER", "false").lower() in ("1", "true", "yes")
 PORT = int(os.getenv("PORT", "8080"))
 
 # Pair Architecture
@@ -149,7 +151,7 @@ TOKEN_METADATA = {
 
 def _raw_send_telegram(text: str) -> None:
     """Synchronous HTTP worker for delivering Telegram trade alerts."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = json.dumps({
@@ -202,7 +204,9 @@ _t_tg_worker.start()
 
 def send_telegram(text: str) -> None:
     """Enqueues trade alert for asynchronous delivery, preventing network stalls in trading loop."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        first_line = text.splitlines()[0] if text else ""
+        logger.info(f"📢 [Alert (Local)]: {first_line}")
         return
     try:
         _telegram_alert_queue.put_nowait(text)
@@ -231,8 +235,9 @@ def is_desktop_schedule_window() -> bool:
 
 def read_cluster_state() -> Dict[str, Any]:
     """Reads cluster state from Telegram pinned board without calling getUpdates (zero 409 conflict)."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return {"active_host": "mobile", "heartbeat_ts": 0.0, "msg_id": None, "note": ""}
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        active = "desktop" if is_desktop_schedule_window() else "mobile"
+        return {"active_host": active, "heartbeat_ts": time.time(), "msg_id": None, "note": "Clock Schedule"}
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChat?chat_id={TELEGRAM_CHAT_ID}"
         req = urllib.request.Request(url, headers={"User-Agent": "BybitCluster/2.0"})
@@ -271,7 +276,7 @@ def read_cluster_state() -> Dict[str, Any]:
 
 def write_cluster_state(active_host: str, note: str = "", existing_msg_id: Optional[int] = None) -> Optional[int]:
     """Updates or pins the cluster coordination board message in Telegram with retry resilience."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return None
     now_ts = time.time()
     dt_str = get_astana_time().strftime("%d.%m.%Y %H:%M:%S")
@@ -630,8 +635,9 @@ class MarketGuard:
 class StandaloneBybitBot:
     """Autonomous Multi-Token Spot Micro-Grid Portfolio Engine for Bybit Kazakhstan."""
 
-    def __init__(self, mode: str = "mobile") -> None:
+    def __init__(self, mode: str = "mobile", enable_telegram: bool = True) -> None:
         self.mode = (mode or "mobile").strip().lower()
+        self.enable_telegram = bool(enable_telegram and ENABLE_TELEGRAM)
         self.role = "ACTIVE_CONTROLLER"
         self.is_active_controller = True
         self.last_heartbeat_ts = time.time()
@@ -1345,8 +1351,38 @@ class StandaloneBybitBot:
 
 
 class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
-    """Ultra-lightweight embedded web server for mobile browser monitoring."""
+    """Ultra-lightweight embedded web server for mobile browser monitoring and interactive control."""
     bot_instance: Optional[StandaloneBybitBot] = None
+
+    def _send_json(self, data: Dict[str, Any], status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+
+    def do_POST(self) -> None:
+        if not self.bot_instance:
+            self._send_json({"error": "Bot instance not attached"}, 500)
+            return
+
+        if self.path == "/api/pause":
+            self.bot_instance.is_paused = True
+            self.bot_instance.cancel_all_portfolio_buys()
+            logger.info("⏸️ [Web Dashboard] Портфель поставлен на ПАУЗУ через веб-интерфейс.")
+            self._send_json({"ok": True, "status": "PAUSED"})
+        elif self.path == "/api/resume":
+            self.bot_instance.is_paused = False
+            self.bot_instance.circuit_breaker_active = False
+            logger.info("▶️ [Web Dashboard] Торговля ВОЗОБНОВЛЕНА через веб-интерфейс.")
+            self._send_json({"ok": True, "status": "ACTIVE"})
+        elif self.path == "/api/panic":
+            self.bot_instance.is_paused = True
+            self.bot_instance.cancel_all_portfolio_buys()
+            logger.warning("🚨 [Web Dashboard] АВАРИЙНАЯ ОСТАНОВКА (Panic Stop) через веб-интерфейс!")
+            self._send_json({"ok": True, "status": "PANIC_STOPPED"})
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_GET(self) -> None:
         if self.path == "/api/status":
@@ -1426,6 +1462,8 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         th {{ color: #94a3b8; }}
         .buy {{ color: #38bdf8; font-weight: bold; }}
         .sell {{ color: #f59e0b; font-weight: bold; }}
+        .btn {{ border: none; padding: 8px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }}
+        .btn:hover {{ opacity: 0.85; }}
     </style>
 </head>
 <body>
@@ -1438,6 +1476,12 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">
             {st.get('global_guard_status')} (BTC 1m: {st.get('btc_1m_chg', 0.0):+.2f}%)
         </div>
+
+        <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+            <button class="btn" onclick="botAction('/api/pause')" style="background: #f59e0b; color: #0f172a;">⏸️ Пауза (BUY)</button>
+            <button class="btn" onclick="botAction('/api/resume')" style="background: #10b981; color: #0f172a;">▶️ Возобновить</button>
+            <button class="btn" onclick="if(confirm('Снять ВСЕ активные ордера на покупку?')) botAction('/api/panic')" style="background: #ef4444; color: white;">🚨 Экстренная отмена (BUY)</button>
+        </div>
     </div>
 
     {tokens_html}
@@ -1448,8 +1492,21 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             <tr><th>Пара</th><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th></tr>
             {orders_html if orders_html else "<tr><td colspan='5' style='text-align: center; color: #94a3b8;'>Нет активных ордеров</td></tr>"}
         </table>
-        <div class="label" style="margin-top: 8px;">Обновлено: {st.get('updated_at')}</div>
+        <div class="label" style="margin-top: 8px;">Обновлено: {st.get('updated_at')} (Авто-обновление каждые 3с)</div>
     </div>
+
+    <script>
+    async function botAction(endpoint) {{
+        try {{
+            let resp = await fetch(endpoint, {{ method: 'POST' }});
+            let data = await resp.json();
+            setTimeout(() => location.reload(), 400);
+        }} catch(e) {{
+            alert('Ошибка выполнения: ' + e);
+        }}
+    }}
+    setTimeout(() => location.reload(), 3000);
+    </script>
 </body>
 </html>"""
         self.wfile.write(html.encode("utf-8"))
@@ -1507,7 +1564,7 @@ def send_telegram_reply(
     message_id_to_edit: Optional[int] = None,
 ) -> Optional[int]:
     """Sends a new message or edits an existing message in Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not chat_id:
         return None
     try:
         if message_id_to_edit:
@@ -1559,7 +1616,7 @@ def send_telegram_reply(
 
 def answer_callback_query(callback_id: str, text: Optional[str] = None) -> None:
     """Acknowledges an inline button click to dismiss the loading animation."""
-    if not TELEGRAM_BOT_TOKEN or not callback_id:
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not callback_id:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
@@ -1821,8 +1878,8 @@ def handle_telegram_callback(
 
 
 def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram controller disabled: token or chat_id missing.")
+    if not bot.enable_telegram or not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.info("Telegram controller disabled.")
         return
 
     logger.info("📱 [Telegram Control Panel] Поток запущен. Слушаем команды...")
@@ -1887,6 +1944,27 @@ def telegram_polling_thread(bot: StandaloneBybitBot) -> None:
 
 def init_cluster_role(bot: StandaloneBybitBot) -> None:
     """Arbitrates initial cluster role on startup before Telegram polling begins."""
+    if not bot.enable_telegram:
+        if bot.mode == "desktop":
+            if is_desktop_schedule_window():
+                logger.info("🖥️ [Desktop Startup] Офисное время Астаны (08:00 - 17:30). Активация Desktop (Standalone)...")
+                bot.is_active_controller = True
+                bot.role = "ACTIVE_CONTROLLER"
+            else:
+                logger.info("🖥️ [Desktop Startup] Вне офисных часов. Запуск в режиме PASSIVE_OBSERVER...")
+                bot.is_active_controller = False
+                bot.role = "PASSIVE_OBSERVER"
+        else:
+            if is_desktop_schedule_window():
+                logger.info("📱 [Mobile Startup] Офисные часы Астаны. Запуск в режиме PASSIVE_OBSERVER...")
+                bot.is_active_controller = False
+                bot.role = "PASSIVE_OBSERVER"
+            else:
+                logger.info("📱 [Mobile Startup] Вне офисных часов. Активация Mobile...")
+                bot.is_active_controller = True
+                bot.role = "ACTIVE_CONTROLLER"
+        return
+
     init_state = read_cluster_state()
     bot.cluster_board_msg_id = init_state.get("msg_id")
 
@@ -1901,17 +1979,14 @@ def init_cluster_role(bot: StandaloneBybitBot) -> None:
             bot.is_active_controller = False
             bot.role = "PASSIVE_OBSERVER"
     else:
-        # Mobile mode: check if desktop is already active
-        active_host = init_state.get("active_host")
-        hb_ts = float(init_state.get("heartbeat_ts", 0.0))
-        hb_age = time.time() - hb_ts
-        if active_host == "desktop" and hb_age < HEARTBEAT_TIMEOUT_SECONDS and is_desktop_schedule_window():
-            logger.info(f"📱 [Mobile Startup] Desktop активен (heartbeat {int(hb_age)}с назад). Переход в PASSIVE_OBSERVER.")
+        # Mobile mode: check if desktop schedule window is active
+        if is_desktop_schedule_window():
+            logger.info("📱 [Mobile Startup] Офисные часы Астаны (08:00 - 17:30). Запуск Mobile в режиме PASSIVE_OBSERVER...")
             bot.is_active_controller = False
             bot.role = "PASSIVE_OBSERVER"
         else:
-            logger.info("📱 [Mobile Startup] Desktop оффлайн / вне графика. Активация Mobile.")
-            bot.handover_to("mobile", "Старт телефона (дефолтный узел)")
+            logger.info("📱 [Mobile Startup] Вне офисных часов. Активация Mobile...")
+            bot.handover_to("mobile", "Старт телефона (дефолтный узел вне офиса)")
 
 
 def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
@@ -1922,30 +1997,49 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
         try:
             now = time.time()
             astana_dt = get_astana_time()
+            in_win = is_desktop_schedule_window()
 
-            if bot.role == "ACTIVE_CONTROLLER":
-                # Check if Mobile needs to yield to Desktop during Astana office hours
-                if bot.mode == "mobile":
-                    state = read_cluster_state()
-                    if state.get("msg_id"):
-                        bot.cluster_board_msg_id = state.get("msg_id")
-                    active_host = state.get("active_host")
-                    hb_ts = float(state.get("heartbeat_ts", 0.0))
-                    hb_age = now - hb_ts
-                    if active_host == "desktop" and hb_age < HEARTBEAT_TIMEOUT_SECONDS and is_desktop_schedule_window():
-                        logger.info("🖥️ [Handover Detected] Desktop активен в рабочее время Астаны. Mobile уступает смену -> PASSIVE_OBSERVER.")
+            if not bot.enable_telegram:
+                if bot.mode == "desktop":
+                    if in_win and not bot.is_active_controller:
+                        logger.info("🖥️ [Desktop Schedule] Наступило 08:00 по Астане. Активация Desktop.")
+                        bot.is_active_controller = True
+                        bot.role = "ACTIVE_CONTROLLER"
+                    elif not in_win and bot.is_active_controller:
+                        logger.info("🖥️ [Desktop Schedule] Наступило 17:30 по Астане. Завершение смены ПК -> PASSIVE_OBSERVER.")
                         bot.is_active_controller = False
                         bot.role = "PASSIVE_OBSERVER"
                         bot.cancel_all_portfolio_buys()
-                        send_telegram(
-                            "📱 *[КЛАСТЕР: СМЕНА СДАНА]*\n\n"
-                            "Телефон перешел в режим `PASSIVE_OBSERVER`.\n"
-                            "• Все BUY-ордера мобильной сетки сняты.\n"
-                            "• Управление передано Desktop (Smart-Step + $10 буфер).\n"
-                            "• Тейк-профиты сохранены."
-                        )
-                        time.sleep(10)
-                        continue
+                else:
+                    if in_win and bot.is_active_controller:
+                        logger.info("📱 [Mobile Schedule] 08:00 - 17:30 по Астане. Смена Desktop -> Mobile переходит в PASSIVE_OBSERVER.")
+                        bot.is_active_controller = False
+                        bot.role = "PASSIVE_OBSERVER"
+                        bot.cancel_all_portfolio_buys()
+                    elif not in_win and not bot.is_active_controller:
+                        logger.info("📱 [Mobile Schedule] 17:30 по Астане (или выходной). Активация Mobile.")
+                        bot.is_active_controller = True
+                        bot.role = "ACTIVE_CONTROLLER"
+                time.sleep(10)
+                continue
+
+            if bot.role == "ACTIVE_CONTROLLER":
+                # Check if Mobile needs to yield to Desktop during Astana office hours
+                if bot.mode == "mobile" and is_desktop_schedule_window():
+                    logger.info("🖥️ [Schedule Window] Офисные часы Астаны (08:00 - 17:30). Mobile уступает смену Desktop -> PASSIVE_OBSERVER.")
+                    bot.is_active_controller = False
+                    bot.role = "PASSIVE_OBSERVER"
+                    bot.cancel_all_portfolio_buys()
+                    send_telegram(
+                        "📱 *[КЛАСТЕР: СМЕНА СДАНА ПО ГРАФИКУ]*\n\n"
+                        "Наступило 08:00 по Астане.\n"
+                        "Телефон перешел в режим `PASSIVE_OBSERVER`.\n"
+                        "• Все BUY-ордера мобильной сетки сняты.\n"
+                        "• Управление передано Desktop.\n"
+                        "• Тейк-профиты сохранены."
+                    )
+                    time.sleep(10)
+                    continue
 
                 # Active host sends periodic heartbeat
                 if now - bot.last_heartbeat_sent_ts >= HEARTBEAT_INTERVAL_SECONDS:
@@ -1981,10 +2075,10 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         f"Узел {bot.mode.upper()} перешел в режим `ACTIVE_CONTROLLER`.\n"
                         f"Развертывание торговой сетки."
                     )
-                elif bot.mode == "mobile" and active_host == "desktop":
+                elif bot.mode == "mobile":
                     # Check if office window has ended, even if desktop failed to cleanly handover
                     if not is_desktop_schedule_window():
-                        logger.info("📱 [Desktop Schedule End] Наступило 17:30 по Астане. Телефон принимает управление.")
+                        logger.info("📱 [Desktop Schedule End] Наступило 17:30 по Астане. Телефон принимает вечернюю смену.")
                         bot.is_active_controller = True
                         bot.role = "ACTIVE_CONTROLLER"
                         bot.cluster_board_msg_id = write_cluster_state(
@@ -1997,8 +2091,8 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                             "Наступило 17:30 по Астане (окончание рабочего дня ПК).\n"
                             "Телефон автоматически активировал `ACTIVE_CONTROLLER` и перешел на сетку STORM x2.0."
                         )
-                    # Dead Man's Switch / Failover: check if desktop died during office hours
-                    elif hb_age >= HEARTBEAT_TIMEOUT_SECONDS:
+                    # Dead Man's Switch / Failover: check if desktop died during office hours (only if explicitly enabled)
+                    elif ENABLE_AUTO_FAILOVER and active_host == "desktop" and hb_age >= HEARTBEAT_TIMEOUT_SECONDS:
                         logger.warning(f"🚨 [Cluster Failover] Desktop не отвечает {int(hb_age)}с! Аварийный перехват...")
                         bot.is_active_controller = True
                         bot.role = "ACTIVE_CONTROLLER"
@@ -2038,14 +2132,22 @@ if __name__ == "__main__":
         default="mobile",
         help="Execution profile: 'mobile' (conservative STORM, default) or 'desktop' (aggressive Smart Step + $10 reserve)",
     )
+    parser.add_argument(
+        "--no-telegram",
+        action="store_true",
+        help="Disable all Telegram API calls and remote listener (pure standalone mode without network dependencies)",
+    )
     args = parser.parse_args()
+    if args.no_telegram:
+        ENABLE_TELEGRAM = False
 
-    bot = StandaloneBybitBot(mode=args.mode)
+    bot = StandaloneBybitBot(mode=args.mode, enable_telegram=not args.no_telegram)
     init_cluster_role(bot)
     t_web = threading.Thread(target=start_server, args=(bot,), daemon=True)
     t_web.start()
-    t_tg = threading.Thread(target=telegram_polling_thread, args=(bot,), daemon=True, name="TelegramControl")
-    t_tg.start()
+    if bot.enable_telegram:
+        t_tg = threading.Thread(target=telegram_polling_thread, args=(bot,), daemon=True, name="TelegramControl")
+        t_tg.start()
     t_dog = threading.Thread(target=cluster_watchdog_thread, args=(bot,), daemon=True, name="ClusterWatchdog")
     t_dog.start()
     bot.run_forever()
