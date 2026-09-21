@@ -39,10 +39,11 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
-import dotenv
-
-# Load environment variables (.env)
-dotenv.load_dotenv()
+try:
+    import dotenv
+    dotenv.load_dotenv()
+except ImportError:
+    pass
 
 # Setup logging
 logging.basicConfig(
