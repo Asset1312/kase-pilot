@@ -634,6 +634,68 @@ class MarketGuard:
         return global_dump_fired, global_dump_reason, token_dumps
 
 
+def compute_trade_analytics(execs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Builds hourly and day-of-week trade analytics from execution list."""
+    hourly_dict = {h: {"count": 0, "volume": 0.0, "buys": 0, "sells": 0} for h in range(24)}
+    dow_dict = {d: {"count": 0, "volume": 0.0} for d in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]}
+    days_list = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    tot_vol = 0.0
+    tot_buys = 0
+    tot_sells = 0
+    recent_list = []
+
+    for idx, e in enumerate(execs):
+        try:
+            e_ts = float(e.get("execTime", 0)) / 1000.0
+            e_dt = datetime.datetime.fromtimestamp(e_ts, tz=datetime.timezone.utc) + datetime.timedelta(hours=ASTANA_TZ_OFFSET_HOURS)
+            price = float(e.get("execPrice", 0.0))
+            qty = float(e.get("execQty", 0.0))
+            val = float(e.get("execValue", 0.0))
+            if val <= 0.0 and price > 0 and qty > 0:
+                val = price * qty
+            side = e.get("side", "")
+            tot_vol += val
+            if side == "Buy":
+                tot_buys += 1
+            else:
+                tot_sells += 1
+
+            h = e_dt.hour
+            hourly_dict[h]["count"] += 1
+            hourly_dict[h]["volume"] += val
+            if side == "Buy":
+                hourly_dict[h]["buys"] += 1
+            else:
+                hourly_dict[h]["sells"] += 1
+
+            dow_name = days_list[e_dt.weekday()]
+            dow_dict[dow_name]["count"] += 1
+            dow_dict[dow_name]["volume"] += val
+
+            if idx < 10:
+                recent_list.append({
+                    "time": e_dt.strftime("%d.%m %H:%M"),
+                    "side": side,
+                    "price": price,
+                    "qty": qty,
+                    "val": val,
+                    "fee": float(e.get("execFee", 0.0)),
+                    "fee_coin": e.get("feeCurrency", ""),
+                })
+        except Exception:
+            pass
+
+    return {
+        "total_trades": len(execs),
+        "total_volume": round(tot_vol, 2),
+        "buys_count": tot_buys,
+        "sells_count": tot_sells,
+        "recent_trades": recent_list,
+        "hourly": hourly_dict,
+        "dow": dow_dict,
+    }
+
+
 class StandaloneBybitBot:
     """Autonomous Multi-Token Spot Micro-Grid Portfolio Engine for Bybit Kazakhstan."""
 
@@ -690,6 +752,7 @@ class StandaloneBybitBot:
             "btc_1m_chg": 0.0,
             "tokens": {},
             "all_open_orders": [],
+            "trade_analytics": {},
             "updated_at": "",
         }
 
@@ -870,7 +933,9 @@ class StandaloneBybitBot:
             if now - self.last_sync_ts > 30:
                 self.last_sync_ts = now
                 for sym in symbols_to_process:
-                    execs = self.client.get_execution_history(sym, limit=20)
+                    execs = self.client.get_execution_history(sym, limit=100 if sym == PRIMARY_SYMBOL else 20)
+                    if execs and sym == PRIMARY_SYMBOL:
+                        self.stats["trade_analytics"] = compute_trade_analytics(execs)
                     if execs:
                         tot_fees = sum(float(e.get("execFee") or 0.0) for e in execs)
                         sell_execs = [e for e in execs if e.get("side") == "Sell"]
@@ -1085,6 +1150,14 @@ class StandaloneBybitBot:
                         "free_coin": 0.0,
                         "locked_coin": 0.0,
                         "holding_value_usd": 0.0,
+                        "entry_price": 0.0,
+                        "rocket_target_price": 0.0,
+                        "rocket_distance_pct": 0.0,
+                        "current_gain_pct": 0.0,
+                        "trailing_active": False,
+                        "trailing_peak_price": 0.0,
+                        "trailing_stop_price": 0.0,
+                        "trailing_floor_price": 0.0,
                         "completed_cycles": self.token_cycles.get(sym, 0),
                         "net_profit_usd": self.token_profits.get(sym, 0.0),
                         "tp_mode": "Standard (+0.90%)",
@@ -1307,6 +1380,18 @@ class StandaloneBybitBot:
                                 spendable_usdt -= val_3
 
                 # Assemble token statistics
+                dec = meta.get("price_decimals", 4)
+                has_holding = (cur_free * cur_price) >= 4.5
+                rocket_target = round(entry_price * (1.0 + TRAILING_ACTIVATION_PCT), dec) if (has_holding and entry_price > 0) else 0.0
+                rocket_dist = round(((rocket_target - cur_price) / cur_price) * 100, 2) if (rocket_target > 0 and cur_price > 0) else 0.0
+                curr_gain = round(((cur_price - entry_price) / entry_price) * 100, 2) if (has_holding and entry_price > 0) else 0.0
+
+                tr_state = self.trailing_controller.get_state(sym) if (self.mode == "desktop" and hasattr(self, "trailing_controller")) else None
+                is_tr = (tr_state is not None and tr_state.status == "TRAILING_ACTIVE")
+                tr_peak = round(tr_state.peak_price, dec) if (is_tr and tr_state) else 0.0
+                tr_stop = round(tr_state.stop_price, dec) if (is_tr and tr_state) else 0.0
+                tr_floor = round(tr_state.floor_price, dec) if (is_tr and tr_state) else 0.0
+
                 token_stats_map[sym] = {
                     "symbol": sym,
                     "name": meta.get("name", sym),
@@ -1317,6 +1402,14 @@ class StandaloneBybitBot:
                     "free_coin": round(cur_free, 4),
                     "locked_coin": round(cur_total - cur_free, 4),
                     "holding_value_usd": round(holding_val, 2),
+                    "entry_price": round(entry_price, dec) if has_holding else 0.0,
+                    "rocket_target_price": rocket_target,
+                    "rocket_distance_pct": rocket_dist,
+                    "current_gain_pct": curr_gain,
+                    "trailing_active": is_tr,
+                    "trailing_peak_price": tr_peak,
+                    "trailing_stop_price": tr_stop,
+                    "trailing_floor_price": tr_floor,
                     "completed_cycles": self.token_cycles.get(sym, 0),
                     "net_profit_usd": self.token_profits.get(sym, 0.0),
                     "tp_mode": tp_mode,
@@ -1453,6 +1546,64 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         for sym, t in st.get("tokens", {}).items():
             col = t.get("badge_color", "#38bdf8")
             mode_badge = t.get("mode", "ACTIVE")
+            holding_usd = float(t.get("holding_value_usd", 0.0))
+            entry_p = float(t.get("entry_price", 0.0))
+            cur_p = float(t.get("price", 0.0))
+            rocket_p = float(t.get("rocket_target_price", 0.0))
+            rocket_dist = float(t.get("rocket_distance_pct", 0.0))
+            cur_gain = float(t.get("current_gain_pct", 0.0))
+            is_tr = bool(t.get("trailing_active", False))
+            tr_peak = float(t.get("trailing_peak_price", 0.0))
+            tr_stop = float(t.get("trailing_stop_price", 0.0))
+            tr_floor = float(t.get("trailing_floor_price", 0.0))
+
+            if is_tr:
+                rocket_box = f"""
+                <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: linear-gradient(135deg, rgba(234, 179, 8, 0.15), rgba(16, 185, 129, 0.15)); border: 1px solid #eab308;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                        <span style="font-weight: bold; color: #facc15; font-size: 0.95rem;">🚀 РЕЖИМ РАКЕТА АКТИВЕН (Trailing Take-Profit)</span>
+                        <span class="badge" style="background: #10b98122; color: #10b981; border: 1px solid #10b981;">ИМПУЛЬС {cur_gain:+.2f}%</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 8px;">
+                        <div class="label">Вход (VWAP): <b style="color: #f8fafc;">${entry_p:.4f}</b></div>
+                        <div class="label">Пик цены: <b style="color: #facc15;">${tr_peak:.4f}</b></div>
+                        <div class="label">Трейлинг-стоп: <b style="color: #ef4444;">${tr_stop:.4f}</b></div>
+                        <div class="label">Пол прибыли: <b style="color: #10b981;">${tr_floor:.4f} (+0.50%)</b></div>
+                    </div>
+                </div>
+                """
+            elif holding_usd >= 4.5 and entry_p > 0:
+                prog_pct = max(0.0, min(100.0, ((cur_p - entry_p) / (rocket_p - entry_p)) * 100.0)) if rocket_p > entry_p else 0.0
+                dist_badge_col = "#10b981" if rocket_dist <= 0.5 else "#38bdf8"
+                rocket_box = f"""
+                <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                        <span style="font-weight: bold; color: #38bdf8; font-size: 0.95rem;">🎯 Ждем активацию РАКЕТЫ (+1.00% от входа)</span>
+                        <span class="badge" style="background: {dist_badge_col}22; color: {dist_badge_col}; border: 1px solid {dist_badge_col};">Цель: ${rocket_p:.4f}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 8px;">
+                        <div class="label">Вход (VWAP): <b style="color: #f8fafc;">${entry_p:.4f}</b></div>
+                        <div class="label">Текущая: <b style="color: #f8fafc;">${cur_p:.4f}</b> ({cur_gain:+.2f}%)</div>
+                        <div class="label">Ждем цену: <b style="color: #38bdf8; font-size: 0.95rem;">${rocket_p:.4f}</b></div>
+                        <div class="label">Осталось до старта: <b style="color: {dist_badge_col}; font-size: 0.95rem;">+{rocket_dist:.2f}%</b></div>
+                    </div>
+                    <div style="margin-top: 8px; background: #334155; border-radius: 6px; height: 8px; overflow: hidden;">
+                        <div style="background: linear-gradient(90deg, #38bdf8, #10b981); height: 100%; width: {prog_pct:.1f}%;"></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 0.72rem; color: #64748b;">
+                        <span>Вход: ${entry_p:.4f}</span>
+                        <span>Прогресс: {prog_pct:.0f}%</span>
+                        <span>Старт Ракеты: ${rocket_p:.4f}</span>
+                    </div>
+                </div>
+                """
+            else:
+                rocket_box = f"""
+                <div style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: rgba(51, 65, 85, 0.4); border: 1px dashed #475569;">
+                    <span class="label">🎯 Ожидание набора позиции сеткой перед активацией ракеты</span>
+                </div>
+                """
+
             tokens_html += f"""
             <div class="card" style="border-left: 4px solid {col};">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1464,6 +1615,92 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                 <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто циклов: <b>{t.get('completed_cycles', 0)}</b> | Профит: <b>+${t.get('net_profit_usd', 0.0):.4f} USDT</b></div>
                 <div class="label" style="margin-top: 4px;">Сетка ({t.get('volatility_regime')} x{t.get('vol_multiplier')}): -{t.get('step1_discount_pct')}% / -{t.get('step2_discount_pct')}% / -{t.get('step3_discount_pct')}%</div>
                 <div class="label" style="margin-top: 4px;">Тейк-профит: <b>{t.get('tp_mode')}</b> (удержание: {t.get('position_age_hours')}ч)</div>
+                {rocket_box}
+            </div>
+            """
+
+        # Trade Analytics Block
+        ta = st.get("trade_analytics", {})
+        if ta and ta.get("total_trades", 0) > 0:
+            dow_data = ta.get("dow", {})
+            dow_chips = "".join([
+                f"<div style='flex: 1; min-width: 62px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 6px; text-align: center;'>"
+                f"<div style='font-size: 0.75rem; color: #94a3b8; font-weight: bold;'>{d}</div>"
+                f"<div style='font-weight: bold; color: #38bdf8; font-size: 0.85rem;'>{dow_data.get(d, {}).get('count', 0)}</div>"
+                f"<div style='font-size: 0.7rem; color: #64748b;'>${dow_data.get(d, {}).get('volume', 0.0):.1f}</div>"
+                f"</div>"
+                for d in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            ])
+
+            hourly_data = ta.get("hourly", {})
+            max_h_cnt = max([h_info.get("count", 0) for h_info in hourly_data.values()] or [1])
+            max_h_cnt = max(max_h_cnt, 1)
+
+            hourly_bars = []
+            for h in range(24):
+                h_info = hourly_data.get(h, {})
+                c = h_info.get("count", 0)
+                v = h_info.get("volume", 0.0)
+                buys = h_info.get("buys", 0)
+                sells = h_info.get("sells", 0)
+                bar_pct = max(6, int((c / max_h_cnt) * 100)) if c > 0 else 4
+                bar_col = "#eab308" if h in [22, 23, 0, 1, 2] else ("#38bdf8" if c > 0 else "#334155")
+                title_tip = f"{h:02d}:00 - {h:02d}:59 | Сделок: {c} (Куп: {buys}, Прод: {sells}) | Объем: ${v:.2f}"
+                hourly_bars.append(
+                    f"<div style='flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%;' title='{title_tip}'>"
+                    f"<div style='font-size: 0.62rem; color: #94a3b8; margin-bottom: 2px;'>{c if c > 0 else ''}</div>"
+                    f"<div style='width: 100%; max-width: 14px; height: {bar_pct}%; background: {bar_col}; border-radius: 2px 2px 0 0;'></div>"
+                    f"<div style='font-size: 0.62rem; color: #64748b; margin-top: 3px;'>{h:02d}</div>"
+                    f"</div>"
+                )
+            hourly_chart_html = "".join(hourly_bars)
+
+            recent_trades_html = "".join([
+                f"<tr>"
+                f"<td>{r.get('time')}</td>"
+                f"<td class='{r.get('side', '').lower()}'>{r.get('side')}</td>"
+                f"<td>${float(r.get('price', 0.0)):.4f}</td>"
+                f"<td>{float(r.get('qty', 0.0)):.2f}</td>"
+                f"<td>${float(r.get('val', 0.0)):.2f}</td>"
+                f"<td>{float(r.get('fee', 0.0)):.4f} {r.get('fee_coin')}</td>"
+                f"</tr>"
+                for r in ta.get("recent_trades", [])
+            ])
+
+            ta_html = f"""
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <h2>📊 Статистика торгов ({ta.get('total_trades', 0)} сделок)</h2>
+                    <span class="badge" style="background: #10b98122; color: #10b981; border: 1px solid #10b981;">Оборот: ${ta.get('total_volume', 0.0):.2f} USDT</span>
+                </div>
+                <div class="label" style="margin-bottom: 10px;">
+                    Всего исполнено: <b>{ta.get('total_trades', 0)}</b> (🟢 Покупок: <b>{ta.get('buys_count', 0)}</b> | 🟡 Продаж: <b>{ta.get('sells_count', 0)}</b>)
+                </div>
+
+                <div class="label" style="font-weight: bold; margin-bottom: 6px;">📅 Распределение по дням недели:</div>
+                <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px;">
+                    {dow_chips}
+                </div>
+
+                <div class="label" style="font-weight: bold;">⏰ Распределение по часам (Астана UTC+5, золотым выделены ночные часы 22:00-02:00):</div>
+                <div style="display: flex; align-items: flex-end; height: 85px; gap: 2px; margin-top: 6px; padding: 4px 0; border-bottom: 1px solid #334155; background: #0f172a55; border-radius: 6px; padding-left: 4px; padding-right: 4px; overflow-x: auto;">
+                    {hourly_chart_html}
+                </div>
+
+                <div class="label" style="font-weight: bold; margin-top: 14px; margin-bottom: 6px;">📜 Последние исполненные сделки:</div>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <tr><th>Время</th><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th><th>Комиссия</th></tr>
+                        {recent_trades_html if recent_trades_html else "<tr><td colspan='6' style='text-align: center; color: #94a3b8;'>Нет данных о сделках</td></tr>"}
+                    </table>
+                </div>
+            </div>
+            """
+        else:
+            ta_html = """
+            <div class="card">
+                <h2>📊 Статистика торгов</h2>
+                <div class="label" style="color: #94a3b8;">Загрузка истории сделок из Bybit Kazakhstan...</div>
             </div>
             """
 
@@ -1525,12 +1762,16 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 
     {tokens_html}
 
+    {ta_html}
+
     <div class="card">
         <h2>📖 Активные ордера портфеля</h2>
-        <table>
-            <tr><th>Пара</th><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th></tr>
-            {orders_html if orders_html else "<tr><td colspan='5' style='text-align: center; color: #94a3b8;'>Нет активных ордеров</td></tr>"}
-        </table>
+        <div style="overflow-x: auto;">
+            <table>
+                <tr><th>Пара</th><th>Сторона</th><th>Цена</th><th>Объем</th><th>Сумма</th></tr>
+                {orders_html if orders_html else "<tr><td colspan='5' style='text-align: center; color: #94a3b8;'>Нет активных ордеров</td></tr>"}
+            </table>
+        </div>
         <div class="label" style="margin-top: 8px;">Обновлено: {st.get('updated_at')} (Авто-обновление каждые 3с)</div>
     </div>
 
