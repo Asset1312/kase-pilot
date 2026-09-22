@@ -1590,7 +1590,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                 prog_pct = max(0.0, min(100.0, ((cur_p - entry_p) / (rocket_p - entry_p)) * 100.0)) if rocket_p > entry_p else 0.0
                 dist_badge_col = "#10b981" if rocket_dist <= 0.5 else "#38bdf8"
                 rocket_box = f"""
-                <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25);">
+                <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25); backdrop-filter: blur(4px);">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
                         <span style="font-weight: bold; color: #38bdf8; font-size: 0.95rem;">🎯 Ждем активацию РАКЕТЫ (+1.00% от входа)</span>
                         <span class="badge" style="background: {dist_badge_col}22; color: {dist_badge_col}; border: 1px solid {dist_badge_col};">Цель: ${rocket_p:.4f}</span>
@@ -1601,10 +1601,10 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                         <div class="label">Ждем цену: <b style="color: #38bdf8; font-size: 0.95rem;">${rocket_p:.4f}</b></div>
                         <div class="label">Осталось до старта: <b style="color: {dist_badge_col}; font-size: 0.95rem;">+{rocket_dist:.2f}%</b></div>
                     </div>
-                    <div style="margin-top: 8px; background: #334155; border-radius: 6px; height: 8px; overflow: hidden;">
+                    <div style="margin-top: 8px; background: rgba(51, 65, 85, 0.4); border-radius: 6px; height: 8px; overflow: hidden;">
                         <div style="background: linear-gradient(90deg, #38bdf8, #10b981); height: 100%; width: {prog_pct:.1f}%;"></div>
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 0.72rem; color: #64748b;">
+                    <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 0.72rem; color: #94a3b8;">
                         <span>Вход: ${entry_p:.4f}</span>
                         <span>Прогресс: {prog_pct:.0f}%</span>
                         <span>Старт Ракеты: ${rocket_p:.4f}</span>
@@ -1613,7 +1613,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                 """
             else:
                 rocket_box = f"""
-                <div style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: rgba(51, 65, 85, 0.4); border: 1px dashed #475569;">
+                <div style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: rgba(51, 65, 85, 0.25); border: 1px dashed rgba(148, 163, 184, 0.3);">
                     <span class="label">🎯 Ожидание набора позиции сеткой перед активацией ракеты</span>
                 </div>
                 """
@@ -1621,7 +1621,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             tokens_html += f"""
             <div class="card" style="border-left: 4px solid {col};">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h3 style="margin: 0; color: {col};">{t.get('name')} ({sym})</h3>
+                    <h3 style="margin: 0; color: {col}; text-shadow: 0 0 10px {col}55;">{t.get('name')} ({sym})</h3>
                     <span class="badge" style="background: {col}22; color: {col}; border: 1px solid {col};">{mode_badge}</span>
                 </div>
                 <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: {t.get('range_15m_pct', 0.0):.2f}%)</div>
@@ -1638,10 +1638,10 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         if ta and ta.get("total_trades", 0) > 0:
             dow_data = ta.get("dow", {})
             dow_chips = "".join([
-                f"<div style='flex: 1; min-width: 62px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 6px; text-align: center;'>"
+                f"<div style='flex: 1; min-width: 62px; background: rgba(15, 23, 42, 0.45); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 6px; text-align: center; backdrop-filter: blur(4px);'>"
                 f"<div style='font-size: 0.75rem; color: #94a3b8; font-weight: bold;'>{d}</div>"
                 f"<div style='font-weight: bold; color: #38bdf8; font-size: 0.85rem;'>{dow_data.get(d, {}).get('count', 0)}</div>"
-                f"<div style='font-size: 0.7rem; color: #64748b;'>${dow_data.get(d, {}).get('volume', 0.0):.1f}</div>"
+                f"<div style='font-size: 0.7rem; color: #cbd5e1;'>${dow_data.get(d, {}).get('volume', 0.0):.1f}</div>"
                 f"</div>"
                 for d in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
             ])
@@ -1751,18 +1751,18 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             min-height: 100vh;
         }}
         .card {{
-            background: rgba(15, 23, 42, 0.78);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
+            background: rgba(15, 23, 42, 0.48);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
             border-radius: 14px;
             padding: 16px;
             margin-bottom: 14px;
-            border: 1px solid rgba(56, 189, 248, 0.22);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(56, 189, 248, 0.28);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.40);
         }}
-        h2 {{ margin-top: 0; color: #38bdf8; font-size: 1.15rem; text-shadow: 0 0 12px rgba(56, 189, 248, 0.4); }}
-        .metric {{ font-size: 1.8rem; font-weight: bold; color: #10b981; text-shadow: 0 0 14px rgba(16, 185, 129, 0.4); }}
-        .label {{ font-size: 0.85rem; color: #cbd5e1; }}
+        h2 {{ margin-top: 0; color: #38bdf8; font-size: 1.15rem; text-shadow: 0 0 14px rgba(56, 189, 248, 0.6); }}
+        .metric {{ font-size: 1.8rem; font-weight: bold; color: #10b981; text-shadow: 0 0 16px rgba(16, 185, 129, 0.6); }}
+        .label {{ font-size: 0.85rem; color: #f1f5f9; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }}
         .badge {{ display: inline-block; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85rem; }}
         th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid rgba(51, 65, 85, 0.6); }}
