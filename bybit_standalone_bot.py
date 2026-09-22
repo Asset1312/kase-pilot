@@ -136,6 +136,10 @@ SOFT_BREAKEVEN_TP_PCT = 0.0038      # +0.38% (Net +0.18% after 0.20% fees)
 STALE_POSITION_HOURS = 8.0          # Switch to Soft Breakeven after 8 hours
 CIRCUIT_BREAKER_MAX_DD = 0.05       # 5% max drawdown from peak equity
 
+# Step 3 Partial Take-Profit (Scale-Out De-risking)
+SCALE_OUT_TRIGGER_GAIN_PCT = 0.0050  # +0.50% gain from VWAP triggers partial exit of Step 3
+SCALE_OUT_COOLDOWN_SEC = 300.0       # 5-minute cooldown between scale-out events per token
+
 # Trailing Take-Profit (Rocket Rider) - Desktop Profile
 TRAILING_ACTIVATION_PCT = 0.0100    # +1.00% gain from entry triggers TRAILING_ACTIVE
 TRAILING_CALLBACK_PCT = 0.0045      # 0.45% pullback from peak triggers market sell
@@ -850,6 +854,7 @@ class StandaloneBybitBot:
         self.token_profits: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0, TERTIARY_SYMBOL: 0.0}
         self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None, TERTIARY_SYMBOL: None}
         self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: [], TERTIARY_SYMBOL: []}
+        self.last_scale_out_ts: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0, TERTIARY_SYMBOL: 0.0}
 
         # Unified live statistics
         if self.mode == "desktop":
@@ -1423,6 +1428,59 @@ class StandaloneBybitBot:
                                 self.client.cancel_order(sym, s_ord.get("orderId"))
                                 open_sells.remove(s_ord)
 
+                # =============================================================
+                # STEP 3 PARTIAL TAKE-PROFIT (SCALE-OUT DE-RISKING)
+                # =============================================================
+                # If holding full 3-step position (or >= $24 USDT) and market gives a +0.50% micro-bounce,
+                # immediately dump Step 3 (~$14-$16 USDT) to de-risk, bank cash, and ride remainder in breakeven.
+                position_scaled_out = False
+                scale_out_cooldown_ok = (now - self.last_scale_out_ts.get(sym, 0.0)) >= SCALE_OUT_COOLDOWN_SEC
+                curr_pos_gain = (cur_price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+                if (
+                    self.is_active_controller
+                    and not position_closed_by_trailing
+                    and not trailing_active
+                    and scale_out_cooldown_ok
+                    and holding_val >= 24.00
+                    and curr_pos_gain >= SCALE_OUT_TRIGGER_GAIN_PCT
+                ):
+                    # Step 3 is approximately 45-50% of the loaded position
+                    partial_qty = math.floor((cur_free * 0.48) * (10 ** meta.get("qty_decimals", 2))) / float(10 ** meta.get("qty_decimals", 2))
+                    partial_val = partial_qty * cur_price
+
+                    if partial_val >= 5.00 and (cur_free - partial_qty) * cur_price >= 5.00:
+                        logger.info(
+                            f"⚡ [{sym}][SCALE-OUT] Микро-отскок +{curr_pos_gain*100:.2f}% при полной загрузке (${holding_val:.2f})! "
+                            f"Сброс Ступени 3: {partial_qty} {base_c} @ ${cur_price:.4f} (~${partial_val:.2f})"
+                        )
+                        # Cancel existing TP limit orders to free balance for immediate market scale-out
+                        if open_sells:
+                            for s_ord in list(open_sells):
+                                self.client.cancel_order(sym, s_ord.get("orderId"))
+                                open_sells.remove(s_ord)
+
+                        resp_so = self.client.create_market_order(sym, "Sell", partial_qty)
+                        if resp_so.get("retCode") == 0:
+                            so_pnl = round((cur_price - entry_price) * partial_qty, 4)
+                            self.token_profits[sym] = round(self.token_profits.get(sym, 0.0) + max(0.0, so_pnl), 4)
+                            self.last_scale_out_ts[sym] = now
+                            position_scaled_out = True
+                            cur_free = max(0.0, cur_free - partial_qty)
+                            cur_total = max(0.0, cur_total - partial_qty)
+                            free_val = cur_free * cur_price
+                            holding_val = cur_total * cur_price
+
+                            send_telegram(
+                                f"⚡ **[SCALE-OUT: ЧАСТИЧНЫЙ СБРОС СТУПЕНИ 3]**\n\n"
+                                f"Пара: **{sym}**\n"
+                                f"Отскок от средней: **+{curr_pos_gain*100:.2f}%**\n"
+                                f"Сброшено: **{partial_qty} {base_c}** (~${partial_val:.2f} USDT)\n"
+                                f"Зафиксировано чистыми: **+${so_pnl:.4f} USDT**\n\n"
+                                f"🛡️ **Риск снят:** ~$16 USDT возвращены в свободный кэш!\n"
+                                f"Остаток: **{cur_free:.2f} {base_c}** (~${free_val:.2f}) переведен в сопровождение ТП."
+                            )
+
                 if position_closed_by_trailing:
                     token_stats_map[sym] = {
                         "symbol": sym,
@@ -1457,6 +1515,7 @@ class StandaloneBybitBot:
                         "cooldown_reason": t_metric.get("cooldown_reason", ""),
                     }
                     continue
+
 
                 # Soft Breakeven Evaluation (>8 hours)
                 position_age_hours = 0.0
