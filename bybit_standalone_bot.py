@@ -116,7 +116,7 @@ DESKTOP_HOURS_START = 8.0             # 08:00 Astana
 DESKTOP_HOURS_END = 17.5              # 17:30 Astana
 
 # On-Exchange Canary Order Heartbeat Parameters
-CANARY_ORDER_LINK_ID = "CANARY_DESKTOP_PULSE"
+CANARY_ORDER_LINK_PREFIX = "CANARY_PULSE"
 CANARY_SYMBOL = "SUIUSDT"
 CANARY_PRICE_A = 0.1001               # Micro-tick ping state A ($0.1001)
 CANARY_PRICE_B = 0.1002               # Micro-tick ping state B ($0.1002)
@@ -904,7 +904,7 @@ class StandaloneBybitBot:
                 open_orders = self.client.get_open_orders(sym)
                 buys = [
                     o for o in open_orders
-                    if o.get("side") == "Buy" and o.get("orderLinkId") != CANARY_ORDER_LINK_ID
+                    if o.get("side") == "Buy" and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
                 ]
                 if buys:
                     self.cancel_all_buys(sym, buys)
@@ -915,7 +915,7 @@ class StandaloneBybitBot:
         """Explicitly cancels the on-exchange canary order if present."""
         try:
             orders = self.client.get_open_orders(CANARY_SYMBOL)
-            canary = next((o for o in orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+            canary = next((o for o in orders if str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)), None)
             if canary and canary.get("orderId"):
                 logger.info(f"🕊️ [Canary] Снятие канареечного ордера {canary.get('orderId')}...")
                 self.client.cancel_order(CANARY_SYMBOL, canary.get("orderId"))
@@ -930,7 +930,7 @@ class StandaloneBybitBot:
 
         try:
             open_orders = self.client.get_open_orders(CANARY_SYMBOL)
-            canary = next((o for o in open_orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+            canary = next((o for o in open_orders if str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)), None)
 
             # Alternate price between CANARY_PRICE_A ($0.1001) and CANARY_PRICE_B ($0.1002)
             self.canary_toggle_state = not self.canary_toggle_state
@@ -954,7 +954,8 @@ class StandaloneBybitBot:
                     logger.info(f"🕊️ [Canary Re-create] Amend {ord_id} retCode={resp.get('retCode')}: {resp.get('retMsg')}")
                     self.client.cancel_order(CANARY_SYMBOL, ord_id)
                     time.sleep(0.5)
-                    self.client.create_limit_order(
+                    unique_link_id = f"{CANARY_ORDER_LINK_PREFIX}_{int(time.time())}"
+                    resp_create = self.client.create_limit_order(
                         CANARY_SYMBOL,
                         "Buy",
                         target_qty,
@@ -962,11 +963,13 @@ class StandaloneBybitBot:
                         post_only=False,
                         qty_precision=2,
                         price_precision=4,
-                        order_link_id=CANARY_ORDER_LINK_ID,
+                        order_link_id=unique_link_id,
                     )
-                    self.last_canary_update_ts = now
+                    if resp_create.get("retCode") == 0:
+                        self.last_canary_update_ts = now
             else:
-                # Place fresh canary order
+                # Place fresh canary order with unique timestamped orderLinkId
+                unique_link_id = f"{CANARY_ORDER_LINK_PREFIX}_{int(time.time())}"
                 logger.info(f"🕊️ [Canary Init] Выставление канареечного ордера {target_qty} SUI @ ${target_price:.4f} ($5.05)...")
                 resp = self.client.create_limit_order(
                     CANARY_SYMBOL,
@@ -976,11 +979,13 @@ class StandaloneBybitBot:
                     post_only=False,
                     qty_precision=2,
                     price_precision=4,
-                    order_link_id=CANARY_ORDER_LINK_ID,
+                    order_link_id=unique_link_id,
                 )
                 if resp.get("retCode") == 0:
                     self.last_canary_update_ts = now
                     logger.info("🕊️ [Canary Init] Канареечный флаг успешно установлен в стакане Bybit!")
+                else:
+                    logger.warning(f"Canary placement failed: retCode={resp.get('retCode')} retMsg={resp.get('retMsg')}")
         except Exception as e:
             logger.warning(f"Error maintaining canary order: {e}")
 
@@ -989,7 +994,7 @@ class StandaloneBybitBot:
         now = time.time()
         try:
             orders = self.client.get_open_orders(CANARY_SYMBOL)
-            canary = next((o for o in orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+            canary = next((o for o in orders if str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)), None)
             if not canary:
                 return {"found": False, "age_sec": 999999.0, "price": 0.0, "order_id": None}
 
@@ -1003,6 +1008,7 @@ class StandaloneBybitBot:
                 "price": float(canary.get("price", 0.0)),
                 "order_id": canary.get("orderId"),
             }
+
         except Exception as e:
             logger.debug(f"get_canary_status error: {e}")
             return {"found": False, "age_sec": 999999.0, "price": 0.0, "order_id": None}
@@ -1261,7 +1267,7 @@ class StandaloneBybitBot:
                 # Filter out on-exchange canary order so grid logic never touches or cancels it
                 open_buys = [
                     o for o in open_orders
-                    if o.get("side") == "Buy" and o.get("orderLinkId") != CANARY_ORDER_LINK_ID
+                    if o.get("side") == "Buy" and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
                 ]
                 open_sells = [o for o in open_orders if o.get("side") == "Sell"]
 
@@ -2816,7 +2822,7 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
 
                     if should_failover:
                         fail_reason = (
-                            f"Канарейка {CANARY_ORDER_LINK_ID} не обновлялась {int(canary_st.get('age_sec', 0))}с"
+                            f"Канарейка {CANARY_ORDER_LINK_PREFIX} не обновлялась {int(canary_st.get('age_sec', 0))}с"
                             if canary_stale
                             else f"ПК молчит {int(hb_age)}с (нет пульса и канарейки)"
                         )
