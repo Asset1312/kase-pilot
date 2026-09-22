@@ -80,9 +80,10 @@ ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "true").lower() not in ("0", "fal
 ENABLE_AUTO_FAILOVER = os.getenv("ENABLE_AUTO_FAILOVER", "false").lower() in ("1", "true", "yes")
 PORT = int(os.getenv("PORT", "8080"))
 
-# Pair Architecture
+# Pair Architecture (3-Tier Scalable Basket)
 PRIMARY_SYMBOL = "SUIUSDT"
-SECONDARY_SYMBOL = "APTUSDT"
+SECONDARY_SYMBOL = "NEARUSDT"
+TERTIARY_SYMBOL = "AVAXUSDT"
 LEAD_LAG_SYMBOL = "BTCUSDT"
 
 # Protection Thresholds
@@ -90,16 +91,18 @@ BTC_1M_DUMP_THRESHOLD = -0.0035     # -0.35% BTC drop in 1 min
 BTC_3M_DUMP_THRESHOLD = -0.0070     # -0.70% BTC drop in 3 min
 COOLDOWN_MIN_SECONDS = 600          # 10 minutes minimum freeze
 
-# Capital Scaling Milestones & Hysteresis Gate
-DUAL_PAIR_ACTIVATION_EQUITY = 70.00   # Auto-activate secondary pair (APT) when equity >= $70
-DUAL_PAIR_DEACTIVATION_EQUITY = 62.00 # Deactivate secondary pair (EXIT_ONLY) when equity < $62
+# Capital Scaling Milestones & Hysteresis Gates
+DUAL_PAIR_ACTIVATION_EQUITY = 70.00    # Auto-activate 2nd pair (NEAR) when equity >= $70
+DUAL_PAIR_DEACTIVATION_EQUITY = 62.00  # Deactivate 2nd pair (EXIT_ONLY) when equity < $62
+TRIO_PAIR_ACTIVATION_EQUITY = 115.00   # Auto-activate 3rd pair (AVAX) when equity >= $115
+TRIO_PAIR_DEACTIVATION_EQUITY = 105.00 # Deactivate 3rd pair (EXIT_ONLY) when equity < $105
 
 # Desktop Profile Parameters (Smart Step & Liquidity Buffer)
 DESKTOP_RESERVE_USDT = 10.00          # Untouchable liquidity buffer in desktop mode ($10.00)
 DESKTOP_STEP_WEIGHTS = {
-    "step_1": 0.18,                   # ~18% of deployable capital (~$6 on $33 deployable)
-    "step_2": 0.32,                   # ~32% of deployable capital (~$10.50 on $33 deployable)
-    "step_3": 0.50,                   # ~50% of deployable capital (~$16.50 on $33 deployable)
+    "step_1": 0.18,                   # ~18% of deployable capital per token
+    "step_2": 0.32,                   # ~32% of deployable capital per token
+    "step_3": 0.50,                   # ~50% of deployable capital per token
 }
 
 # Cluster Handover & Failover Heartbeat Parameters
@@ -138,12 +141,22 @@ TOKEN_METADATA = {
         "dump_3m_threshold": -0.0120,
     },
     SECONDARY_SYMBOL: {
-        "base_coin": "APT",
-        "name": "Aptos",
-        "badge_color": "#a855f7",     # Purple
+        "base_coin": "NEAR",
+        "name": "Near",
+        "badge_color": "#10b981",     # Emerald green
         "min_order_amt": 5.00,
         "qty_decimals": 2,
-        "price_decimals": 4,
+        "price_decimals": 3,
+        "dump_1m_threshold": -0.0060,
+        "dump_3m_threshold": -0.0120,
+    },
+    TERTIARY_SYMBOL: {
+        "base_coin": "AVAX",
+        "name": "Avalanche",
+        "badge_color": "#ef4444",     # Red
+        "min_order_amt": 5.00,
+        "qty_decimals": 3,
+        "price_decimals": 3,
         "dump_1m_threshold": -0.0060,
         "dump_3m_threshold": -0.0120,
     }
@@ -476,7 +489,7 @@ class MarketGuard:
 
         # Per-token metrics
         self.token_metrics: Dict[str, Dict[str, Any]] = {}
-        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL, TERTIARY_SYMBOL]:
             self.token_metrics[sym] = {
                 "last_1m_chg": 0.0,
                 "last_3m_chg": 0.0,
@@ -716,6 +729,7 @@ class StandaloneBybitBot:
         self.client = BybitV5Client(BYBIT_API_KEY, BYBIT_API_SECRET, domain="api.bybit.kz")
         self.guard = MarketGuard()
         self.dual_mode_active = False
+        self.trio_mode_active = False
         self.last_sync_ts = 0.0
         self.peak_equity = 0.0
         self.circuit_breaker_active = False
@@ -724,10 +738,10 @@ class StandaloneBybitBot:
         self.trailing_controller = TrailingTakeProfitController()
 
         # Per-token execution and PnL trackers
-        self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0}
-        self.token_profits: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0}
-        self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None}
-        self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: []}
+        self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
+        self.token_profits: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0, TERTIARY_SYMBOL: 0.0}
+        self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None, TERTIARY_SYMBOL: None}
+        self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: [], TERTIARY_SYMBOL: []}
 
         # Unified live statistics
         if self.mode == "desktop":
@@ -740,8 +754,9 @@ class StandaloneBybitBot:
             "is_24x7": self.is_24x7,
             "role": self.role,
             "reserve_usdt": self.reserve_usdt,
-            "portfolio_mode": "Single (SUI)",
+            "portfolio_mode": "🔥 Single (SUI 100%)",
             "dual_mode_active": False,
+            "trio_mode_active": False,
             "total_usd": 0.0,
             "available_usdt": 0.0,
             "locked_usdt": 0.0,
@@ -752,33 +767,29 @@ class StandaloneBybitBot:
             "btc_1m_chg": 0.0,
             "tokens": {},
             "all_open_orders": [],
-            "trade_analytics": {},
             "updated_at": "",
         }
 
     def get_market_price(self, symbol: str) -> float:
-        """Fetches current spot ticker price for symbol."""
+        """Fetches last traded price for symbol from spot ticker."""
         try:
-            res = self.client._request("GET", "/v5/market/tickers", params={"category": "spot", "symbol": symbol.upper()})
-            if res.get("retCode") == 0:
-                tickers = res.get("result", {}).get("list", [])
-                if tickers:
-                    return float(tickers[0].get("lastPrice") or 0.0)
+            tickers = self.client.get_tickers(symbol)
+            if tickers:
+                return float(tickers[0].get("lastPrice", 0.0))
         except Exception as e:
-            logger.warning(f"Failed to fetch market ticker for {symbol}: {e}")
+            logger.warning(f"Error fetching price for {symbol}: {e}")
         return 0.0
 
     def cancel_all_buys(self, symbol: str, open_buys: List[Dict[str, Any]]) -> None:
-        """Instantly cancels resting BUY orders for symbol."""
+        """Helper to cancel multiple buy orders for a given symbol."""
         for b_ord in open_buys:
             ord_id = b_ord.get("orderId")
             if ord_id:
-                logger.warning(f"🚨 [MarketGuard] Экстренная отмена BUY-ордера {ord_id} ({symbol}) @ ${b_ord.get('price')}")
                 self.client.cancel_order(symbol, ord_id)
 
     def cancel_all_portfolio_buys(self) -> None:
         """Cancels all BUY orders across all managed symbols."""
-        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+        for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL, TERTIARY_SYMBOL]:
             try:
                 open_orders = self.client.get_open_orders(sym)
                 buys = [o for o in open_orders if o.get("side") == "Buy"]
@@ -807,6 +818,7 @@ class StandaloneBybitBot:
             self.cancel_all_portfolio_buys()
             self.trailing_controller.reset(PRIMARY_SYMBOL)
             self.trailing_controller.reset(SECONDARY_SYMBOL)
+            self.trailing_controller.reset(TERTIARY_SYMBOL)
             self.cluster_board_msg_id = write_cluster_state(target, f"Передано на {target} ({reason})", self.cluster_board_msg_id)
             send_telegram(
                 f"🔄 *[КЛАСТЕР: ПЕРЕДАЧА СМЕНЫ]*\n\n"
@@ -843,26 +855,41 @@ class StandaloneBybitBot:
             sui_locked = float(sui_coin.get("locked", 0.0))
             total_sui = sui_free + sui_locked
 
-            apt_coin = coins.get("APT", {})
-            apt_free = float(apt_coin.get("free", 0.0))
-            apt_locked = float(apt_coin.get("locked", 0.0))
-            total_apt = apt_free + apt_locked
+            near_coin = coins.get("NEAR", {})
+            near_free = float(near_coin.get("free", 0.0))
+            near_locked = float(near_coin.get("locked", 0.0))
+            total_near = near_free + near_locked
+
+            avax_coin = coins.get("AVAX", {})
+            avax_free = float(avax_coin.get("free", 0.0))
+            avax_locked = float(avax_coin.get("locked", 0.0))
+            total_avax = avax_free + avax_locked
 
             mnt_coin = coins.get("MNT", {})
             mnt_bal = float(mnt_coin.get("balance") or mnt_coin.get("free") or 0.0)
 
             # 2. Fetch Spot Market Prices
             sui_price = self.get_market_price(PRIMARY_SYMBOL)
-            apt_price = self.get_market_price(SECONDARY_SYMBOL)
+            near_price = self.get_market_price(SECONDARY_SYMBOL)
+            avax_price = self.get_market_price(TERTIARY_SYMBOL)
             if sui_price <= 0:
                 return
 
-            prices = {PRIMARY_SYMBOL: sui_price, SECONDARY_SYMBOL: apt_price}
-            free_coins = {PRIMARY_SYMBOL: sui_free, SECONDARY_SYMBOL: apt_free}
-            total_coins = {PRIMARY_SYMBOL: total_sui, SECONDARY_SYMBOL: total_apt}
+            prices = {
+                PRIMARY_SYMBOL: sui_price,
+                SECONDARY_SYMBOL: near_price if near_price > 0 else 0.0,
+                TERTIARY_SYMBOL: avax_price if avax_price > 0 else 0.0,
+            }
+            free_coins = {PRIMARY_SYMBOL: sui_free, SECONDARY_SYMBOL: near_free, TERTIARY_SYMBOL: avax_free}
+            total_coins = {PRIMARY_SYMBOL: total_sui, SECONDARY_SYMBOL: total_near, TERTIARY_SYMBOL: total_avax}
 
             # 3. Calculate Total Portfolio Equity
-            est_total_equity = total_usd + (total_sui * sui_price) + (total_apt * (apt_price if apt_price > 0 else 0.0))
+            est_total_equity = (
+                total_usd
+                + (total_sui * sui_price)
+                + (total_near * prices[SECONDARY_SYMBOL])
+                + (total_avax * prices[TERTIARY_SYMBOL])
+            )
 
             if est_total_equity > self.peak_equity:
                 self.peak_equity = est_total_equity
@@ -881,9 +908,39 @@ class StandaloneBybitBot:
             elif est_total_equity >= (self.peak_equity * (1.0 - CIRCUIT_BREAKER_MAX_DD)):
                 self.circuit_breaker_active = False
 
-            # 4. Capital Allocator & Hysteresis Gate
+            # 4. Capital Allocator & Hysteresis Gate (Trio & Dual Modes)
+            # Tier 3 (AVAX / Trio Mode: >= $115 activate, < $105 deactivate)
+            if self.trio_mode_active:
+                if est_total_equity < TRIO_PAIR_DEACTIVATION_EQUITY:
+                    self.trio_mode_active = False
+                    logger.warning(
+                        f"📉 [Capital Allocator] Equity ${est_total_equity:.2f} < ${TRIO_PAIR_DEACTIVATION_EQUITY:.2f}! "
+                        f"{TERTIARY_SYMBOL} switching to EXIT_ONLY."
+                    )
+                    send_telegram(
+                        f"📉 *[МЕНЕДЖЕР КАПИТАЛА: ДЕАКТИВАЦИЯ {TERTIARY_SYMBOL}]*\n\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог ${TRIO_PAIR_DEACTIVATION_EQUITY:.2f})\n"
+                        f"Пара **{TERTIARY_SYMBOL}** переведена в режим *EXIT-ONLY*.\n"
+                        f"Возврат в режим Dual (50% {PRIMARY_SYMBOL} / 50% {SECONDARY_SYMBOL})."
+                    )
+            else:
+                if est_total_equity >= TRIO_PAIR_ACTIVATION_EQUITY:
+                    self.trio_mode_active = True
+                    self.dual_mode_active = True  # Trio implies dual is active
+                    logger.info(
+                        f"🚀 [Capital Allocator] Equity ${est_total_equity:.2f} >= ${TRIO_PAIR_ACTIVATION_EQUITY:.2f}! "
+                        f"{TERTIARY_SYMBOL} ACTIVATED!"
+                    )
+                    send_telegram(
+                        f"🚀 **[МЕНЕДЖЕР КАПИТАЛА: АКТИВАЦИЯ ТРИО ТОКЕНОВ]**\n\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог ${TRIO_PAIR_ACTIVATION_EQUITY:.2f})!\n"
+                        f"Активирован портфельный режим **TRIO (33.3% {PRIMARY_SYMBOL} / 33.3% {SECONDARY_SYMBOL} / 33.3% {TERTIARY_SYMBOL})**.\n"
+                        "Три независимые сетки распределяют капитал и балансируют риски!"
+                    )
+
+            # Tier 2 (NEAR / Dual Mode: >= $70 activate, < $62 deactivate)
             if self.dual_mode_active:
-                if est_total_equity < DUAL_PAIR_DEACTIVATION_EQUITY:
+                if not self.trio_mode_active and est_total_equity < DUAL_PAIR_DEACTIVATION_EQUITY:
                     self.dual_mode_active = False
                     logger.warning(
                         f"📉 [Capital Allocator] Equity ${est_total_equity:.2f} < ${DUAL_PAIR_DEACTIVATION_EQUITY:.2f}! "
@@ -891,7 +948,7 @@ class StandaloneBybitBot:
                     )
                     send_telegram(
                         f"📉 *[МЕНЕДЖЕР КАПИТАЛА: ДЕАКТИВАЦИЯ {SECONDARY_SYMBOL}]*\n\n"
-                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог $62.00)\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог ${DUAL_PAIR_DEACTIVATION_EQUITY:.2f})\n"
                         f"Пара **{SECONDARY_SYMBOL}** переведена в режим *EXIT-ONLY*.\n"
                         "Новые покупки заморожены, открытые позиции закроются по тейк-профиту в плюс."
                     )
@@ -904,16 +961,20 @@ class StandaloneBybitBot:
                     )
                     send_telegram(
                         f"🚀 **[МЕНЕДЖЕР КАПИТАЛА: АКТИВАЦИЯ КОРЗИНЫ ТОКЕНОВ]**\n\n"
-                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог $70.00)!\n"
+                        f"Текущий капитал: **${est_total_equity:.2f} USDT** (порог ${DUAL_PAIR_ACTIVATION_EQUITY:.2f})!\n"
                         f"Активирован портфельный режим **DUAL (50% {PRIMARY_SYMBOL} / 50% {SECONDARY_SYMBOL})**.\n"
                         "Сетки работают независимо, удваивая точки входа и распределяя риски!"
                     )
 
             # Determine Active Managed Symbols
             symbols_to_process = [PRIMARY_SYMBOL]
-            apt_has_holdings = (apt_free * apt_price >= 4.5) or (total_apt * apt_price >= 4.5)
-            if self.dual_mode_active or apt_has_holdings:
+            near_has_holdings = (near_free * prices[SECONDARY_SYMBOL] >= 4.5) or (total_near * prices[SECONDARY_SYMBOL] >= 4.5)
+            if self.dual_mode_active or near_has_holdings:
                 symbols_to_process.append(SECONDARY_SYMBOL)
+
+            avax_has_holdings = (avax_free * prices[TERTIARY_SYMBOL] >= 4.5) or (total_avax * prices[TERTIARY_SYMBOL] >= 4.5)
+            if self.trio_mode_active or avax_has_holdings:
+                symbols_to_process.append(TERTIARY_SYMBOL)
 
             # 5. MarketGuard: Update Klines, BTC Lead-Lag & Idiosyncratic Dumps
             global_dump, global_reason, token_dumps = self.guard.update_market_state(symbols_to_process)
@@ -1232,14 +1293,24 @@ class StandaloneBybitBot:
                 if self.mode == "desktop":
                     # Desktop Asymmetric Smart Step with Reserve Buffer
                     eff_equity = max(15.00, est_total_equity - self.reserve_usdt)
-                    deployable = eff_equity * 0.50 if self.dual_mode_active else eff_equity
+                    if self.trio_mode_active:
+                        deployable = eff_equity / 3.0
+                    elif self.dual_mode_active:
+                        deployable = eff_equity * 0.50
+                    else:
+                        deployable = eff_equity
                     step_budget_1 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_1"], 2))
                     step_budget_2 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_2"], 2))
                     step_budget_3 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_3"], 2))
                     spendable_usdt = max(0.0, avail_usdt - self.reserve_usdt)
                 else:
                     # Mobile Symmetric Conservative Grid
-                    pair_total_equity = est_total_equity * 0.50 if self.dual_mode_active else est_total_equity
+                    if self.trio_mode_active:
+                        pair_total_equity = est_total_equity / 3.0
+                    elif self.dual_mode_active:
+                        pair_total_equity = est_total_equity * 0.50
+                    else:
+                        pair_total_equity = est_total_equity
                     step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
                     step_budget_1 = step_budget
                     step_budget_2 = step_budget
@@ -1254,6 +1325,7 @@ class StandaloneBybitBot:
                 s2_disc = min(t_metric.get("step2_discount", BASE_SPACING["step_2"]), 0.0220)
                 s3_disc = min(t_metric.get("step3_discount", BASE_SPACING["step_3"]), 0.0480)
                 p_dec = meta.get("price_decimals", 4)
+                q_dec = meta.get("qty_decimals", 2)
                 t1 = round(cur_price * (1.0 - s1_disc), p_dec)
 
                 if step1_held and entry_price > 0:
@@ -1332,8 +1404,13 @@ class StandaloneBybitBot:
                         token_mode_label = "COOLDOWN"
                 elif sym == SECONDARY_SYMBOL and not self.dual_mode_active:
                     can_buy_token = False
-                    token_mode_label = "EXIT_ONLY" if apt_has_holdings else "DORMANT"
-                    # If in EXIT_ONLY, ensure all BUYs are cancelled
+                    token_mode_label = "EXIT_ONLY" if near_has_holdings else "DORMANT"
+                    if open_buys:
+                        self.cancel_all_buys(sym, open_buys)
+                        open_buys.clear()
+                elif sym == TERTIARY_SYMBOL and not self.trio_mode_active:
+                    can_buy_token = False
+                    token_mode_label = "EXIT_ONLY" if avax_has_holdings else "DORMANT"
                     if open_buys:
                         self.cancel_all_buys(sym, open_buys)
                         open_buys.clear()
@@ -1345,14 +1422,16 @@ class StandaloneBybitBot:
                     if not step1_held:
                         has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
                         if not has_step1 and spendable_usdt >= step_budget_1:
-                            clip_1 = math.floor((step_budget_1 / t1) * 100) / 100.0
+                            clip_1 = math.floor((step_budget_1 / t1) * (10 ** q_dec)) / float(10 ** q_dec)
                             val_1 = clip_1 * t1
                             if val_1 >= 5.00 and val_1 <= spendable_usdt:
                                 logger.info(
                                     f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} "
                                     f"(-{s1_disc*100:.2f}%) [Бюджет: ${step_budget_1:.2f}]"
                                 )
-                                resp1 = self.client.create_limit_order(sym, "Buy", clip_1, t1, post_only=True)
+                                resp1 = self.client.create_limit_order(
+                                    sym, "Buy", clip_1, t1, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                                )
                                 if resp1.get("retCode") == 0:
                                     avail_usdt -= val_1
                                     spendable_usdt -= val_1
@@ -1361,14 +1440,16 @@ class StandaloneBybitBot:
                     if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
                         if not has_step2 and spendable_usdt >= step_budget_2:
-                            clip_2 = math.floor((step_budget_2 / t2) * 100) / 100.0
+                            clip_2 = math.floor((step_budget_2 / t2) * (10 ** q_dec)) / float(10 ** q_dec)
                             val_2 = clip_2 * t2
                             if val_2 >= 5.00 and val_2 <= spendable_usdt:
                                 logger.info(
                                     f"🟡 [{sym}][Ступень 2] Покупка: {clip_2} {base_c} @ ${t2} "
                                     f"(-{s2_disc*100:.2f}%) [Бюджет: ${step_budget_2:.2f}]"
                                 )
-                                resp2 = self.client.create_limit_order(sym, "Buy", clip_2, t2, post_only=True)
+                                resp2 = self.client.create_limit_order(
+                                    sym, "Buy", clip_2, t2, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                                )
                                 if resp2.get("retCode") == 0:
                                     avail_usdt -= val_2
                                     spendable_usdt -= val_2
@@ -1377,14 +1458,16 @@ class StandaloneBybitBot:
                     has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
                     alloc_3 = min(spendable_usdt, step_budget_3)
                     if not has_step3 and spendable_usdt >= 5.00:
-                        clip_3 = math.floor((alloc_3 / t3) * 100) / 100.0
+                        clip_3 = math.floor((alloc_3 / t3) * (10 ** q_dec)) / float(10 ** q_dec)
                         val_3 = clip_3 * t3
                         if val_3 >= 5.00 and val_3 <= spendable_usdt:
                             logger.info(
                                 f"🟡 [{sym}][Ступень 3 Защита] Покупка: {clip_3} {base_c} @ ${t3} "
                                 f"(-{s3_disc*100:.2f}%) [Бюджет: ${alloc_3:.2f}]"
                             )
-                            resp3 = self.client.create_limit_order(sym, "Buy", clip_3, t3, post_only=True)
+                            resp3 = self.client.create_limit_order(
+                                sym, "Buy", clip_3, t3, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                            )
                             if resp3.get("retCode") == 0:
                                 avail_usdt -= val_3
                                 spendable_usdt -= val_3
@@ -1445,7 +1528,13 @@ class StandaloneBybitBot:
                 el = int(now - self.guard.global_cooldown_start_time)
                 global_guard_str = f"🚨 Рыночный Шторм ({self.guard.global_cooldown_reason}) [{el}с]"
 
-            port_mode_str = "🚀 Dual (SUI + APT 50/50)" if self.dual_mode_active else "🔥 Single (SUI 100%)"
+            if self.trio_mode_active:
+                port_mode_str = f"🚀 Trio ({TOKEN_METADATA[PRIMARY_SYMBOL]['base_coin']} + {TOKEN_METADATA[SECONDARY_SYMBOL]['base_coin']} + {TOKEN_METADATA[TERTIARY_SYMBOL]['base_coin']} 33/33/33)"
+            elif self.dual_mode_active:
+                port_mode_str = f"🚀 Dual ({TOKEN_METADATA[PRIMARY_SYMBOL]['base_coin']} + {TOKEN_METADATA[SECONDARY_SYMBOL]['base_coin']} 50/50)"
+            else:
+                port_mode_str = f"🔥 Single ({TOKEN_METADATA[PRIMARY_SYMBOL]['base_coin']} 100%)"
+
             profile_label = "DESKTOP / SMART-STEP" if self.mode == "desktop" else "MOBILE / STORM"
 
             self.stats.update({
@@ -1455,6 +1544,7 @@ class StandaloneBybitBot:
                 "reserve_usdt": round(self.reserve_usdt, 2),
                 "portfolio_mode": port_mode_str,
                 "dual_mode_active": self.dual_mode_active,
+                "trio_mode_active": self.trio_mode_active,
                 "total_usd": round(est_total_equity, 4),
                 "available_usdt": round(avail_usdt, 4),
                 "locked_usdt": round(locked_usdt, 4),
@@ -1479,7 +1569,10 @@ class StandaloneBybitBot:
             else "📱 [MOBILE / STORM] (Консервативный эшелон STORM x2.0)"
         )
         logger.info(f"🚀 [Bybit Kazakhstan Standalone Portfolio Bot] Запуск профиля: {profile_banner}")
-        logger.info(f"Базовый: {PRIMARY_SYMBOL} | Вторичный: {SECONDARY_SYMBOL} | Lead-Lag: {LEAD_LAG_SYMBOL}")
+        logger.info(
+            f"Базовый: {PRIMARY_SYMBOL} | Вторичный: {SECONDARY_SYMBOL} | "
+            f"Третичный: {TERTIARY_SYMBOL} | Lead-Lag: {LEAD_LAG_SYMBOL}"
+        )
 
         while self.running:
             self.step()
@@ -1999,7 +2092,7 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
         s3 = t.get("step3_discount_pct", 3.20)
         vol_reg = t.get("volatility_regime", "NORMAL")
         mult = t.get("vol_multiplier", 1.0)
-        icon = "🔷" if base_c == "SUI" else "🟣"
+        icon = "🔷" if base_c == "SUI" else ("🟢" if base_c == "NEAR" else "🔴")
 
         token_blocks.append(
             f"{icon} *{sym}* [{t_mode}]\n"
@@ -2054,7 +2147,7 @@ def format_trades_text(bot: StandaloneBybitBot) -> str:
     total_cyc = sum(t.get("completed_cycles", 0) for t in st.get("tokens", {}).values())
 
     lines = []
-    for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL]:
+    for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL, TERTIARY_SYMBOL]:
         try:
             execs = bot.client.get_execution_history(sym, limit=5)
             for e in execs:

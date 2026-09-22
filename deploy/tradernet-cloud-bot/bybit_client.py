@@ -158,6 +158,8 @@ class BybitV5Client:
         price: float,
         category: str = "spot",
         post_only: bool = True,
+        qty_precision: int = 2,
+        price_precision: int = 4,
     ) -> Dict[str, Any]:
         """Places a limit Maker order on Bybit Spot with PostOnly support."""
         data = {
@@ -165,8 +167,8 @@ class BybitV5Client:
             "symbol": symbol.upper(),
             "side": side.capitalize(),  # "Buy" or "Sell"
             "orderType": "Limit",
-            "qty": f"{qty:.2f}",
-            "price": f"{price:.4f}",
+            "qty": f"{qty:.{qty_precision}f}",
+            "price": f"{price:.{price_precision}f}",
             "timeInForce": "PostOnly" if post_only else "GTC",
         }
         return self._request("POST", "/v5/order/create", data=data)
@@ -177,6 +179,7 @@ class BybitV5Client:
         side: str,
         qty: float,
         category: str = "spot",
+        qty_precision: int = 2,
     ) -> Dict[str, Any]:
         """Places a market Taker order on Bybit Spot for immediate execution."""
         data = {
@@ -184,7 +187,7 @@ class BybitV5Client:
             "symbol": symbol.upper(),
             "side": side.capitalize(),
             "orderType": "Market",
-            "qty": f"{qty:.2f}",
+            "qty": f"{qty:.{qty_precision}f}",
         }
         return self._request("POST", "/v5/order/create", data=data)
 
