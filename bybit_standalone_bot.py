@@ -592,8 +592,9 @@ class MarketGuard:
             m["vol_multiplier"] = round(mult, 2)
             m["volatility_regime"] = "STORM" if range_15m >= 0.0120 else "NORMAL"
             m["step1_discount"] = round(BASE_SPACING["step_1"] * mult, 4)
-            m["step2_discount"] = round(BASE_SPACING["step_2"] * mult, 4)
-            m["step3_discount"] = round(BASE_SPACING["step_3"] * mult, 4)
+            # Cap step2 at 0.0220 (-2.20%) and step3 at 0.0480 (-4.80%) to prevent runaway grid
+            m["step2_discount"] = round(min(BASE_SPACING["step_2"] * mult, 0.0220), 4)
+            m["step3_discount"] = round(min(BASE_SPACING["step_3"] * mult, 0.0480), 4)
 
             # Idiosyncratic Dump Trigger
             dump_fired_tok = False
@@ -975,10 +976,27 @@ class StandaloneBybitBot:
                     self.cancel_all_buys(sym, open_buys)
                     open_buys.clear()
 
-                # Estimate Entry Price
+                # Estimate Entry Price: volume-weighted average price (VWAP) across currently held position
                 entry_price = cur_price
                 sym_buys = self.recent_buys.get(sym, [])
-                if sym_buys:
+                if sym_buys and cur_free > 0:
+                    accum_qty = 0.0
+                    accum_val = 0.0
+                    for b in sym_buys:
+                        b_q = float(b.get("execQty") or 0.0)
+                        b_p = float(b.get("execPrice") or 0.0)
+                        if b_q <= 0 or b_p <= 0:
+                            continue
+                        take_q = min(b_q, max(0.0, cur_free - accum_qty))
+                        accum_val += take_q * b_p
+                        accum_qty += take_q
+                        if accum_qty >= (cur_free * 0.99):
+                            break
+                    if accum_qty > 0:
+                        entry_price = round(accum_val / accum_qty, meta.get("price_decimals", 4))
+                    else:
+                        entry_price = float(sym_buys[0].get("execPrice") or cur_price)
+                elif sym_buys:
                     entry_price = float(sym_buys[0].get("execPrice") or cur_price)
 
                 # =============================================================
@@ -1134,15 +1152,6 @@ class StandaloneBybitBot:
                                     f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
                                 )
 
-                # Dynamic Adaptive Spacing Targets
-                s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
-                s2_disc = t_metric.get("step2_discount", BASE_SPACING["step_2"])
-                s3_disc = t_metric.get("step3_discount", BASE_SPACING["step_3"])
-                p_dec = meta.get("price_decimals", 4)
-                t1 = round(cur_price * (1.0 - s1_disc), p_dec)
-                t2 = round(cur_price * (1.0 - s2_disc), p_dec)
-                t3 = round(cur_price * (1.0 - s3_disc), p_dec)
-
                 # Budget allocation based on active profile and portfolio mode
                 if self.mode == "desktop":
                     # Desktop Asymmetric Smart Step with Reserve Buffer
@@ -1163,6 +1172,24 @@ class StandaloneBybitBot:
 
                 step1_held = holding_val >= 5.00
                 step2_held = holding_val >= (step_budget_2 * 1.5)
+
+                # Dynamic Adaptive Spacing Targets (Anchor DCA when position held)
+                s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
+                s2_disc = min(t_metric.get("step2_discount", BASE_SPACING["step_2"]), 0.0220)
+                s3_disc = min(t_metric.get("step3_discount", BASE_SPACING["step_3"]), 0.0480)
+                p_dec = meta.get("price_decimals", 4)
+                t1 = round(cur_price * (1.0 - s1_disc), p_dec)
+
+                if step1_held and entry_price > 0:
+                    t2 = round(entry_price * (1.0 - s2_disc), p_dec)
+                    t3 = round(entry_price * (1.0 - s3_disc), p_dec)
+                    if t2 >= cur_price:
+                        t2 = round(cur_price * 0.9995, p_dec)
+                    if t3 >= cur_price:
+                        t3 = round(cur_price * 0.9990, p_dec)
+                else:
+                    t2 = round(cur_price * (1.0 - s2_disc), p_dec)
+                    t3 = round(cur_price * (1.0 - s3_disc), p_dec)
 
                 # Valid buy targets based on inventory
                 valid_targets: List[Tuple[str, float]] = []
@@ -1192,7 +1219,12 @@ class StandaloneBybitBot:
                             min_dist = dist
                             best_step = step_name
 
-                    if is_expired or min_dist > 0.012 or (best_step in assigned_targets):
+                    # Immunity to expiration for anchored DCA steps (Step 2 and 3 when position is held)
+                    is_anchored_dca = (best_step in ("step_2", "step_3")) and step1_held
+                    should_expire = is_expired and not is_anchored_dca
+                    tolerance = 0.012 if not is_anchored_dca else 0.008
+
+                    if should_expire or min_dist > tolerance or (best_step in assigned_targets):
                         logger.info(
                             f"🟡 [{sym}] Снятие неактуального/дублирующего BUY ордера {ord_id} @ ${ord_price} "
                             f"(Отклонение: {min_dist*100:.2f}%, Цель: {best_step}, Возраст: {int(now - created_time)}с)"
