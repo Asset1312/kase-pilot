@@ -773,9 +773,11 @@ class StandaloneBybitBot:
     def get_market_price(self, symbol: str) -> float:
         """Fetches last traded price for symbol from spot ticker."""
         try:
-            tickers = self.client.get_tickers(symbol)
-            if tickers:
-                return float(tickers[0].get("lastPrice", 0.0))
+            res = self.client._request("GET", "/v5/market/tickers", params={"category": "spot", "symbol": symbol.upper()})
+            if res.get("retCode") == 0:
+                tickers = res.get("result", {}).get("list", [])
+                if tickers:
+                    return float(tickers[0].get("lastPrice") or 0.0)
         except Exception as e:
             logger.warning(f"Error fetching price for {symbol}: {e}")
         return 0.0

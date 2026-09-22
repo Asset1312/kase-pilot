@@ -45,7 +45,11 @@ def test_capital_allocation_single_mode_below_70(mock_bot):
             "AVAX": {"free": 0.0, "locked": 0.0},
         },
     }
-    mock_bot.client.get_tickers.side_effect = lambda sym: [{"lastPrice": "1.0100"}]
+    mock_bot.client._request.side_effect = lambda method, endpoint, params=None, data=None: (
+        {"retCode": 0, "result": {"list": [{"lastPrice": "1.0000"}]}}
+        if endpoint == "/v5/market/tickers"
+        else {"retCode": 0, "result": {}}
+    )
     mock_bot.client.get_open_orders.return_value = []
     mock_bot.guard.update_market_state = MagicMock(return_value=(False, "", {}))
 
@@ -68,7 +72,11 @@ def test_capital_allocation_dual_mode_at_70(mock_bot):
         "total_usd": 75.0,
         "coins": {},
     }
-    mock_bot.client.get_tickers.side_effect = lambda sym: [{"lastPrice": "1.0000"}]
+    mock_bot.client._request.side_effect = lambda method, endpoint, params=None, data=None: (
+        {"retCode": 0, "result": {"list": [{"lastPrice": "1.0000"}]}}
+        if endpoint == "/v5/market/tickers"
+        else {"retCode": 0, "result": {}}
+    )
     mock_bot.client.get_open_orders.return_value = []
     mock_bot.guard.update_market_state = MagicMock(return_value=(False, "", {}))
 
@@ -91,7 +99,11 @@ def test_capital_allocation_trio_mode_at_115(mock_bot):
         "total_usd": 120.0,
         "coins": {},
     }
-    mock_bot.client.get_tickers.side_effect = lambda sym: [{"lastPrice": "1.0000"}]
+    mock_bot.client._request.side_effect = lambda method, endpoint, params=None, data=None: (
+        {"retCode": 0, "result": {"list": [{"lastPrice": "1.0000"}]}}
+        if endpoint == "/v5/market/tickers"
+        else {"retCode": 0, "result": {}}
+    )
     mock_bot.client.get_open_orders.return_value = []
     mock_bot.guard.update_market_state = MagicMock(return_value=(False, "", {}))
 
@@ -117,7 +129,11 @@ def test_capital_allocation_hysteresis_deactivation(mock_bot):
         "total_usd": 100.0,
         "coins": {},
     }
-    mock_bot.client.get_tickers.side_effect = lambda sym: [{"lastPrice": "1.0000"}]
+    mock_bot.client._request.side_effect = lambda method, endpoint, params=None, data=None: (
+        {"retCode": 0, "result": {"list": [{"lastPrice": "1.0000"}]}}
+        if endpoint == "/v5/market/tickers"
+        else {"retCode": 0, "result": {}}
+    )
     mock_bot.client.get_open_orders.return_value = []
     mock_bot.guard.update_market_state = MagicMock(return_value=(False, "", {}))
 
