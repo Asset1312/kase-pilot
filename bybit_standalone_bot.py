@@ -1517,6 +1517,20 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self) -> None:
+        if self.path == "/dragon_bg.jpg":
+            img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dragon_bg.jpg")
+            if os.path.exists(img_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(img_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
+
         if self.path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1727,19 +1741,36 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Bybit KZ Multi-Token Dashboard</title>
     <style>
-        body {{ background: #0f172a; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; padding: 15px; margin: 0; }}
-        .card {{ background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #334155; }}
-        h2 {{ margin-top: 0; color: #38bdf8; font-size: 1.15rem; }}
-        .metric {{ font-size: 1.8rem; font-weight: bold; color: #10b981; }}
-        .label {{ font-size: 0.85rem; color: #94a3b8; }}
+        body {{
+            background: #090d16 url('/dragon_bg.jpg') no-repeat center center fixed;
+            background-size: cover;
+            color: #f8fafc;
+            font-family: -apple-system, system-ui, sans-serif;
+            padding: 15px;
+            margin: 0;
+            min-height: 100vh;
+        }}
+        .card {{
+            background: rgba(15, 23, 42, 0.78);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 14px;
+            border: 1px solid rgba(56, 189, 248, 0.22);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+        }}
+        h2 {{ margin-top: 0; color: #38bdf8; font-size: 1.15rem; text-shadow: 0 0 12px rgba(56, 189, 248, 0.4); }}
+        .metric {{ font-size: 1.8rem; font-weight: bold; color: #10b981; text-shadow: 0 0 14px rgba(16, 185, 129, 0.4); }}
+        .label {{ font-size: 0.85rem; color: #cbd5e1; }}
         .badge {{ display: inline-block; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85rem; }}
-        th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #334155; }}
+        th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid rgba(51, 65, 85, 0.6); }}
         th {{ color: #94a3b8; }}
         .buy {{ color: #38bdf8; font-weight: bold; }}
         .sell {{ color: #f59e0b; font-weight: bold; }}
-        .btn {{ border: none; padding: 8px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.85rem; transition: opacity 0.2s; }}
-        .btn:hover {{ opacity: 0.85; }}
+        .btn {{ border: none; padding: 8px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.85rem; transition: transform 0.15s, opacity 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }}
+        .btn:hover {{ opacity: 0.9; transform: translateY(-1px); }}
     </style>
 </head>
 <body>
