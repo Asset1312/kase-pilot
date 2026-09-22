@@ -1256,10 +1256,16 @@ class StandaloneBybitBot:
                 if step1_held and entry_price > 0:
                     t2 = round(entry_price * (1.0 - s2_disc), p_dec)
                     t3 = round(entry_price * (1.0 - s3_disc), p_dec)
+                    # When holding position, Step 3 must be at least 2.50% below cur_price and below lowest fill
+                    min_t3_dist = 0.0250
+                    if t3 >= (cur_price * (1.0 - min_t3_dist)):
+                        t3 = round(cur_price * (1.0 - min_t3_dist), p_dec)
+                    if sym_buys:
+                        lowest_buy = min(float(b.get("execPrice") or 999.0) for b in sym_buys if float(b.get("execPrice") or 0) > 0)
+                        if lowest_buy < 900.0 and t3 >= (lowest_buy * 0.985):
+                            t3 = round(lowest_buy * 0.9750, p_dec)
                     if t2 >= cur_price:
                         t2 = round(cur_price * 0.9995, p_dec)
-                    if t3 >= cur_price:
-                        t3 = round(cur_price * 0.9990, p_dec)
                 else:
                     t2 = round(cur_price * (1.0 - s2_disc), p_dec)
                     t3 = round(cur_price * (1.0 - s3_disc), p_dec)
