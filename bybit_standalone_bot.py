@@ -87,8 +87,11 @@ TERTIARY_SYMBOL = "AVAXUSDT"
 LEAD_LAG_SYMBOL = "BTCUSDT"
 
 # Protection Thresholds
-BTC_1M_DUMP_THRESHOLD = -0.0035     # -0.35% BTC drop in 1 min
-BTC_3M_DUMP_THRESHOLD = -0.0070     # -0.70% BTC drop in 3 min
+BTC_1M_DUMP_THRESHOLD = -0.0035     # -0.35% BTC drop in 1 min (Crash / Circuit Breaker)
+BTC_3M_DUMP_THRESHOLD = -0.0070     # -0.70% BTC drop in 3 min (Crash / Circuit Breaker)
+BTC_1M_SLIDING_THRESHOLD = -0.0015  # -0.15% BTC drop in 1 min (Sliding / Gate Step 1 Freeze)
+BTC_3M_SLIDING_THRESHOLD = -0.0030  # -0.30% BTC drop in 3 min (Sliding / Gate Step 1 Freeze)
+BTC_REVERSAL_CONFIRM_THRESHOLD = 0.0005 # +0.05% BTC 1m bounce confirms stabilization
 COOLDOWN_MIN_SECONDS = 600          # 10 minutes minimum freeze
 
 # Capital Scaling Milestones & Hysteresis Gates
@@ -495,6 +498,10 @@ class MarketGuard:
         self.global_cooldown_reason = ""
         self.last_btc_1m_chg = 0.0
         self.last_btc_3m_chg = 0.0
+        self.lead_lag_status = "CLEAR"        # CLEAR | SLIDING | CRASH
+        self.lead_lag_reason = ""
+        self.gate_step1_open = True
+        self.dca_protection_active = False    # True when BTC is sliding and DCA needs protection
 
         # Per-token metrics
         self.token_metrics: Dict[str, Dict[str, Any]] = {}
@@ -527,6 +534,82 @@ class MarketGuard:
             logger.debug(f"Kline fetch failed for {symbol}: {e}")
         return []
 
+    def evaluate_btc_lead_lag(self, btc_klines: List[List[Any]]) -> Dict[str, Any]:
+        """
+        Evaluates BTC 1m/3m momentum and reversal signals.
+        Returns a dictionary with status (CLEAR, SLIDING, CRASH) and gate permissions.
+        """
+        if not btc_klines:
+            return {
+                "status": "CLEAR" if not self.global_cooldown_active else "CRASH",
+                "reason": self.global_cooldown_reason if self.global_cooldown_active else "No BTC Kline data (Permissive)",
+                "gate_step1_open": not self.global_cooldown_active,
+                "dca_protection_active": False,
+                "btc_1m_chg": self.last_btc_1m_chg,
+                "btc_3m_chg": self.last_btc_3m_chg,
+                "reversal_confirmed": False,
+            }
+
+        btc_c0, btc_o0 = float(btc_klines[0][4]), float(btc_klines[0][1])
+        btc_l0 = float(btc_klines[0][3])
+        btc_1m = (btc_c0 - btc_o0) / btc_o0 if btc_o0 > 0 else 0.0
+
+        btc_3m = 0.0
+        if len(btc_klines) >= 3:
+            btc_o2 = float(btc_klines[2][1])
+            btc_3m = (btc_c0 - btc_o2) / btc_o2 if btc_o2 > 0 else 0.0
+
+        reversal_confirmed = False
+        if len(btc_klines) >= 2:
+            btc_l1 = float(btc_klines[1][3])
+            # Reversal confirmed if current candle is green >= threshold or low held with positive bounce
+            if btc_1m >= BTC_REVERSAL_CONFIRM_THRESHOLD or (btc_l0 >= btc_l1 and btc_1m > 0.0):
+                reversal_confirmed = True
+
+        # 1. Check CRASH (Circuit Breaker level)
+        if self.global_cooldown_active or btc_1m <= BTC_1M_DUMP_THRESHOLD or btc_3m <= BTC_3M_DUMP_THRESHOLD:
+            reason = self.global_cooldown_reason or (
+                f"BTC 1m Flash Dump ({btc_1m*100:.2f}%)" if btc_1m <= BTC_1M_DUMP_THRESHOLD
+                else f"BTC 3m Cumulative Dump ({btc_3m*100:.2f}%)"
+            )
+            return {
+                "status": "CRASH",
+                "reason": reason,
+                "gate_step1_open": False,
+                "dca_protection_active": True,
+                "btc_1m_chg": btc_1m,
+                "btc_3m_chg": btc_3m,
+                "reversal_confirmed": False,
+            }
+
+        # 2. Check SLIDING (Pre-emptive Knife-Catch Prevention)
+        if btc_1m <= BTC_1M_SLIDING_THRESHOLD or btc_3m <= BTC_3M_SLIDING_THRESHOLD:
+            reason = (
+                f"BTC 1m Sliding ({btc_1m*100:.2f}%)" if btc_1m <= BTC_1M_SLIDING_THRESHOLD
+                else f"BTC 3m Sliding ({btc_3m*100:.2f}%)"
+            )
+            return {
+                "status": "SLIDING",
+                "reason": reason,
+                "gate_step1_open": False,
+                "dca_protection_active": True,
+                "btc_1m_chg": btc_1m,
+                "btc_3m_chg": btc_3m,
+                "reversal_confirmed": False,
+            }
+
+        # 3. CLEAR / BULLISH
+        status_label = "BULLISH" if btc_1m >= BTC_REVERSAL_CONFIRM_THRESHOLD else "CLEAR"
+        return {
+            "status": status_label,
+            "reason": "BTC Market Stable" if status_label == "CLEAR" else f"BTC Momentum Reversal (+{btc_1m*100:.2f}%)",
+            "gate_step1_open": True,
+            "dca_protection_active": False,
+            "btc_1m_chg": btc_1m,
+            "btc_3m_chg": btc_3m,
+            "reversal_confirmed": reversal_confirmed,
+        }
+
     def update_market_state(self, active_symbols: List[str]) -> Tuple[bool, str, Dict[str, Tuple[bool, str]]]:
         """
         Updates market metrics, checks BTC lead-lag and idiosyncratic dump triggers.
@@ -543,6 +626,13 @@ class MarketGuard:
                 btc_o2 = float(btc_klines[2][1])
                 self.last_btc_3m_chg = (btc_c0 - btc_o2) / btc_o2 if btc_o2 > 0 else 0.0
 
+        # Evaluate Lead-Lag Radar
+        ll_eval = self.evaluate_btc_lead_lag(btc_klines)
+        self.lead_lag_status = ll_eval["status"]
+        self.lead_lag_reason = ll_eval["reason"]
+        self.gate_step1_open = ll_eval["gate_step1_open"]
+        self.dca_protection_active = ll_eval["dca_protection_active"]
+
         global_dump_fired = False
         global_dump_reason = ""
 
@@ -557,6 +647,9 @@ class MarketGuard:
                 self.global_cooldown_active = True
                 self.global_cooldown_start_time = now
                 self.global_cooldown_reason = global_dump_reason
+                self.lead_lag_status = "CRASH"
+                self.gate_step1_open = False
+                self.dca_protection_active = True
                 global_dump_fired = True
         else:
             # Check stabilization for Global Cooldown
@@ -568,11 +661,15 @@ class MarketGuard:
                     logger.info(f"🟢 [MarketGuard] Общий рынок (BTC) стабилизировался! Пауза {int(elapsed)}с снята.")
                     self.global_cooldown_active = False
                     self.global_cooldown_reason = ""
+                    self.lead_lag_status = "CLEAR"
+                    self.gate_step1_open = True
+                    self.dca_protection_active = False
                     send_telegram(
                         "🟢 **[ЗАЩИТА ДЕПОЗИТА: РЫНОК СТАБИЛИЗИРОВАН]**\n\n"
                         f"Биткоин зафиксировал локальное дно после паузы {int(elapsed)}с.\n"
                         "Общесистемная блокировка покупок снята."
                     )
+
 
         # Check per-token metrics and idiosyncratic dumps
         token_dumps: Dict[str, Tuple[bool, str]] = {}
@@ -1535,28 +1632,37 @@ class StandaloneBybitBot:
                 # Sizing & Order Placement
                 if can_buy_token:
 
-                    # Step 1 (Micro-Scalp / First Dip)
+                    # Step 1 (Micro-Scalp / First Dip) - Protected by Lead-Lag Radar Gate
                     if not step1_held:
-                        has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
-                        if not has_step1 and spendable_usdt >= step_budget_1:
-                            clip_1 = math.floor((step_budget_1 / t1) * (10 ** q_dec)) / float(10 ** q_dec)
-                            val_1 = clip_1 * t1
-                            if val_1 >= 5.00 and val_1 <= spendable_usdt:
+                        if not self.guard.gate_step1_open:
+                            # Pre-emptive knife-catch prevention: do NOT enter Step 1 while BTC is sliding/crashing
+                            if not any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys):
                                 logger.info(
-                                    f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} "
-                                    f"(-{s1_disc*100:.2f}%) [Бюджет: ${step_budget_1:.2f}]"
+                                    f"⏳ [{sym}][Lead-Lag BTC] Вход в Ступень 1 заморожен: "
+                                    f"статус BTC {self.guard.lead_lag_status} ({self.guard.lead_lag_reason})"
                                 )
-                                resp1 = self.client.create_limit_order(
-                                    sym, "Buy", clip_1, t1, post_only=True, qty_precision=q_dec, price_precision=p_dec
-                                )
-                                if resp1.get("retCode") == 0:
-                                    avail_usdt -= val_1
-                                    spendable_usdt -= val_1
+                        else:
+                            has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
+                            if not has_step1 and spendable_usdt >= step_budget_1:
+                                clip_1 = math.floor((step_budget_1 / t1) * (10 ** q_dec)) / float(10 ** q_dec)
+                                val_1 = clip_1 * t1
+                                if val_1 >= 5.00 and val_1 <= spendable_usdt:
+                                    logger.info(
+                                        f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} "
+                                        f"(-{s1_disc*100:.2f}%) [Бюджет: ${step_budget_1:.2f}]"
+                                    )
+                                    resp1 = self.client.create_limit_order(
+                                        sym, "Buy", clip_1, t1, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                                    )
+                                    if resp1.get("retCode") == 0:
+                                        avail_usdt -= val_1
+                                        spendable_usdt -= val_1
 
                     # Step 2 (Medium Pullback)
                     if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                        if not has_step2 and spendable_usdt >= step_budget_2:
+                        # If BTC is sliding, postpone placing new Step 2 limit until BTC stabilizes
+                        if not has_step2 and spendable_usdt >= step_budget_2 and not self.guard.dca_protection_active:
                             clip_2 = math.floor((step_budget_2 / t2) * (10 ** q_dec)) / float(10 ** q_dec)
                             val_2 = clip_2 * t2
                             if val_2 >= 5.00 and val_2 <= spendable_usdt:
@@ -1574,7 +1680,8 @@ class StandaloneBybitBot:
                     # Step 3 (Deepest Protection Floor)
                     has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
                     alloc_3 = min(spendable_usdt, step_budget_3)
-                    if not has_step3 and spendable_usdt >= 5.00:
+                    # If BTC is sliding, postpone placing new Step 3 limit until BTC stabilizes
+                    if not has_step3 and spendable_usdt >= 5.00 and not self.guard.dca_protection_active:
                         clip_3 = math.floor((alloc_3 / t3) * (10 ** q_dec)) / float(10 ** q_dec)
                         val_3 = clip_3 * t3
                         if val_3 >= 5.00 and val_3 <= spendable_usdt:
@@ -1588,6 +1695,7 @@ class StandaloneBybitBot:
                             if resp3.get("retCode") == 0:
                                 avail_usdt -= val_3
                                 spendable_usdt -= val_3
+
 
                 # Assemble token statistics
                 dec = meta.get("price_decimals", 4)
@@ -1644,6 +1752,8 @@ class StandaloneBybitBot:
             elif self.guard.global_cooldown_active:
                 el = int(now - self.guard.global_cooldown_start_time)
                 global_guard_str = f"🚨 Рыночный Шторм ({self.guard.global_cooldown_reason}) [{el}с]"
+            elif self.guard.lead_lag_status == "SLIDING":
+                global_guard_str = f"🟡 Lead-Lag BTC Сползает ({self.guard.lead_lag_reason})"
 
             if self.trio_mode_active:
                 port_mode_str = f"🚀 Trio ({TOKEN_METADATA[PRIMARY_SYMBOL]['base_coin']} + {TOKEN_METADATA[SECONDARY_SYMBOL]['base_coin']} + {TOKEN_METADATA[TERTIARY_SYMBOL]['base_coin']} 33/33/33)"
@@ -1670,10 +1780,20 @@ class StandaloneBybitBot:
                 "circuit_breaker_active": self.circuit_breaker_active,
                 "global_guard_status": global_guard_str,
                 "btc_1m_chg": round(self.guard.last_btc_1m_chg * 100, 2),
+                "btc_3m_chg": round(self.guard.last_btc_3m_chg * 100, 2),
+                "lead_lag": {
+                    "status": self.guard.lead_lag_status,
+                    "reason": self.guard.lead_lag_reason,
+                    "gate_step1_open": self.guard.gate_step1_open,
+                    "dca_protection_active": self.guard.dca_protection_active,
+                    "btc_1m_chg": round(self.guard.last_btc_1m_chg * 100, 2),
+                    "btc_3m_chg": round(self.guard.last_btc_3m_chg * 100, 2),
+                },
                 "tokens": token_stats_map,
                 "all_open_orders": all_open_orders_list,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
+
 
             # 10. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
             if self.mode == "desktop" and self.is_active_controller and not self.is_paused:
@@ -1945,8 +2065,18 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         guard_color = "#10b981"
         if "🚨" in st.get("global_guard_status", ""):
             guard_color = "#ef4444"
-        elif "⏸️" in st.get("global_guard_status", ""):
+        elif "⏸️" in st.get("global_guard_status", "") or "🟡" in st.get("global_guard_status", ""):
             guard_color = "#f59e0b"
+
+        ll_data = st.get("lead_lag", {})
+        ll_status = ll_data.get("status", "CLEAR")
+        ll_color = "#10b981" if ll_status in ("CLEAR", "BULLISH") else ("#f59e0b" if ll_status == "SLIDING" else "#ef4444")
+        ll_gate_txt = "🟢 ВХОД РАЗРЕШЕН" if ll_data.get("gate_step1_open", True) else "🟡 ВХОД ЗАМОРОЖЕН"
+        lead_lag_badge_html = (
+            f"<div class='badge' style='background: {ll_color}22; color: {ll_color}; border: 1px solid {ll_color}; margin-top: 8px; margin-left: 6px;'>"
+            f"📡 Lead-Lag Radar: <b>{ll_status}</b> ({ll_gate_txt}) | BTC 1m: {ll_data.get('btc_1m_chg', 0.0):+.2f}% / 3m: {ll_data.get('btc_3m_chg', 0.0):+.2f}%"
+            f"</div>"
+        )
 
         profile_badge_html = (
             f"<span class='badge' style='background: #0284c733; color: #38bdf8; border: 1px solid #38bdf8; font-size: 0.75rem; vertical-align: middle; margin-left: 6px;'>"
@@ -2004,8 +2134,11 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
         <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f}{reserve_html} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
         <div class="label" style="margin-top: 6px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
-        <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">
-            {st.get('global_guard_status')} (BTC 1m: {st.get('btc_1m_chg', 0.0):+.2f}%)
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">
+                {st.get('global_guard_status')}
+            </div>
+            {lead_lag_badge_html}
         </div>
 
         <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
@@ -2014,6 +2147,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             <button class="btn" onclick="if(confirm('Снять ВСЕ активные ордера на покупку?')) botAction('/api/panic')" style="background: #ef4444; color: white;">🚨 Экстренная отмена (BUY)</button>
         </div>
     </div>
+
 
     {tokens_html}
 
@@ -2244,6 +2378,11 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
     else:
         orders_str = "• Нет активных ордеров в стакане"
 
+    ll = st.get("lead_lag", {})
+    ll_status = ll.get("status", "CLEAR")
+    ll_icon = "🟢" if ll_status in ("CLEAR", "BULLISH") else ("🟡" if ll_status == "SLIDING" else "🔴")
+    ll_gate = "Вход открыт" if ll.get("gate_step1_open", True) else "Вход заморожен"
+
     return (
         f"🎛️ *BYBIT КАЗАХСТАН: МИКРО-ФОНД*\n\n"
         f"Профиль: {profile_badge}\n"
@@ -2254,7 +2393,8 @@ def format_status_text(bot: StandaloneBybitBot) -> str:
         f"• В ордерах: `${locked:.2f} USDT`"
         f"{reserve_badge}\n"
         f"• Топливо (MNT): {mnt_status_str}\n"
-        f"• Lead-Lag (BTC): `{btc_1m:+.2f}%` ({global_guard})\n\n"
+        f"• Lead-Lag Radar: {ll_icon} *{ll_status}* ({ll_gate})\n"
+        f"  └ BTC 1m: `{btc_1m:+.2f}%` | 3m: `{ll.get('btc_3m_chg', 0.0):+.2f}%`\n\n"
         f"{tokens_str}\n\n"
         f"📖 *Ордера в стакане:*\n{orders_str}\n"
         f"{mnt_alert}"
