@@ -112,6 +112,15 @@ ASTANA_TZ_OFFSET_HOURS = 5            # UTC+5
 DESKTOP_HOURS_START = 8.0             # 08:00 Astana
 DESKTOP_HOURS_END = 17.5              # 17:30 Astana
 
+# On-Exchange Canary Order Heartbeat Parameters
+CANARY_ORDER_LINK_ID = "CANARY_DESKTOP_PULSE"
+CANARY_SYMBOL = "SUIUSDT"
+CANARY_PRICE_A = 0.1001               # Micro-tick ping state A ($0.1001)
+CANARY_PRICE_B = 0.1002               # Micro-tick ping state B ($0.1002)
+CANARY_NOTIONAL_USDT = 5.05           # Exactly satisfies Bybit $5.00 spot minimum
+CANARY_HEARTBEAT_INTERVAL_SEC = 45.0  # Desktop touches/amends canary every 45s
+CANARY_FAILOVER_TIMEOUT_SEC = 180.0   # Mobile takes over if canary stale > 180s (3 min)
+
 # Continuous Adaptive Spacing Benchmarks
 BASE_SPACING = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}
 VOLATILITY_BENCHMARK_15M = 0.0080    # 0.80% 15m range is baseline (multiplier = 1.0)
@@ -725,6 +734,8 @@ class StandaloneBybitBot:
         self.cluster_board_msg_id: Optional[int] = None
         self.last_heartbeat_sent_ts: float = 0.0
         self.last_peer_heartbeat_ts: float = time.time()
+        self.last_canary_update_ts: float = 0.0
+        self.canary_toggle_state: bool = False
 
         self.client = BybitV5Client(BYBIT_API_KEY, BYBIT_API_SECRET, domain="api.bybit.kz")
         self.guard = MarketGuard()
@@ -790,15 +801,114 @@ class StandaloneBybitBot:
                 self.client.cancel_order(symbol, ord_id)
 
     def cancel_all_portfolio_buys(self) -> None:
-        """Cancels all BUY orders across all managed symbols."""
+        """Cancels all BUY orders across all managed symbols (excluding canary heartbeat order)."""
         for sym in [PRIMARY_SYMBOL, SECONDARY_SYMBOL, TERTIARY_SYMBOL]:
             try:
                 open_orders = self.client.get_open_orders(sym)
-                buys = [o for o in open_orders if o.get("side") == "Buy"]
+                buys = [
+                    o for o in open_orders
+                    if o.get("side") == "Buy" and o.get("orderLinkId") != CANARY_ORDER_LINK_ID
+                ]
                 if buys:
                     self.cancel_all_buys(sym, buys)
             except Exception as e:
                 logger.warning(f"Error canceling buys for {sym}: {e}")
+
+    def cancel_canary_order(self) -> None:
+        """Explicitly cancels the on-exchange canary order if present."""
+        try:
+            orders = self.client.get_open_orders(CANARY_SYMBOL)
+            canary = next((o for o in orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+            if canary and canary.get("orderId"):
+                logger.info(f"🕊️ [Canary] Снятие канареечного ордера {canary.get('orderId')}...")
+                self.client.cancel_order(CANARY_SYMBOL, canary.get("orderId"))
+        except Exception as e:
+            logger.debug(f"Error canceling canary order: {e}")
+
+    def maintain_canary_order(self) -> None:
+        """Maintains or pings the on-exchange canary order in Bybit order book (Desktop controller)."""
+        now = time.time()
+        if (now - self.last_canary_update_ts) < CANARY_HEARTBEAT_INTERVAL_SEC:
+            return
+
+        try:
+            open_orders = self.client.get_open_orders(CANARY_SYMBOL)
+            canary = next((o for o in open_orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+
+            # Alternate price between CANARY_PRICE_A ($0.1001) and CANARY_PRICE_B ($0.1002)
+            self.canary_toggle_state = not self.canary_toggle_state
+            target_price = CANARY_PRICE_B if self.canary_toggle_state else CANARY_PRICE_A
+            target_qty = math.ceil((CANARY_NOTIONAL_USDT / target_price) * 100) / 100.0  # ~50.45 SUI ($5.05)
+
+            if canary and canary.get("orderId"):
+                ord_id = canary.get("orderId")
+                # Amend existing order price without cancelling to refresh updatedTime on Bybit
+                resp = self.client.amend_order(
+                    symbol=CANARY_SYMBOL,
+                    order_id=ord_id,
+                    price=target_price,
+                    price_precision=4,
+                )
+                if resp.get("retCode") == 0:
+                    self.last_canary_update_ts = now
+                    logger.debug(f"🕊️ [Canary Pulse] Ордер {ord_id} обновлен на Bybit Spot @ ${target_price:.4f}")
+                else:
+                    # If amend rejected (e.g. order filled or race), recreate
+                    logger.info(f"🕊️ [Canary Re-create] Amend {ord_id} retCode={resp.get('retCode')}: {resp.get('retMsg')}")
+                    self.client.cancel_order(CANARY_SYMBOL, ord_id)
+                    time.sleep(0.5)
+                    self.client.create_limit_order(
+                        CANARY_SYMBOL,
+                        "Buy",
+                        target_qty,
+                        target_price,
+                        post_only=False,
+                        qty_precision=2,
+                        price_precision=4,
+                        order_link_id=CANARY_ORDER_LINK_ID,
+                    )
+                    self.last_canary_update_ts = now
+            else:
+                # Place fresh canary order
+                logger.info(f"🕊️ [Canary Init] Выставление канареечного ордера {target_qty} SUI @ ${target_price:.4f} ($5.05)...")
+                resp = self.client.create_limit_order(
+                    CANARY_SYMBOL,
+                    "Buy",
+                    target_qty,
+                    target_price,
+                    post_only=False,
+                    qty_precision=2,
+                    price_precision=4,
+                    order_link_id=CANARY_ORDER_LINK_ID,
+                )
+                if resp.get("retCode") == 0:
+                    self.last_canary_update_ts = now
+                    logger.info("🕊️ [Canary Init] Канареечный флаг успешно установлен в стакане Bybit!")
+        except Exception as e:
+            logger.warning(f"Error maintaining canary order: {e}")
+
+    def get_canary_status(self) -> Dict[str, Any]:
+        """Checks presence and age of canary heartbeat order in orderbook (Mobile watchdog)."""
+        now = time.time()
+        try:
+            orders = self.client.get_open_orders(CANARY_SYMBOL)
+            canary = next((o for o in orders if o.get("orderLinkId") == CANARY_ORDER_LINK_ID), None)
+            if not canary:
+                return {"found": False, "age_sec": 999999.0, "price": 0.0, "order_id": None}
+
+            # Bybit provides updatedTime in milliseconds
+            upd_ms = float(canary.get("updatedTime") or canary.get("createdTime") or (now * 1000.0))
+            upd_ts = upd_ms / 1000.0
+            age_sec = max(0.0, now - upd_ts)
+            return {
+                "found": True,
+                "age_sec": age_sec,
+                "price": float(canary.get("price", 0.0)),
+                "order_id": canary.get("orderId"),
+            }
+        except Exception as e:
+            logger.debug(f"get_canary_status error: {e}")
+            return {"found": False, "age_sec": 999999.0, "price": 0.0, "order_id": None}
 
     def handover_to(self, target_host: str, reason: str = "") -> None:
         """Gracefully transfers active controller role to target host (desktop or mobile)."""
@@ -818,6 +928,7 @@ class StandaloneBybitBot:
             self.is_active_controller = False
             self.role = "PASSIVE_OBSERVER"
             self.cancel_all_portfolio_buys()
+            self.cancel_canary_order()
             self.trailing_controller.reset(PRIMARY_SYMBOL)
             self.trailing_controller.reset(SECONDARY_SYMBOL)
             self.trailing_controller.reset(TERTIARY_SYMBOL)
@@ -1050,7 +1161,11 @@ class StandaloneBybitBot:
                     o["symbol"] = sym
                     all_open_orders_list.append(o)
 
-                open_buys = [o for o in open_orders if o.get("side") == "Buy"]
+                # Filter out on-exchange canary order so grid logic never touches or cancels it
+                open_buys = [
+                    o for o in open_orders
+                    if o.get("side") == "Buy" and o.get("orderLinkId") != CANARY_ORDER_LINK_ID
+                ]
                 open_sells = [o for o in open_orders if o.get("side") == "Sell"]
 
                 # PASSIVE OBSERVER: Strictly observe and collect telemetry.
@@ -1559,6 +1674,10 @@ class StandaloneBybitBot:
                 "all_open_orders": all_open_orders_list,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
+
+            # 10. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
+            if self.mode == "desktop" and self.is_active_controller and not self.is_paused:
+                self.maintain_canary_order()
 
         except Exception as e:
             logger.error(f"Trading loop exception: {e}")
@@ -2545,20 +2664,37 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                             "Наступило 17:30 по Астане (окончание рабочего дня ПК).\n"
                             "Телефон автоматически активировал `ACTIVE_CONTROLLER` и перешел на сетку STORM x2.0."
                         )
-                    # Dead Man's Switch / Failover: check if desktop died during office hours (only if explicitly enabled)
-                    elif ENABLE_AUTO_FAILOVER and active_host == "desktop" and hb_age >= HEARTBEAT_TIMEOUT_SECONDS:
-                        logger.warning(f"🚨 [Cluster Failover] Desktop не отвечает {int(hb_age)}с! Аварийный перехват...")
+                    # Dead Man's Switch / Failover: check if desktop died (via Canary Order or Telegram Heartbeat)
+                    canary_st = bot.get_canary_status()
+                    canary_stale = (canary_st.get("found") and canary_st.get("age_sec", 0.0) >= CANARY_FAILOVER_TIMEOUT_SEC)
+                    canary_missing = (not canary_st.get("found") and active_host == "desktop" and hb_age >= CANARY_FAILOVER_TIMEOUT_SEC)
+                    telegram_stale = (active_host == "desktop" and hb_age >= HEARTBEAT_TIMEOUT_SECONDS)
+
+                    should_failover = (ENABLE_AUTO_FAILOVER or not bot.enable_telegram) and (
+                        canary_stale or (canary_missing and telegram_stale) or (telegram_stale and not canary_st.get("found"))
+                    )
+
+                    if should_failover:
+                        fail_reason = (
+                            f"Канарейка {CANARY_ORDER_LINK_ID} не обновлялась {int(canary_st.get('age_sec', 0))}с"
+                            if canary_stale
+                            else f"ПК молчит {int(hb_age)}с (нет пульса и канарейки)"
+                        )
+                        logger.warning(f"🚨 [Cluster Failover] {fail_reason}! Аварийный перехват на телефон...")
                         bot.is_active_controller = True
                         bot.role = "ACTIVE_CONTROLLER"
+                        # Clean up stale canary order if it still exists
+                        bot.cancel_canary_order()
                         bot.cluster_board_msg_id = write_cluster_state(
                             "mobile",
-                            f"АВАРИЙНЫЙ ПЕРЕХВАТ (ПК молчит {int(hb_age)}с)",
+                            f"АВАРИЙНЫЙ ПЕРЕХВАТ ({fail_reason})",
                             bot.cluster_board_msg_id,
                         )
                         send_telegram(
                             f"🚨 *[FAILOVER: АВАРИЙНЫЙ ПЕРЕХВАТ УПРАВЛЕНИЯ]*\n\n"
-                            f"Рабочий компьютер не выходит на связь более 3 минут (нет пинга {int(hb_age)}с).\n"
-                            f"Телефон автоматически активировал роль `ACTIVE_CONTROLLER` и поднял защитную сетку!"
+                            f"Причина: **{fail_reason}**!\n"
+                            "Рабочий компьютер отключился или ушел в сон.\n"
+                            "Телефон автоматически активировал роль `ACTIVE_CONTROLLER` и поднял защитную сетку STORM x2.0!"
                         )
 
             time.sleep(10)

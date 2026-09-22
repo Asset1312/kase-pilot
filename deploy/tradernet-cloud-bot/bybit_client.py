@@ -160,6 +160,7 @@ class BybitV5Client:
         post_only: bool = True,
         qty_precision: int = 2,
         price_precision: int = 4,
+        order_link_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Places a limit Maker order on Bybit Spot with PostOnly support."""
         data = {
@@ -171,7 +172,35 @@ class BybitV5Client:
             "price": f"{price:.{price_precision}f}",
             "timeInForce": "PostOnly" if post_only else "GTC",
         }
+        if order_link_id:
+            data["orderLinkId"] = order_link_id
         return self._request("POST", "/v5/order/create", data=data)
+
+    def amend_order(
+        self,
+        symbol: str,
+        order_id: Optional[str] = None,
+        order_link_id: Optional[str] = None,
+        price: Optional[float] = None,
+        qty: Optional[float] = None,
+        category: str = "spot",
+        price_precision: int = 4,
+        qty_precision: int = 2,
+    ) -> Dict[str, Any]:
+        """Amends an existing limit order on Bybit Spot without cancelling it."""
+        data: Dict[str, Any] = {
+            "category": category,
+            "symbol": symbol.upper(),
+        }
+        if order_id:
+            data["orderId"] = order_id
+        if order_link_id:
+            data["orderLinkId"] = order_link_id
+        if price is not None:
+            data["price"] = f"{price:.{price_precision}f}"
+        if qty is not None:
+            data["qty"] = f"{qty:.{qty_precision}f}"
+        return self._request("POST", "/v5/order/amend", data=data)
 
     def create_market_order(
         self,
