@@ -1044,6 +1044,7 @@ class StandaloneBybitBot:
                 # Estimate Entry Price: volume-weighted average price (VWAP) across currently held position
                 entry_price = cur_price
                 sym_buys = self.recent_buys.get(sym, [])
+                active_position_buys: List[Dict[str, Any]] = []
                 if sym_buys and cur_free > 0:
                     accum_qty = 0.0
                     accum_val = 0.0
@@ -1055,6 +1056,7 @@ class StandaloneBybitBot:
                         take_q = min(b_q, max(0.0, cur_free - accum_qty))
                         accum_val += take_q * b_p
                         accum_qty += take_q
+                        active_position_buys.append(b)
                         if accum_qty >= (cur_free * 0.99):
                             break
                     if accum_qty > 0:
@@ -1063,6 +1065,7 @@ class StandaloneBybitBot:
                         entry_price = float(sym_buys[0].get("execPrice") or cur_price)
                 elif sym_buys:
                     entry_price = float(sym_buys[0].get("execPrice") or cur_price)
+                    active_position_buys = [sym_buys[0]]
 
                 # =============================================================
                 # TAKE-PROFIT LOGIC: TRAILING (DESKTOP) VS STATIC LIMIT (MOBILE)
@@ -1256,14 +1259,15 @@ class StandaloneBybitBot:
                 if step1_held and entry_price > 0:
                     t2 = round(entry_price * (1.0 - s2_disc), p_dec)
                     t3 = round(entry_price * (1.0 - s3_disc), p_dec)
-                    # When holding position, Step 3 must be at least 2.50% below cur_price and below lowest fill
+                    # When holding loaded position, Step 3 must be at least 2.50% below cur_price
                     min_t3_dist = 0.0250
                     if t3 >= (cur_price * (1.0 - min_t3_dist)):
                         t3 = round(cur_price * (1.0 - min_t3_dist), p_dec)
-                    if sym_buys:
-                        lowest_buy = min(float(b.get("execPrice") or 999.0) for b in sym_buys if float(b.get("execPrice") or 0) > 0)
-                        if lowest_buy < 900.0 and t3 >= (lowest_buy * 0.985):
-                            t3 = round(lowest_buy * 0.9750, p_dec)
+                    # And at least 2.50% below the lowest fill of currently held position
+                    if active_position_buys:
+                        lowest_active_buy = min(float(b.get("execPrice") or 999.0) for b in active_position_buys if float(b.get("execPrice") or 0) > 0)
+                        if lowest_active_buy < 900.0 and t3 >= (lowest_active_buy * (1.0 - min_t3_dist)):
+                            t3 = round(lowest_active_buy * (1.0 - min_t3_dist), p_dec)
                     if t2 >= cur_price:
                         t2 = round(cur_price * 0.9995, p_dec)
                 else:
