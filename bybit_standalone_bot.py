@@ -195,9 +195,11 @@ TRAILING_MIN_FLOOR_PCT = 0.0040     # +0.40% minimum profit floor (guaranteed ne
 
 # Flash Sniper (Crash Harvester / Wick Catcher) Parameters
 SNIPER_ENABLED = True               # Autonomous parallel branch for catching flash wicks
-SNIPER_ORDER_LINK_PREFIX = "SNIPER" # Unique orderLinkId prefix
+SNIPER_TARGET_SYMBOL = PRIMARY_SYMBOL    # Execution asset: SUIUSDT (whitelisted on Bybit KZ API key)
+SNIPER_RADAR_SYMBOL = PRIMARY_SYMBOL     # Lead sensor: SUIUSDT
+SNIPER_ORDER_LINK_PREFIX = "SNIPER_SUI"  # Unique orderLinkId prefix
 SNIPER_BUDGET_USD = 5.25            # Strict isolated budget (safely above Bybit $5.00 min)
-SNIPER_DIP_DEPTH_PCT = 0.0250       # -2.50% dip trap depth from current market price
+SNIPER_DIP_DEPTH_PCT = 0.0250       # -2.50% dip trap depth from current spot
 SNIPER_TP_PCT = 0.0150              # +1.50% instant Maker Limit take-profit on rebound
 SNIPER_AMEND_COOLDOWN_SEC = 180.0   # Soft chase cooldown (min 3 min before upward float)
 SNIPER_AMEND_THRESHOLD_PCT = 0.0060 # Float upward only if market pulled away by > 0.60%
@@ -578,7 +580,7 @@ class FlashSniperController:
 
     def __init__(
         self,
-        symbol: str = PRIMARY_SYMBOL,
+        symbol: str = SNIPER_TARGET_SYMBOL,
         budget_usd: float = SNIPER_BUDGET_USD,
         dip_depth_pct: float = SNIPER_DIP_DEPTH_PCT,
         tp_pct: float = SNIPER_TP_PCT,
@@ -1194,7 +1196,7 @@ class StandaloneBybitBot:
         self.is_paused = False
         self.running = True
         self.trailing_controller = TrailingTakeProfitController()
-        self.flash_sniper = FlashSniperController(symbol=PRIMARY_SYMBOL) if SNIPER_ENABLED else None
+        self.flash_sniper = FlashSniperController(symbol=SNIPER_TARGET_SYMBOL) if SNIPER_ENABLED else None
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
@@ -2272,34 +2274,49 @@ class StandaloneBybitBot:
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
-            # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester)
+            # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester on SUI)
             if self.flash_sniper and self.is_active_controller and not self.is_paused:
-                sui_spot = prices.get(PRIMARY_SYMBOL, 0.0)
-                sui_free = free_coins.get(PRIMARY_SYMBOL, 0.0)
+                target_spot = prices.get(SNIPER_TARGET_SYMBOL, 0.0)
+                target_free = free_coins.get(SNIPER_TARGET_SYMBOL, 0.0)
+                meta_target = TOKEN_METADATA.get(SNIPER_TARGET_SYMBOL, {})
+                target_p_dec = meta_target.get("price_decimals", 4)
+                target_q_dec = meta_target.get("qty_decimals", 2)
+
+                # Cancel any old NEAR sniper orders if they linger
+                for o in all_open_orders_list:
+                    if str(o.get("orderLinkId", "")).startswith("SNIPER_NEAR_"):
+                        self.client.cancel_order(SECONDARY_SYMBOL, o.get("orderId"))
+
                 self.flash_sniper.sync_on_exchange_orders(all_open_orders_list)
-                # Check if sniper buy just executed into position
-                if self.flash_sniper.state.status == "HUNTING" and not any(
-                    str(o.get("orderLinkId", "")).startswith(f"{SNIPER_ORDER_LINK_PREFIX}_BUY") for o in all_open_orders_list
-                ):
+                # Check if sniper buy executed into position by looking at active open orders
+                has_active_sniper_buy = any(
+                    str(o.get("orderLinkId", "")).startswith(f"{SNIPER_ORDER_LINK_PREFIX}_BUY")
+                    for o in all_open_orders_list
+                )
+                if self.flash_sniper.state.status == "HUNTING" and self.flash_sniper.state.buy_order_id and not has_active_sniper_buy:
                     # Buy order executed
-                    calc_qty = math.floor((self.flash_sniper.budget_usd / self.flash_sniper.state.buy_price) * 100) / 100.0 if self.flash_sniper.state.buy_price > 0 else 0.0
+                    calc_qty = (
+                        math.floor((self.flash_sniper.budget_usd / self.flash_sniper.state.buy_price) * (10 ** target_q_dec))
+                        / float(10 ** target_q_dec)
+                        if self.flash_sniper.state.buy_price > 0 else 0.0
+                    )
                     if calc_qty > 0:
                         self.flash_sniper.state.position_qty = calc_qty
                         self.flash_sniper.state.entry_price = self.flash_sniper.state.buy_price
                         self.flash_sniper.state.status = "POSITION_HELD"
                         logger.info(
-                            f"🎯⚡ [Flash Sniper Execution] Ордер-ловушка исполнен! "
-                            f"Куплено {calc_qty} {PRIMARY_SYMBOL} @ ${self.flash_sniper.state.entry_price:.4f}"
+                            f"🎯⚡ [Flash Sniper Execution] Ордер-ловушка {SNIPER_TARGET_SYMBOL} исполнен! "
+                            f"Куплено {calc_qty} @ ${self.flash_sniper.state.entry_price:.4f}"
                         )
                 # Run sniper tick
                 self.flash_sniper.tick(
                     client=self.client,
-                    cur_price=sui_spot,
+                    cur_price=target_spot,
                     avail_usdt=avail_usdt,
-                    free_qty=sui_free,
+                    free_qty=target_free,
                     lead_lag_status=self.guard.lead_lag_status,
-                    price_decimals=TOKEN_METADATA[PRIMARY_SYMBOL]["price_decimals"],
-                    qty_decimals=TOKEN_METADATA[PRIMARY_SYMBOL]["qty_decimals"],
+                    price_decimals=target_p_dec,
+                    qty_decimals=target_q_dec,
                 )
 
             # 11. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
@@ -2629,16 +2646,22 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             s_badge_col = "#10b981" if s_status in ("TP_PLACED", "POSITION_HELD") else ("#eab308" if s_status == "HUNTING" else "#64748b")
             s_desc = ""
             if s_status == "HUNTING":
-                s_desc = f"Ловушка в стакане: <b>${snp.get('buy_price', 0.0):.4f}</b> (-{SNIPER_DIP_DEPTH_PCT*100:.2f}%) | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+                s_desc = (
+                    f"Ловушка в стакане: <b>${snp.get('buy_price', 0.0):.4f}</b> (-{SNIPER_DIP_DEPTH_PCT*100:.2f}%) | "
+                    f"Пара: <b>{snp.get('symbol')}</b> | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+                )
             elif s_status == "TP_PLACED":
-                s_desc = f"⚡ ВХОД ВЫПОЛНЕН! Лимитный ТП: <b>${snp.get('tp_price', 0.0):.4f}</b> (+{SNIPER_TP_PCT*100:.2f}%) | Объем: <b>{snp.get('position_qty', 0.0)} SUI</b>"
+                s_desc = (
+                    f"⚡ ВХОД ВЫПОЛНЕН! Лимитный ТП: <b>${snp.get('tp_price', 0.0):.4f}</b> (+{SNIPER_TP_PCT*100:.2f}%) | "
+                    f"Объем: <b>{snp.get('position_qty', 0.0)} {snp.get('symbol')}</b>"
+                )
             else:
                 s_desc = f"В ожидании условий | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
 
             sniper_html = f"""
             <div class="card" style="border: 1px solid rgba(234, 179, 8, 0.35); background: rgba(30, 27, 75, 0.45);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                    <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper (Wick Catcher)</h3>
+                    <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper ({snp.get('symbol')})</h3>
                     <div style="display: flex; gap: 6px; align-items: center;">
                         <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_status}</span>
                         <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">Изолирован $5.25</span>
