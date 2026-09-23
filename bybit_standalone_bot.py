@@ -108,6 +108,23 @@ DESKTOP_STEP_WEIGHTS = {
     "step_3": 0.50,                   # ~50% of deployable capital per token
 }
 
+# Auto-Compounding Engine (Dynamic Capital Reinvestment & Growth Scaling)
+COMPOUNDING_ENABLED = True
+COMPOUND_BASELINE_EQUITY = 40.00   # Baseline portfolio equity for 1.00x ($40.00 USDT)
+COMPOUND_MAX_MULTIPLIER = 5.00     # Maximum growth scaling cap (5.00x)
+
+def compute_compound_multiplier(equity: float, baseline: float = COMPOUND_BASELINE_EQUITY) -> float:
+    """Computes smooth, safe compounding multiplier based on total portfolio equity.
+    
+    Guarantees multiplier >= 1.00 and <= COMPOUND_MAX_MULTIPLIER.
+    Quantized to 0.05 steps to eliminate jitter from micro-tick spot fluctuations.
+    """
+    if not COMPOUNDING_ENABLED or equity <= baseline:
+        return 1.00
+    raw_mult = equity / baseline
+    clamped = min(COMPOUND_MAX_MULTIPLIER, max(1.00, raw_mult))
+    return round(math.floor(clamped * 20.0) / 20.0, 2)
+
 # Cluster Handover & Failover Heartbeat Parameters
 HEARTBEAT_INTERVAL_SECONDS = 60       # Ping frequency from active desktop (60s)
 HEARTBEAT_TIMEOUT_SECONDS = 180       # Failover threshold for mobile (180s = 3 min)
@@ -613,6 +630,12 @@ class FlashSniperController:
         self.rocket_callback_pct = rocket_callback_pct
         self.rocket_floor_pct = rocket_floor_pct
         self.state = FlashSniperState(symbol=symbol, allocated_usd=budget_usd)
+
+    def update_budget(self, new_budget: float) -> None:
+        """Dynamically scales sniper budget under auto-compounding (never drops below $5.05)."""
+        safe_budget = max(5.05, round(new_budget, 2))
+        self.budget_usd = safe_budget
+        self.state.allocated_usd = safe_budget
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1585,6 +1608,9 @@ class StandaloneBybitBot:
                 + (total_avax * prices[TERTIARY_SYMBOL])
             )
 
+            # Dynamic Capital Compounding Multiplier
+            compound_mult = compute_compound_multiplier(est_total_equity, COMPOUND_BASELINE_EQUITY)
+
             if est_total_equity > self.peak_equity:
                 self.peak_equity = est_total_equity
 
@@ -2067,17 +2093,17 @@ class StandaloneBybitBot:
                 regime_cfg = REGIME_PROFILES.get(active_regime, REGIME_PROFILES["NORMAL"])
                 is_calm = bool(regime_cfg.get("is_calm_split", False))
 
-                # Budget allocation based on active regime and portfolio mode
+                # Budget allocation based on active regime, auto-compounding, and portfolio mode
                 spendable_usdt = max(0.0, avail_usdt - self.reserve_usdt) if self.mode == "desktop" else avail_usdt
                 if is_calm:
-                    step_budget_1a = regime_cfg.get("budget_1a", 5.25)
-                    step_budget_1b = regime_cfg.get("budget_1b", 5.50)
-                    step_budget_2 = regime_cfg.get("budget_2", 10.50)
-                    step_budget_3 = regime_cfg.get("budget_3", 15.00)
+                    step_budget_1a = round(regime_cfg.get("budget_1a", 5.25) * compound_mult, 2)
+                    step_budget_1b = round(regime_cfg.get("budget_1b", 5.50) * compound_mult, 2)
+                    step_budget_2 = round(regime_cfg.get("budget_2", 10.50) * compound_mult, 2)
+                    step_budget_3 = round(regime_cfg.get("budget_3", 15.00) * compound_mult, 2)
                 else:
-                    step_budget_1 = regime_cfg.get("budget_1", 7.95)
-                    step_budget_2 = regime_cfg.get("budget_2", 14.15)
-                    step_budget_3 = regime_cfg.get("budget_3", 17.00)
+                    step_budget_1 = round(regime_cfg.get("budget_1", 7.95) * compound_mult, 2)
+                    step_budget_2 = round(regime_cfg.get("budget_2", 14.15) * compound_mult, 2)
+                    step_budget_3 = round(regime_cfg.get("budget_3", 17.00) * compound_mult, 2)
 
                 step1_held = holding_val >= 4.50
                 step2_held = holding_val >= (step_budget_2 * 1.5)
@@ -2392,6 +2418,9 @@ class StandaloneBybitBot:
                     "btc_1m_chg": round(self.guard.last_btc_1m_chg * 100, 2),
                     "btc_3m_chg": round(self.guard.last_btc_3m_chg * 100, 2),
                 },
+                "compound_multiplier": compound_mult,
+                "compound_baseline": COMPOUND_BASELINE_EQUITY,
+                "compound_active": bool(compound_mult > 1.00),
                 "tokens": token_stats_map,
                 "all_open_orders": all_open_orders_list,
                 "sniper": self.flash_sniper.to_dict() if self.flash_sniper else None,
@@ -2400,6 +2429,10 @@ class StandaloneBybitBot:
 
             # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester on NEAR)
             if self.flash_sniper and self.is_active_controller and not self.is_paused:
+                # Dynamically scale sniper budget under auto-compounding
+                scaled_sniper_budget = round(SNIPER_BUDGET_USD * compound_mult, 2)
+                self.flash_sniper.update_budget(scaled_sniper_budget)
+
                 target_spot = prices.get(SNIPER_TARGET_SYMBOL, 0.0)
                 target_free = free_coins.get(SNIPER_TARGET_SYMBOL, 0.0)
                 meta_target = TOKEN_METADATA.get(SNIPER_TARGET_SYMBOL, {})
@@ -2767,6 +2800,14 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             else ""
         )
 
+        cmp_mult = float(st.get("compound_multiplier") or 1.0)
+        cmp_badge_html = (
+            f"<span class='badge' style='background: #a855f722; color: #c084fc; border: 1px solid #c084fc; font-size: 0.75rem; vertical-align: middle; margin-left: 6px;'>"
+            f"⚡ Авто-компаундинг: <b>{cmp_mult:.2f}x</b></span>"
+            if cmp_mult > 1.00
+            else "<span class='badge' style='background: #64748b22; color: #94a3b8; border: 1px solid #64748b; font-size: 0.75rem; vertical-align: middle; margin-left: 6px;'>Авто-компаундинг: 1.00x</span>"
+        )
+
         snp = st.get("sniper")
         if snp:
             s_status = snp.get("status", "IDLE")
@@ -2797,6 +2838,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                 s_desc = f"В ожидании условий | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b> | Режим: 🚀 Rocket Rider"
 
             s_badge_label = "🚀 ROCKET ACTIVE" if s_status == "ROCKET_ACTIVE" else s_status
+            s_alloc_lbl = f"Изолирован ${snp.get('allocated_usd', 5.25):.2f}"
 
             sniper_html = f"""
             <div class="card" style="border: 1px solid rgba(234, 179, 8, 0.35); background: rgba(30, 27, 75, 0.45);">
@@ -2804,7 +2846,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                     <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper ({snp.get('symbol')})</h3>
                     <div style="display: flex; gap: 6px; align-items: center;">
                         <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_badge_label}</span>
-                        <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">Изолирован $5.25</span>
+                        <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">{s_alloc_lbl}</span>
                     </div>
                 </div>
                 <div class="label" style="margin-top: 6px;">{s_desc}</div>
@@ -2855,10 +2897,10 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 </head>
 <body>
     <div class="card">
-        <h2>⚡ Bybit Kazakhstan Autonomous Fund {profile_badge_html}</h2>
+        <h2>⚡ Bybit Kazakhstan Autonomous Fund {profile_badge_html} {cmp_badge_html}</h2>
         <div class="label">Режим портфеля: <b>{st.get('portfolio_mode')}</b></div>
         <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
-        <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f}{reserve_html} | В ордерах: ${st.get('locked_usdt', 0.0):.2f}</div>
+        <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f}{reserve_html} | В ордерах: ${st.get('locked_usdt', 0.0):.2f} | Компаундинг: <b>{cmp_mult:.2f}x</b></div>
         <div class="label" style="margin-top: 6px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
             <div class="badge" style="background: {guard_color}22; color: {guard_color}; border: 1px solid {guard_color}; margin-top: 8px;">

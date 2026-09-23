@@ -185,3 +185,29 @@ def test_flash_sniper_sync_cycle_completion():
     assert sniper.state.completed_cycles == 1
     assert sniper.state.total_profit_usd > 0.0
     assert sniper.state.position_qty == 0.0
+
+
+def test_flash_sniper_auto_compounding():
+    from bybit_standalone_bot import compute_compound_multiplier
+
+    # Baseline equity ($40) -> 1.00x
+    assert compute_compound_multiplier(40.0) == 1.00
+    assert compute_compound_multiplier(35.0) == 1.00
+
+    # Equity $54.16 -> 1.35x
+    mult = compute_compound_multiplier(54.16, baseline=40.0)
+    assert mult == 1.35
+
+    # Equity $70.00 -> 1.75x
+    assert compute_compound_multiplier(70.0, baseline=40.0) == 1.75
+
+    # Test sniper update_budget
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25)
+    sniper.update_budget(5.25 * mult)  # 5.25 * 1.35 = 7.0875 -> 7.09
+    assert sniper.budget_usd == 7.09
+    assert sniper.state.allocated_usd == 7.09
+
+    # Floor safety: never drops below $5.05
+    sniper.update_budget(2.00)
+    assert sniper.budget_usd == 5.05
+
