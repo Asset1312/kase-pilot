@@ -127,8 +127,8 @@ CANARY_FAILOVER_TIMEOUT_SEC = 180.0   # Mobile takes over if canary stale > 180s
 # Continuous Adaptive Spacing Benchmarks
 BASE_SPACING = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}
 VOLATILITY_BENCHMARK_15M = 0.0080    # 0.80% 15m range is baseline (multiplier = 1.0)
-MIN_VOL_MULTIPLIER = 0.75            # in calm market, step1 tightens to ~0.41%
-MAX_VOL_MULTIPLIER = 2.00            # in storm market, step1 widens to ~1.10%
+MIN_VOL_MULTIPLIER = 1.00            # step 1 is firmly anchored at 0.55% (does not shrink below 0.55%)
+MAX_VOL_MULTIPLIER = 2.00            # in storm market, step1 widens up to ~1.10%
 
 # Take-Profit & Soft Breakeven
 STANDARD_TP_PCT = 0.0070            # +0.70% (Net +0.50% after fees; captures micro-swings)
