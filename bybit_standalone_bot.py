@@ -1882,12 +1882,35 @@ class StandaloneBybitBot:
 
         while self.running:
             self.step()
-            is_fast = (
+
+            # Dynamic Polling Frequency:
+            # 1. Trailing Active: 1.0s (ultra-fast momentum tracking)
+            # 2. Rocket Launch Corridor (within 0.35% of activation or in profit >= 0.40%): 1.5s (never miss the peak)
+            # 3. Standard resting grid: 5.0s (responsive, no Bybit rate limit issues)
+            is_trailing = (
                 self.mode == "desktop"
                 and hasattr(self, "trailing_controller")
                 and self.trailing_controller.is_any_trailing_active()
             )
-            sleep_time = 1.5 if is_fast else 10.0
+
+            near_rocket = False
+            if self.mode == "desktop" and not is_trailing:
+                tok_data = self.stats.get("tokens", {})
+                for sym_k, s_info in tok_data.items():
+                    if s_info.get("holding_value_usd", 0.0) >= 4.5:
+                        r_dist = s_info.get("rocket_distance_pct", 99.0)
+                        c_gain = s_info.get("current_gain_pct", 0.0)
+                        if r_dist <= 0.35 or c_gain >= 0.40:
+                            near_rocket = True
+                            break
+
+            if is_trailing:
+                sleep_time = 1.0
+            elif near_rocket:
+                sleep_time = 1.5
+            else:
+                sleep_time = 5.0
+
             time.sleep(sleep_time)
 
 
@@ -2001,7 +2024,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                 rocket_box = f"""
                 <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25); backdrop-filter: blur(4px);">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
-                        <span style="font-weight: bold; color: #38bdf8; font-size: 0.95rem;">🎯 Ждем активацию РАКЕТЫ (+1.00% от входа)</span>
+                        <span style="font-weight: bold; color: #38bdf8; font-size: 0.95rem;">🎯 Ждем активацию РАКЕТЫ (+{TRAILING_ACTIVATION_PCT*100:.2f}% от входа)</span>
                         <span class="badge" style="background: {dist_badge_col}22; color: {dist_badge_col}; border: 1px solid {dist_badge_col};">Цель: ${rocket_p:.4f}</span>
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 8px;">
