@@ -221,9 +221,9 @@ SNIPER_TP_PCT = 0.0150              # Baseline TP (+1.50%)
 SNIPER_AMEND_COOLDOWN_SEC = 60.0    # Soft chase cooldown (fast 60s upward float)
 SNIPER_AMEND_THRESHOLD_PCT = 0.0050 # Float upward if market pulled away by > 0.50%
 SNIPER_USE_ROCKET = True            # Rocket Rider Trailing Take-Profit for Flash Sniper
-SNIPER_ROCKET_ACTIVATION_PCT = 0.0150 # +1.50% rebound activates Rocket Rider Trailing
-SNIPER_ROCKET_CALLBACK_PCT = 0.0035 # 0.35% pullback from peak triggers instant exit
-SNIPER_ROCKET_FLOOR_PCT = 0.0120    # +1.20% guaranteed profit floor once activated
+SNIPER_ROCKET_ACTIVATION_PCT = 0.0120 # +1.20% rebound activates Rocket Rider Trailing
+SNIPER_ROCKET_CALLBACK_PCT = 0.0050 # 0.50% pullback from peak triggers instant exit (noise buffer)
+SNIPER_ROCKET_FLOOR_PCT = 0.0090    # +0.90% guaranteed profit floor once activated
 
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
@@ -235,6 +235,9 @@ TOKEN_METADATA = {
         "price_decimals": 4,
         "dump_1m_threshold": -0.0060,
         "dump_3m_threshold": -0.0120,
+        "trailing_activation_pct": 0.0070, # +0.70% (Responsive Micro-Scalp)
+        "trailing_callback_pct": 0.0030,   # 0.30%
+        "trailing_min_floor_pct": 0.0040,  # +0.40%
     },
     SECONDARY_SYMBOL: {
         "base_coin": "NEAR",
@@ -245,6 +248,9 @@ TOKEN_METADATA = {
         "price_decimals": 3,
         "dump_1m_threshold": -0.0060,
         "dump_3m_threshold": -0.0120,
+        "trailing_activation_pct": 0.0120, # +1.20% (Wide Rocket Runway)
+        "trailing_callback_pct": 0.0050,   # 0.50% (Noise buffer)
+        "trailing_min_floor_pct": 0.0090,  # +0.90% (Guaranteed solid win)
     },
     TERTIARY_SYMBOL: {
         "base_coin": "AVAX",
@@ -255,7 +261,10 @@ TOKEN_METADATA = {
         "price_decimals": 3,
         "dump_1m_threshold": -0.0060,
         "dump_3m_threshold": -0.0120,
-    }
+        "trailing_activation_pct": 0.0100, # +1.00%
+        "trailing_callback_pct": 0.0040,   # 0.40%
+        "trailing_min_floor_pct": 0.0070,  # +0.70%
+    },
 }
 
 
@@ -509,6 +518,9 @@ class TrailingTakeProfitController:
         entry_price: float,
         free_qty: float,
         holding_val_usd: float,
+        activation_pct: Optional[float] = None,
+        callback_pct: Optional[float] = None,
+        min_floor_pct: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Updates trailing state with current price and returns event or action if triggered."""
         if holding_val_usd < 5.00 or free_qty <= 0 or entry_price <= 0 or cur_price <= 0:
@@ -516,18 +528,22 @@ class TrailingTakeProfitController:
                 self.reset(symbol)
             return None
 
+        act_pct = activation_pct if activation_pct is not None else self.activation_pct
+        cb_pct = callback_pct if callback_pct is not None else self.callback_pct
+        fl_pct = min_floor_pct if min_floor_pct is not None else self.min_floor_pct
+
         state = self.get_state(symbol)
         state.entry_price = entry_price
         gain_pct = (cur_price - entry_price) / entry_price
 
         if state.status == "IDLE":
-            # Activation condition: gain >= activation_pct (+1.00%)
-            if gain_pct >= self.activation_pct:
+            # Activation condition: gain >= act_pct
+            if gain_pct >= act_pct:
                 state.status = "TRAILING_ACTIVE"
                 state.peak_price = cur_price
-                state.activation_price = entry_price * (1.0 + self.activation_pct)
-                state.floor_price = entry_price * (1.0 + self.min_floor_pct)
-                raw_stop = cur_price * (1.0 - self.callback_pct)
+                state.activation_price = entry_price * (1.0 + act_pct)
+                state.floor_price = entry_price * (1.0 + fl_pct)
+                raw_stop = cur_price * (1.0 - cb_pct)
                 state.stop_price = max(raw_stop, state.floor_price)
                 state.activated_at = time.time()
 
@@ -548,8 +564,8 @@ class TrailingTakeProfitController:
             # High Water Mark tracking: update peak and ratchet up stop
             if cur_price > state.peak_price:
                 state.peak_price = cur_price
-                raw_stop = cur_price * (1.0 - self.callback_pct)
-                state.floor_price = entry_price * (1.0 + self.min_floor_pct)
+                raw_stop = cur_price * (1.0 - cb_pct)
+                state.floor_price = entry_price * (1.0 + fl_pct)
                 # Ratchet up: stop price strictly never decreases
                 state.stop_price = max(raw_stop, state.floor_price, state.stop_price)
 
@@ -1871,8 +1887,14 @@ class StandaloneBybitBot:
                 position_closed_by_trailing = False
 
                 if self.mode == "desktop":
+                    sym_act_pct = meta.get("trailing_activation_pct", TRAILING_ACTIVATION_PCT)
+                    sym_cb_pct = meta.get("trailing_callback_pct", TRAILING_CALLBACK_PCT)
+                    sym_fl_pct = meta.get("trailing_min_floor_pct", TRAILING_MIN_FLOOR_PCT)
                     trailing_res = self.trailing_controller.update_price(
-                        sym, cur_price, entry_price, cur_free, free_val
+                        sym, cur_price, entry_price, cur_free, free_val,
+                        activation_pct=sym_act_pct,
+                        callback_pct=sym_cb_pct,
+                        min_floor_pct=sym_fl_pct,
                     )
                     tr_state = self.trailing_controller.get_state(sym)
                     trailing_active = (tr_state.status == "TRAILING_ACTIVE")
@@ -1891,8 +1913,8 @@ class StandaloneBybitBot:
                                 f"Пара: **{sym}**\n"
                                 f"Вход: **${entry_price:.4f}**\n"
                                 f"Текущая цена: **${cur_price:.4f}** (+{trailing_res['gain_pct']*100:.2f}%)\n"
-                                f"Начальный стоп: **${trailing_res['stop_price']:.4f}** (Откат: 0.45%)\n"
-                                f"Гарантированный пол: **${trailing_res['floor_price']:.4f}** (+0.50%)\n\n"
+                                f"Начальный стоп: **${trailing_res['stop_price']:.4f}** (Откат: {sym_cb_pct*100:.2f}%)\n"
+                                f"Гарантированный пол: **${trailing_res['floor_price']:.4f}** (+{sym_fl_pct*100:.2f}%)\n\n"
                                 "Режим: Сопровождение импульса до первого разворота."
                             )
                             if open_sells:
@@ -1931,7 +1953,8 @@ class StandaloneBybitBot:
                                 self.client.cancel_order(sym, s_ord.get("orderId"))
                                 open_sells.remove(s_ord)
                     elif free_val >= 5.00:
-                        tp_mode = f"🚀 Rocket Rider (Цель: +{TRAILING_ACTIVATION_PCT*100:.2f}%)"
+                        sym_act_pct = meta.get("trailing_activation_pct", TRAILING_ACTIVATION_PCT)
+                        tp_mode = f"🚀 Rocket Rider (Цель: +{sym_act_pct*100:.2f}%)"
                         if open_sells:
                             for s_ord in list(open_sells):
                                 self.client.cancel_order(sym, s_ord.get("orderId"))
@@ -2325,7 +2348,8 @@ class StandaloneBybitBot:
                 # Assemble token statistics
                 dec = meta.get("price_decimals", 4)
                 has_holding = (cur_free * cur_price) >= 4.5
-                rocket_target = round(entry_price * (1.0 + TRAILING_ACTIVATION_PCT), dec) if (has_holding and entry_price > 0) else 0.0
+                sym_act_pct = meta.get("trailing_activation_pct", TRAILING_ACTIVATION_PCT)
+                rocket_target = round(entry_price * (1.0 + sym_act_pct), dec) if (has_holding and entry_price > 0) else 0.0
                 rocket_dist = round(((rocket_target - cur_price) / cur_price) * 100, 2) if (rocket_target > 0 and cur_price > 0) else 0.0
                 curr_gain = round(((cur_price - entry_price) / entry_price) * 100, 2) if (has_holding and entry_price > 0) else 0.0
 
