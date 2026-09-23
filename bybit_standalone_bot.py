@@ -195,9 +195,9 @@ TRAILING_MIN_FLOOR_PCT = 0.0040     # +0.40% minimum profit floor (guaranteed ne
 
 # Flash Sniper (Crash Harvester / Wick Catcher) Parameters
 SNIPER_ENABLED = True               # Autonomous parallel branch for catching flash wicks
-SNIPER_TARGET_SYMBOL = PRIMARY_SYMBOL    # Execution asset: SUIUSDT (whitelisted on Bybit KZ API key)
-SNIPER_RADAR_SYMBOL = PRIMARY_SYMBOL     # Lead sensor: SUIUSDT
-SNIPER_ORDER_LINK_PREFIX = "SNIPER_SUI"  # Unique orderLinkId prefix
+SNIPER_TARGET_SYMBOL = SECONDARY_SYMBOL   # Execution asset: NEARUSDT (whitelisted on Bybit KZ API key)
+SNIPER_RADAR_SYMBOL = PRIMARY_SYMBOL     # Lead sensor: SUIUSDT (drops first by 60-180s)
+SNIPER_ORDER_LINK_PREFIX = "SNIPER_NEAR" # Unique orderLinkId prefix
 SNIPER_BUDGET_USD = 5.25            # Strict isolated budget (safely above Bybit $5.00 min)
 SNIPER_DIP_DEPTH_PCT = 0.0250       # -2.50% dip trap depth from current spot
 SNIPER_TP_PCT = 0.0150              # +1.50% instant Maker Limit take-profit on rebound
@@ -1550,6 +1550,10 @@ class StandaloneBybitBot:
             if self.trio_mode_active or avax_has_holdings:
                 symbols_to_process.append(TERTIARY_SYMBOL)
 
+            # Ensure Flash Sniper target asset is always monitored and processed
+            if SNIPER_ENABLED and SNIPER_TARGET_SYMBOL not in symbols_to_process:
+                symbols_to_process.append(SNIPER_TARGET_SYMBOL)
+
             # 5. MarketGuard: Update Klines, BTC Lead-Lag & Idiosyncratic Dumps
             global_dump, global_reason, token_dumps = self.guard.update_market_state(symbols_to_process)
 
@@ -2274,7 +2278,7 @@ class StandaloneBybitBot:
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
-            # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester on SUI)
+            # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester on NEAR)
             if self.flash_sniper and self.is_active_controller and not self.is_paused:
                 target_spot = prices.get(SNIPER_TARGET_SYMBOL, 0.0)
                 target_free = free_coins.get(SNIPER_TARGET_SYMBOL, 0.0)
@@ -2282,10 +2286,13 @@ class StandaloneBybitBot:
                 target_p_dec = meta_target.get("price_decimals", 4)
                 target_q_dec = meta_target.get("qty_decimals", 2)
 
-                # Cancel any old NEAR sniper orders if they linger
+                # Cancel any old/mismatched sniper orders if target symbol changed
                 for o in all_open_orders_list:
-                    if str(o.get("orderLinkId", "")).startswith("SNIPER_NEAR_"):
-                        self.client.cancel_order(SECONDARY_SYMBOL, o.get("orderId"))
+                    oid_link = str(o.get("orderLinkId", ""))
+                    if oid_link.startswith("SNIPER_") and not oid_link.startswith(SNIPER_ORDER_LINK_PREFIX):
+                        old_sym = o.get("symbol", PRIMARY_SYMBOL)
+                        logger.info(f"🧹 [Flash Sniper Cleanup] Снятие устаревшего ордера {oid_link} на {old_sym}")
+                        self.client.cancel_order(old_sym, o.get("orderId"))
 
                 self.flash_sniper.sync_on_exchange_orders(all_open_orders_list)
                 # Check if sniper buy executed into position by looking at active open orders
