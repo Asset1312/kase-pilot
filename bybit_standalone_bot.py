@@ -740,6 +740,25 @@ class FlashSniperController:
                         # Order might have filled or vanished
                         logger.debug(f"Flash sniper amend result: {resp_amend}")
 
+        # Check if held position was already sold/closed on exchange (e.g. by Trailing Take-Profit)
+        if self.state.status in ("POSITION_HELD", "ROCKET_ACTIVE") and free_qty <= 0.05:
+            if self.state.position_qty > 0 and self.state.entry_price > 0:
+                realized = round((cur_price - self.state.entry_price) * self.state.position_qty, 4) if cur_price > 0 else 0.0
+                self.state.completed_cycles += 1
+                self.state.total_profit_usd += max(0.0, realized)
+                logger.info(
+                    f"🎯💰 [Flash Sniper] Позиция закрыта на бирже! Цикл #{self.state.completed_cycles} завершен, "
+                    f"Профит: +${realized:.4f} USDT. Перезарядка ловушки..."
+                )
+            self.state.status = "IDLE"
+            self.state.position_qty = 0.0
+            self.state.entry_price = 0.0
+            self.state.peak_price = 0.0
+            self.state.stop_price = 0.0
+            self.state.floor_price = 0.0
+            self.state.buy_order_id = None
+            self.state.buy_price = 0.0
+
         # 3. Position filled -> Handle Take-Profit (Rocket Rider or Maker TP)
         if self.state.status in ("POSITION_HELD", "ROCKET_ACTIVE") and self.state.position_qty > 0 and self.state.entry_price > 0:
             if not self.use_rocket:
