@@ -200,9 +200,13 @@ SNIPER_RADAR_SYMBOL = PRIMARY_SYMBOL     # Lead sensor: SUIUSDT (drops first by 
 SNIPER_ORDER_LINK_PREFIX = "SNIPER_NEAR" # Unique orderLinkId prefix
 SNIPER_BUDGET_USD = 5.25            # Strict isolated budget (safely above Bybit $5.00 min)
 SNIPER_DIP_DEPTH_PCT = 0.0250       # -2.50% dip trap depth from current spot
-SNIPER_TP_PCT = 0.0150              # +1.50% instant Maker Limit take-profit on rebound
+SNIPER_TP_PCT = 0.0150              # Baseline TP (+1.50%)
 SNIPER_AMEND_COOLDOWN_SEC = 180.0   # Soft chase cooldown (min 3 min before upward float)
 SNIPER_AMEND_THRESHOLD_PCT = 0.0060 # Float upward only if market pulled away by > 0.60%
+SNIPER_USE_ROCKET = True            # Rocket Rider Trailing Take-Profit for Flash Sniper
+SNIPER_ROCKET_ACTIVATION_PCT = 0.0150 # +1.50% rebound activates Rocket Rider Trailing
+SNIPER_ROCKET_CALLBACK_PCT = 0.0035 # 0.35% pullback from peak triggers instant exit
+SNIPER_ROCKET_FLOOR_PCT = 0.0120    # +1.20% guaranteed profit floor once activated
 
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
@@ -563,18 +567,25 @@ class FlashSniperState:
     entry_price: float = 0.0
     tp_order_id: Optional[str] = None
     tp_price: float = 0.0
-    status: str = "IDLE"  # IDLE | HUNTING | POSITION_HELD | TP_PLACED
+    status: str = "IDLE"  # IDLE | HUNTING | POSITION_HELD | ROCKET_ACTIVE | TP_PLACED
     last_amend_time: float = 0.0
     completed_cycles: int = 0
     total_profit_usd: float = 0.0
+    peak_price: float = 0.0
+    stop_price: float = 0.0
+    floor_price: float = 0.0
 
 
 class FlashSniperController:
-    """Autonomous Parallel Flash-Crash Harvester / Wick Catcher.
+    """Autonomous Parallel Flash-Crash Harvester / Wick Catcher with Rocket Rider Trailing.
 
     Places an isolated limit Maker buy order at -2.50% dip depth with dedicated $5.25 USDT.
     Soft-floats upward only when market drifts higher and cooldown expires.
-    Immediately places a +1.50% Maker Limit Take-Profit upon execution to catch the V-bounce.
+    Equipped with dynamic Rocket Rider Trailing Take-Profit:
+      - Activates at +1.50% rebound from bottom
+      - Secures guaranteed profit floor at +1.20%
+      - Rides upward momentum, ratcheting stop 0.35% beneath peak
+      - Ejects at the crest of the bounce for maximal profit
     Shielded by Lead-Lag CRASH guard to prevent catching knives during systemic market crashes.
     """
 
@@ -586,6 +597,10 @@ class FlashSniperController:
         tp_pct: float = SNIPER_TP_PCT,
         amend_cooldown_sec: float = SNIPER_AMEND_COOLDOWN_SEC,
         amend_threshold_pct: float = SNIPER_AMEND_THRESHOLD_PCT,
+        use_rocket: bool = SNIPER_USE_ROCKET,
+        rocket_activation_pct: float = SNIPER_ROCKET_ACTIVATION_PCT,
+        rocket_callback_pct: float = SNIPER_ROCKET_CALLBACK_PCT,
+        rocket_floor_pct: float = SNIPER_ROCKET_FLOOR_PCT,
     ) -> None:
         self.symbol = symbol
         self.budget_usd = budget_usd
@@ -593,6 +608,10 @@ class FlashSniperController:
         self.tp_pct = tp_pct
         self.amend_cooldown_sec = amend_cooldown_sec
         self.amend_threshold_pct = amend_threshold_pct
+        self.use_rocket = use_rocket
+        self.rocket_activation_pct = rocket_activation_pct
+        self.rocket_callback_pct = rocket_callback_pct
+        self.rocket_floor_pct = rocket_floor_pct
         self.state = FlashSniperState(symbol=symbol, allocated_usd=budget_usd)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -604,6 +623,10 @@ class FlashSniperController:
             "position_qty": self.state.position_qty,
             "entry_price": self.state.entry_price,
             "tp_price": self.state.tp_price,
+            "use_rocket": self.use_rocket,
+            "peak_price": self.state.peak_price,
+            "stop_price": self.state.stop_price,
+            "floor_price": self.state.floor_price,
             "completed_cycles": self.state.completed_cycles,
             "total_profit_usd": round(self.state.total_profit_usd, 4),
         }
@@ -647,6 +670,12 @@ class FlashSniperController:
                 self.state.tp_price = 0.0
                 self.state.buy_order_id = None
                 self.state.buy_price = 0.0
+                self.state.peak_price = 0.0
+                self.state.stop_price = 0.0
+                self.state.floor_price = 0.0
+            elif self.state.status in ("POSITION_HELD", "ROCKET_ACTIVE"):
+                # Position is held in-flight without open exchange orders while riding rocket
+                pass
             elif self.state.status == "HUNTING":
                 # Buy order disappeared: check if it filled or was canceled
                 # Status will be updated in process_cycle
@@ -711,32 +740,104 @@ class FlashSniperController:
                         # Order might have filled or vanished
                         logger.debug(f"Flash sniper amend result: {resp_amend}")
 
-        # 3. Position filled -> Place instant +1.50% Maker Limit TP
-        if self.state.status == "POSITION_HELD" and self.state.position_qty > 0:
-            tp_price = round(self.state.entry_price * (1.0 + self.tp_pct), price_decimals)
-            tp_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
-            if (tp_qty * tp_price) >= 5.00:
-                unique_link_id = f"{SNIPER_ORDER_LINK_PREFIX}_TP_{int(now)}"
-                logger.info(
-                    f"🎯🟢 [Flash Sniper TP] Выставление лимитного ТП: {tp_qty} @ ${tp_price:.4f} (+{self.tp_pct*100:.2f}%)"
-                )
-                resp_tp = client.create_limit_order(
-                    self.symbol,
-                    "Sell",
-                    tp_qty,
-                    tp_price,
-                    post_only=True,
-                    price_precision=price_decimals,
-                    qty_precision=qty_decimals,
-                    order_link_id=unique_link_id,
-                )
-                if resp_tp.get("retCode") == 0:
-                    self.state.tp_order_id = resp_tp.get("result", {}).get("orderId")
-                    self.state.tp_price = tp_price
-                    self.state.status = "TP_PLACED"
-                    return {"action": "TP_PLACED", "tp_price": tp_price, "qty": tp_qty}
-                else:
-                    logger.warning(f"Failed to place Flash Sniper TP: {resp_tp}")
+        # 3. Position filled -> Handle Take-Profit (Rocket Rider or Maker TP)
+        if self.state.status in ("POSITION_HELD", "ROCKET_ACTIVE") and self.state.position_qty > 0 and self.state.entry_price > 0:
+            if not self.use_rocket:
+                # Static Maker Limit TP
+                tp_price = round(self.state.entry_price * (1.0 + self.tp_pct), price_decimals)
+                tp_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                if (tp_qty * tp_price) >= 5.00:
+                    unique_link_id = f"{SNIPER_ORDER_LINK_PREFIX}_TP_{int(now)}"
+                    logger.info(
+                        f"🎯🟢 [Flash Sniper TP] Выставление лимитного ТП: {tp_qty} @ ${tp_price:.4f} (+{self.tp_pct*100:.2f}%)"
+                    )
+                    resp_tp = client.create_limit_order(
+                        self.symbol,
+                        "Sell",
+                        tp_qty,
+                        tp_price,
+                        post_only=True,
+                        price_precision=price_decimals,
+                        qty_precision=qty_decimals,
+                        order_link_id=unique_link_id,
+                    )
+                    if resp_tp.get("retCode") == 0:
+                        self.state.tp_order_id = resp_tp.get("result", {}).get("orderId")
+                        self.state.tp_price = tp_price
+                        self.state.status = "TP_PLACED"
+                        return {"action": "TP_PLACED", "tp_price": tp_price, "qty": tp_qty}
+                    else:
+                        logger.warning(f"Failed to place Flash Sniper TP: {resp_tp}")
+            else:
+                # Dynamic Rocket Rider Trailing Take-Profit
+                gain_pct = round((cur_price - self.state.entry_price) / self.state.entry_price, 6)
+
+                if self.state.status == "POSITION_HELD":
+                    # Check activation condition (+1.50% rebound)
+                    if gain_pct >= self.rocket_activation_pct:
+                        self.state.status = "ROCKET_ACTIVE"
+                        self.state.peak_price = cur_price
+                        self.state.floor_price = round(self.state.entry_price * (1.0 + self.rocket_floor_pct), price_decimals)
+                        raw_stop = round(cur_price * (1.0 - self.rocket_callback_pct), price_decimals)
+                        self.state.stop_price = max(raw_stop, self.state.floor_price)
+                        logger.info(
+                            f"🎯🚀 [Sniper Rocket] ЗАЖИГАНИЕ РАКЕТЫ! Отскок: +{gain_pct*100:.2f}% | "
+                            f"Пик: ${cur_price:.4f}, Защитный пол: ${self.state.floor_price:.4f}, Стоп: ${self.state.stop_price:.4f}"
+                        )
+                        return {
+                            "event": "ROCKET_ACTIVATED",
+                            "symbol": self.symbol,
+                            "cur_price": cur_price,
+                            "gain_pct": gain_pct,
+                            "stop_price": self.state.stop_price,
+                            "floor_price": self.state.floor_price,
+                        }
+
+                elif self.state.status == "ROCKET_ACTIVE":
+                    # Update peak and ratchet up trailing stop
+                    if cur_price > self.state.peak_price:
+                        self.state.peak_price = cur_price
+                        raw_stop = round(cur_price * (1.0 - self.rocket_callback_pct), price_decimals)
+                        self.state.floor_price = round(self.state.entry_price * (1.0 + self.rocket_floor_pct), price_decimals)
+                        self.state.stop_price = max(raw_stop, self.state.floor_price, self.state.stop_price)
+                        logger.info(
+                            f"🎯🚀 [Sniper Rocket Ratchet] Новый пик: ${cur_price:.4f} (+{gain_pct*100:.2f}%) | "
+                            f"Стоп подтянут: ${self.state.stop_price:.4f}"
+                        )
+
+                    # Trigger exit on pullback from peak
+                    if cur_price <= self.state.stop_price:
+                        sell_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                        logger.info(
+                            f"🎯🚀💥 [Sniper Rocket Eject] Фиксация на пике! Откат от вершины до ${cur_price:.4f}. "
+                            f"Сброс {sell_qty} {self.symbol}..."
+                        )
+                        resp_sell = client.create_market_order(self.symbol, "Sell", sell_qty)
+                        if resp_sell.get("retCode") == 0:
+                            realized = round((cur_price - self.state.entry_price) * sell_qty, 4)
+                            self.state.completed_cycles += 1
+                            self.state.total_profit_usd += max(0.0, realized)
+                            logger.info(
+                                f"🎯💰 [Sniper Rocket Closed] Цикл #{self.state.completed_cycles} закрыт по Ракете! "
+                                f"Профит: +${realized:.4f} USDT (+{gain_pct*100:.2f}%)"
+                            )
+                            self.state.status = "IDLE"
+                            self.state.position_qty = 0.0
+                            self.state.entry_price = 0.0
+                            self.state.peak_price = 0.0
+                            self.state.stop_price = 0.0
+                            self.state.floor_price = 0.0
+                            self.state.buy_order_id = None
+                            self.state.buy_price = 0.0
+                            return {
+                                "action": "ROCKET_EXIT",
+                                "symbol": self.symbol,
+                                "exit_price": cur_price,
+                                "profit_usd": realized,
+                                "gain_pct": gain_pct,
+                            }
+                        else:
+                            logger.error(f"Failed to execute Sniper Rocket market exit: {resp_sell}")
 
         # 4. IDLE mode -> Place new dip trap if funds available
         if self.state.status == "IDLE" and avail_usdt >= self.budget_usd and cur_price > 0:
@@ -2650,12 +2751,23 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         snp = st.get("sniper")
         if snp:
             s_status = snp.get("status", "IDLE")
-            s_badge_col = "#10b981" if s_status in ("TP_PLACED", "POSITION_HELD") else ("#eab308" if s_status == "HUNTING" else "#64748b")
+            s_badge_col = "#a855f7" if s_status == "ROCKET_ACTIVE" else ("#10b981" if s_status in ("TP_PLACED", "POSITION_HELD") else ("#eab308" if s_status == "HUNTING" else "#64748b"))
             s_desc = ""
             if s_status == "HUNTING":
                 s_desc = (
                     f"Ловушка в стакане: <b>${snp.get('buy_price', 0.0):.4f}</b> (-{SNIPER_DIP_DEPTH_PCT*100:.2f}%) | "
-                    f"Пара: <b>{snp.get('symbol')}</b> | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+                    f"Пара: <b>{snp.get('symbol')}</b> | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b> | 🚀 <b>Sniper-Rocket Rider ГОТОВ</b>"
+                )
+            elif s_status == "ROCKET_ACTIVE":
+                s_desc = (
+                    f"🚀🔥 <b>РАКЕТА В ПОЛЕТЕ!</b> Пик: <b>${snp.get('peak_price', 0.0):.4f}</b> | "
+                    f"Стоп подтянут: <b>${snp.get('stop_price', 0.0):.4f}</b> (-{SNIPER_ROCKET_CALLBACK_PCT*100:.2f}%) | "
+                    f"Защитный пол: <b>${snp.get('floor_price', 0.0):.4f}</b> (+{SNIPER_ROCKET_FLOOR_PCT*100:.2f}%)"
+                )
+            elif s_status == "POSITION_HELD":
+                s_desc = (
+                    f"🎯 <b>Дно поймано!</b> Вход: <b>${snp.get('entry_price', 0.0):.4f}</b> ({snp.get('position_qty', 0.0)} {snp.get('symbol')}) | "
+                    f"Ожидание активации Ракеты (+{SNIPER_ROCKET_ACTIVATION_PCT*100:.2f}%) 🚀"
                 )
             elif s_status == "TP_PLACED":
                 s_desc = (
@@ -2663,14 +2775,16 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                     f"Объем: <b>{snp.get('position_qty', 0.0)} {snp.get('symbol')}</b>"
                 )
             else:
-                s_desc = f"В ожидании условий | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+                s_desc = f"В ожидании условий | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b> | Режим: 🚀 Rocket Rider"
+
+            s_badge_label = "🚀 ROCKET ACTIVE" if s_status == "ROCKET_ACTIVE" else s_status
 
             sniper_html = f"""
             <div class="card" style="border: 1px solid rgba(234, 179, 8, 0.35); background: rgba(30, 27, 75, 0.45);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper ({snp.get('symbol')})</h3>
                     <div style="display: flex; gap: 6px; align-items: center;">
-                        <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_status}</span>
+                        <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_badge_label}</span>
                         <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">Изолирован $5.25</span>
                     </div>
                 </div>
