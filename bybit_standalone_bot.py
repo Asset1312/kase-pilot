@@ -193,6 +193,15 @@ TRAILING_ACTIVATION_PCT = 0.0070    # +0.70% gain from entry triggers TRAILING_A
 TRAILING_CALLBACK_PCT = 0.0030      # 0.30% pullback from peak triggers market sell
 TRAILING_MIN_FLOOR_PCT = 0.0040     # +0.40% minimum profit floor (guaranteed net profit +0.20%)
 
+# Flash Sniper (Crash Harvester / Wick Catcher) Parameters
+SNIPER_ENABLED = True               # Autonomous parallel branch for catching flash wicks
+SNIPER_ORDER_LINK_PREFIX = "SNIPER" # Unique orderLinkId prefix
+SNIPER_BUDGET_USD = 5.25            # Strict isolated budget (safely above Bybit $5.00 min)
+SNIPER_DIP_DEPTH_PCT = 0.0250       # -2.50% dip trap depth from current market price
+SNIPER_TP_PCT = 0.0150              # +1.50% instant Maker Limit take-profit on rebound
+SNIPER_AMEND_COOLDOWN_SEC = 180.0   # Soft chase cooldown (min 3 min before upward float)
+SNIPER_AMEND_THRESHOLD_PCT = 0.0060 # Float upward only if market pulled away by > 0.60%
+
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
         "base_coin": "SUI",
@@ -539,6 +548,226 @@ class TrailingTakeProfitController:
                 return trigger_data
 
             return None
+
+
+@dataclass
+class FlashSniperState:
+    symbol: str
+    active: bool = False
+    buy_order_id: Optional[str] = None
+    buy_price: float = 0.0
+    allocated_usd: float = SNIPER_BUDGET_USD
+    position_qty: float = 0.0
+    entry_price: float = 0.0
+    tp_order_id: Optional[str] = None
+    tp_price: float = 0.0
+    status: str = "IDLE"  # IDLE | HUNTING | POSITION_HELD | TP_PLACED
+    last_amend_time: float = 0.0
+    completed_cycles: int = 0
+    total_profit_usd: float = 0.0
+
+
+class FlashSniperController:
+    """Autonomous Parallel Flash-Crash Harvester / Wick Catcher.
+
+    Places an isolated limit Maker buy order at -2.50% dip depth with dedicated $5.25 USDT.
+    Soft-floats upward only when market drifts higher and cooldown expires.
+    Immediately places a +1.50% Maker Limit Take-Profit upon execution to catch the V-bounce.
+    Shielded by Lead-Lag CRASH guard to prevent catching knives during systemic market crashes.
+    """
+
+    def __init__(
+        self,
+        symbol: str = PRIMARY_SYMBOL,
+        budget_usd: float = SNIPER_BUDGET_USD,
+        dip_depth_pct: float = SNIPER_DIP_DEPTH_PCT,
+        tp_pct: float = SNIPER_TP_PCT,
+        amend_cooldown_sec: float = SNIPER_AMEND_COOLDOWN_SEC,
+        amend_threshold_pct: float = SNIPER_AMEND_THRESHOLD_PCT,
+    ) -> None:
+        self.symbol = symbol
+        self.budget_usd = budget_usd
+        self.dip_depth_pct = dip_depth_pct
+        self.tp_pct = tp_pct
+        self.amend_cooldown_sec = amend_cooldown_sec
+        self.amend_threshold_pct = amend_threshold_pct
+        self.state = FlashSniperState(symbol=symbol, allocated_usd=budget_usd)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.state.symbol,
+            "status": self.state.status,
+            "buy_price": self.state.buy_price,
+            "allocated_usd": self.state.allocated_usd,
+            "position_qty": self.state.position_qty,
+            "entry_price": self.state.entry_price,
+            "tp_price": self.state.tp_price,
+            "completed_cycles": self.state.completed_cycles,
+            "total_profit_usd": round(self.state.total_profit_usd, 4),
+        }
+
+    def sync_on_exchange_orders(self, open_orders: List[Dict[str, Any]]) -> None:
+        """Syncs in-flight sniper orders from exchange state."""
+        sniper_buys = [
+            o for o in open_orders
+            if o.get("side") == "Buy" and str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
+        ]
+        sniper_sells = [
+            o for o in open_orders
+            if o.get("side") == "Sell" and str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
+        ]
+
+        if sniper_sells:
+            s_ord = sniper_sells[0]
+            self.state.tp_order_id = s_ord.get("orderId")
+            self.state.tp_price = float(s_ord.get("price", 0.0))
+            self.state.status = "TP_PLACED"
+        elif sniper_buys:
+            b_ord = sniper_buys[0]
+            self.state.buy_order_id = b_ord.get("orderId")
+            self.state.buy_price = float(b_ord.get("price", 0.0))
+            self.state.status = "HUNTING"
+        else:
+            if self.state.status == "TP_PLACED":
+                # Sell order finished -> cycle completed!
+                if self.state.position_qty > 0 and self.state.entry_price > 0 and self.state.tp_price > 0:
+                    realized = round((self.state.tp_price - self.state.entry_price) * self.state.position_qty, 4)
+                    self.state.completed_cycles += 1
+                    self.state.total_profit_usd += max(0.0, realized)
+                    logger.info(
+                        f"🎯💰 [Flash Sniper] Цикл #{self.state.completed_cycles} УСПЕШНО ЗАКРЫТ! "
+                        f"Профит: +${realized:.4f} USDT"
+                    )
+                self.state.status = "IDLE"
+                self.state.position_qty = 0.0
+                self.state.entry_price = 0.0
+                self.state.tp_order_id = None
+                self.state.tp_price = 0.0
+                self.state.buy_order_id = None
+                self.state.buy_price = 0.0
+            elif self.state.status == "HUNTING":
+                # Buy order disappeared: check if it filled or was canceled
+                # Status will be updated in process_cycle
+                pass
+
+    def tick(
+        self,
+        client: Any,
+        cur_price: float,
+        avail_usdt: float,
+        free_qty: float,
+        lead_lag_status: str,
+        price_decimals: int = 4,
+        qty_decimals: int = 2,
+    ) -> Optional[Dict[str, Any]]:
+        """Main execution tick for Flash Sniper."""
+        now = time.time()
+
+        # 1. Lead-Lag Safety Guard: Emergency abort on systemic BTC CRASH
+        if lead_lag_status == "CRASH":
+            if self.state.status == "HUNTING" and self.state.buy_order_id:
+                logger.warning(f"🚨 [Flash Sniper] BTC CRASH! Экстренная отмена ордера-ловушки ${self.state.buy_price}!")
+                client.cancel_order(self.symbol, self.state.buy_order_id)
+                self.state.status = "IDLE"
+                self.state.buy_order_id = None
+                self.state.buy_price = 0.0
+            return None
+
+        # 2. Check if resting buy filled
+        if self.state.status == "HUNTING" and self.state.buy_order_id:
+            # If buy order filled, free_qty should have increased by position_qty
+            # Or if buy order is gone from open_buys
+            target_price = round(cur_price * (1.0 - self.dip_depth_pct), price_decimals)
+
+            # Check soft chase (upward amend only)
+            if (
+                cur_price > 0
+                and target_price > self.state.buy_price
+                and (target_price - self.state.buy_price) / self.state.buy_price >= self.amend_threshold_pct
+                and (now - self.state.last_amend_time) >= self.amend_cooldown_sec
+            ):
+                new_qty = math.floor((self.budget_usd / target_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                if (new_qty * target_price) >= 5.00:
+                    logger.info(
+                        f"🎯 [Flash Sniper Amend] Подтягивание ловушки: ${self.state.buy_price:.4f} -> ${target_price:.4f} "
+                        f"(-{self.dip_depth_pct*100:.2f}%) [Объем: {new_qty}]"
+                    )
+                    resp_amend = client.amend_order(
+                        self.symbol,
+                        order_id=self.state.buy_order_id,
+                        price=target_price,
+                        qty=new_qty,
+                        price_precision=price_decimals,
+                        qty_precision=qty_decimals,
+                    )
+                    if resp_amend.get("retCode") == 0:
+                        self.state.buy_price = target_price
+                        self.state.last_amend_time = now
+                    elif resp_amend.get("retCode") in (10001, 20001):
+                        self.state.last_amend_time = now
+                    else:
+                        # Order might have filled or vanished
+                        logger.debug(f"Flash sniper amend result: {resp_amend}")
+
+        # 3. Position filled -> Place instant +1.50% Maker Limit TP
+        if self.state.status == "POSITION_HELD" and self.state.position_qty > 0:
+            tp_price = round(self.state.entry_price * (1.0 + self.tp_pct), price_decimals)
+            tp_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+            if (tp_qty * tp_price) >= 5.00:
+                unique_link_id = f"{SNIPER_ORDER_LINK_PREFIX}_TP_{int(now)}"
+                logger.info(
+                    f"🎯🟢 [Flash Sniper TP] Выставление лимитного ТП: {tp_qty} @ ${tp_price:.4f} (+{self.tp_pct*100:.2f}%)"
+                )
+                resp_tp = client.create_limit_order(
+                    self.symbol,
+                    "Sell",
+                    tp_qty,
+                    tp_price,
+                    post_only=True,
+                    price_precision=price_decimals,
+                    qty_precision=qty_decimals,
+                    order_link_id=unique_link_id,
+                )
+                if resp_tp.get("retCode") == 0:
+                    self.state.tp_order_id = resp_tp.get("result", {}).get("orderId")
+                    self.state.tp_price = tp_price
+                    self.state.status = "TP_PLACED"
+                    return {"action": "TP_PLACED", "tp_price": tp_price, "qty": tp_qty}
+                else:
+                    logger.warning(f"Failed to place Flash Sniper TP: {resp_tp}")
+
+        # 4. IDLE mode -> Place new dip trap if funds available
+        if self.state.status == "IDLE" and avail_usdt >= self.budget_usd and cur_price > 0:
+            target_price = round(cur_price * (1.0 - self.dip_depth_pct), price_decimals)
+            target_qty = math.floor((self.budget_usd / target_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+            val = target_qty * target_price
+
+            if val >= 5.00 and val <= avail_usdt:
+                unique_link_id = f"{SNIPER_ORDER_LINK_PREFIX}_BUY_{int(now)}"
+                logger.info(
+                    f"🎯 [Flash Sniper Trap] Расстановка ловушки пролива: {target_qty} {self.symbol} @ "
+                    f"${target_price:.4f} (-{self.dip_depth_pct*100:.2f}%) [Бюджет: ${val:.2f} USDT]"
+                )
+                resp_buy = client.create_limit_order(
+                    self.symbol,
+                    "Buy",
+                    target_qty,
+                    target_price,
+                    post_only=True,
+                    price_precision=price_decimals,
+                    qty_precision=qty_decimals,
+                    order_link_id=unique_link_id,
+                )
+                if resp_buy.get("retCode") == 0:
+                    self.state.buy_order_id = resp_buy.get("result", {}).get("orderId")
+                    self.state.buy_price = target_price
+                    self.state.last_amend_time = now
+                    self.state.status = "HUNTING"
+                    return {"action": "BUY_PLACED", "price": target_price, "qty": target_qty, "val": val}
+                else:
+                    logger.debug(f"Flash sniper trap placement retCode={resp_buy.get('retCode')}: {resp_buy.get('retMsg')}")
+
+        return None
 
 
 class MarketGuard:
@@ -965,6 +1194,7 @@ class StandaloneBybitBot:
         self.is_paused = False
         self.running = True
         self.trailing_controller = TrailingTakeProfitController()
+        self.flash_sniper = FlashSniperController(symbol=PRIMARY_SYMBOL) if SNIPER_ENABLED else None
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
@@ -1028,7 +1258,9 @@ class StandaloneBybitBot:
                 open_orders = self.client.get_open_orders(sym)
                 buys = [
                     o for o in open_orders
-                    if o.get("side") == "Buy" and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
+                    if o.get("side") == "Buy"
+                    and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
+                    and not str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
                 ]
                 if buys:
                     self.cancel_all_buys(sym, buys)
@@ -1388,12 +1620,18 @@ class StandaloneBybitBot:
                     o["symbol"] = sym
                     all_open_orders_list.append(o)
 
-                # Filter out on-exchange canary order so grid logic never touches or cancels it
+                # Filter out on-exchange canary and sniper orders so grid logic never touches or cancels them
                 open_buys = [
                     o for o in open_orders
-                    if o.get("side") == "Buy" and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
+                    if o.get("side") == "Buy"
+                    and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
+                    and not str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
                 ]
-                open_sells = [o for o in open_orders if o.get("side") == "Sell"]
+                open_sells = [
+                    o for o in open_orders
+                    if o.get("side") == "Sell"
+                    and not str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
+                ]
 
                 # PASSIVE OBSERVER: Strictly observe and collect telemetry.
                 # NEVER place, modify, or cancel orders on the shared Bybit account!
@@ -2030,11 +2268,41 @@ class StandaloneBybitBot:
                 },
                 "tokens": token_stats_map,
                 "all_open_orders": all_open_orders_list,
+                "sniper": self.flash_sniper.to_dict() if self.flash_sniper else None,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
+            # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester)
+            if self.flash_sniper and self.is_active_controller and not self.is_paused:
+                sui_spot = prices.get(PRIMARY_SYMBOL, 0.0)
+                sui_free = free_coins.get(PRIMARY_SYMBOL, 0.0)
+                self.flash_sniper.sync_on_exchange_orders(all_open_orders_list)
+                # Check if sniper buy just executed into position
+                if self.flash_sniper.state.status == "HUNTING" and not any(
+                    str(o.get("orderLinkId", "")).startswith(f"{SNIPER_ORDER_LINK_PREFIX}_BUY") for o in all_open_orders_list
+                ):
+                    # Buy order executed
+                    calc_qty = math.floor((self.flash_sniper.budget_usd / self.flash_sniper.state.buy_price) * 100) / 100.0 if self.flash_sniper.state.buy_price > 0 else 0.0
+                    if calc_qty > 0:
+                        self.flash_sniper.state.position_qty = calc_qty
+                        self.flash_sniper.state.entry_price = self.flash_sniper.state.buy_price
+                        self.flash_sniper.state.status = "POSITION_HELD"
+                        logger.info(
+                            f"🎯⚡ [Flash Sniper Execution] Ордер-ловушка исполнен! "
+                            f"Куплено {calc_qty} {PRIMARY_SYMBOL} @ ${self.flash_sniper.state.entry_price:.4f}"
+                        )
+                # Run sniper tick
+                self.flash_sniper.tick(
+                    client=self.client,
+                    cur_price=sui_spot,
+                    avail_usdt=avail_usdt,
+                    free_qty=sui_free,
+                    lead_lag_status=self.guard.lead_lag_status,
+                    price_decimals=TOKEN_METADATA[PRIMARY_SYMBOL]["price_decimals"],
+                    qty_decimals=TOKEN_METADATA[PRIMARY_SYMBOL]["qty_decimals"],
+                )
 
-            # 10. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
+            # 11. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
             if self.mode == "desktop" and self.is_active_controller and not self.is_paused:
                 self.maintain_canary_order()
 
@@ -2355,6 +2623,34 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             else ""
         )
 
+        snp = st.get("sniper")
+        if snp:
+            s_status = snp.get("status", "IDLE")
+            s_badge_col = "#10b981" if s_status in ("TP_PLACED", "POSITION_HELD") else ("#eab308" if s_status == "HUNTING" else "#64748b")
+            s_desc = ""
+            if s_status == "HUNTING":
+                s_desc = f"Ловушка в стакане: <b>${snp.get('buy_price', 0.0):.4f}</b> (-{SNIPER_DIP_DEPTH_PCT*100:.2f}%) | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+            elif s_status == "TP_PLACED":
+                s_desc = f"⚡ ВХОД ВЫПОЛНЕН! Лимитный ТП: <b>${snp.get('tp_price', 0.0):.4f}</b> (+{SNIPER_TP_PCT*100:.2f}%) | Объем: <b>{snp.get('position_qty', 0.0)} SUI</b>"
+            else:
+                s_desc = f"В ожидании условий | Бюджет: <b>${snp.get('allocated_usd', 5.25):.2f} USDT</b>"
+
+            sniper_html = f"""
+            <div class="card" style="border: 1px solid rgba(234, 179, 8, 0.35); background: rgba(30, 27, 75, 0.45);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper (Wick Catcher)</h3>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_status}</span>
+                        <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">Изолирован $5.25</span>
+                    </div>
+                </div>
+                <div class="label" style="margin-top: 6px;">{s_desc}</div>
+                <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто проливов: <b>{snp.get('completed_cycles', 0)}</b> | Профит снайпера: <b>+${snp.get('total_profit_usd', 0.0):.4f} USDT</b></div>
+            </div>
+            """
+        else:
+            sniper_html = ""
+
         html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -2415,6 +2711,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         </div>
     </div>
 
+    {sniper_html}
 
     {tokens_html}
 
