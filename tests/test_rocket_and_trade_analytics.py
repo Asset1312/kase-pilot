@@ -53,12 +53,12 @@ class TestRocketAndTradeAnalytics(unittest.TestCase):
     def test_rocket_target_math(self):
         entry_price = 1.0529
         expected_target = round(entry_price * (1.0 + TRAILING_ACTIVATION_PCT), 4)
-        self.assertEqual(expected_target, 1.0634)
+        self.assertEqual(expected_target, 1.0603)
 
         cur_price = 1.0400
         distance_pct = round(((expected_target - cur_price) / cur_price) * 100, 2)
         self.assertGreater(distance_pct, 0)
-        self.assertEqual(distance_pct, 2.25)
+        self.assertEqual(distance_pct, 1.95)
 
     def test_dashboard_renders_rocket_and_analytics(self):
         bot = StandaloneBybitBot(mode="desktop", enable_telegram=False)

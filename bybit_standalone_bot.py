@@ -131,19 +131,19 @@ MIN_VOL_MULTIPLIER = 0.75            # in calm market, step1 tightens to ~0.41%
 MAX_VOL_MULTIPLIER = 2.00            # in storm market, step1 widens to ~1.10%
 
 # Take-Profit & Soft Breakeven
-STANDARD_TP_PCT = 0.0090            # +0.90% (Net +0.70% after 0.20% fees)
-SOFT_BREAKEVEN_TP_PCT = 0.0038      # +0.38% (Net +0.18% after 0.20% fees)
-STALE_POSITION_HOURS = 8.0          # Switch to Soft Breakeven after 8 hours
+STANDARD_TP_PCT = 0.0070            # +0.70% (Net +0.50% after fees; captures micro-swings)
+SOFT_BREAKEVEN_TP_PCT = 0.0035      # +0.35% (Net +0.15% after 0.20% fees)
+STALE_POSITION_HOURS = 6.0          # Switch to Soft Breakeven after 6 hours
 CIRCUIT_BREAKER_MAX_DD = 0.05       # 5% max drawdown from peak equity
 
 # Step 3 Partial Take-Profit (Scale-Out De-risking)
-SCALE_OUT_TRIGGER_GAIN_PCT = 0.0050  # +0.50% gain from VWAP triggers partial exit of Step 3
+SCALE_OUT_TRIGGER_GAIN_PCT = 0.0045  # +0.45% gain from VWAP triggers partial exit of Step 3
 SCALE_OUT_COOLDOWN_SEC = 300.0       # 5-minute cooldown between scale-out events per token
 
 # Trailing Take-Profit (Rocket Rider) - Desktop Profile
-TRAILING_ACTIVATION_PCT = 0.0100    # +1.00% gain from entry triggers TRAILING_ACTIVE
-TRAILING_CALLBACK_PCT = 0.0045      # 0.45% pullback from peak triggers market sell
-TRAILING_MIN_FLOOR_PCT = 0.0050     # +0.50% minimum profit floor (guaranteed net profit)
+TRAILING_ACTIVATION_PCT = 0.0070    # +0.70% gain from entry triggers TRAILING_ACTIVE (responsive scalp)
+TRAILING_CALLBACK_PCT = 0.0030      # 0.30% pullback from peak triggers market sell
+TRAILING_MIN_FLOOR_PCT = 0.0040     # +0.40% minimum profit floor (guaranteed net profit +0.20%)
 
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
@@ -1422,7 +1422,7 @@ class StandaloneBybitBot:
                                 self.client.cancel_order(sym, s_ord.get("orderId"))
                                 open_sells.remove(s_ord)
                     elif free_val >= 5.00:
-                        tp_mode = "🚀 Rocket Rider (Цель: +1.00%)"
+                        tp_mode = f"🚀 Rocket Rider (Цель: +{TRAILING_ACTIVATION_PCT*100:.2f}%)"
                         if open_sells:
                             for s_ord in list(open_sells):
                                 self.client.cancel_order(sym, s_ord.get("orderId"))
