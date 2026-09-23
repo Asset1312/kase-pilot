@@ -124,6 +124,54 @@ CANARY_NOTIONAL_USDT = 5.05           # Exactly satisfies Bybit $5.00 spot minim
 CANARY_HEARTBEAT_INTERVAL_SEC = 45.0  # Desktop touches/amends canary every 45s
 CANARY_FAILOVER_TIMEOUT_SEC = 180.0   # Mobile takes over if canary stale > 180s (3 min)
 
+# Market Regime Classifier Profiles (CALM / NORMAL / STORM)
+REGIME_PROFILES = {
+    "CALM": {
+        "name": "CALM (Штиль: Micro-Scalp)",
+        "badge_color": "#38bdf8",     # Cyan / Sky
+        "is_calm_split": True,        # Splits Step 1 into 1A (-0.35%) and 1B (-0.65%)
+        "step_1a_discount": 0.0035,   # -0.35%
+        "step_1b_discount": 0.0065,   # -0.65%
+        "step_2_discount": 0.0160,    # -1.60%
+        "step_3_discount": 0.0350,    # -3.50%
+        "budget_1a": 5.25,            # Safe above Bybit $5.00 min notional
+        "budget_1b": 5.50,
+        "budget_2": 10.50,
+        "budget_3": 15.00,
+        "tp_target": 0.0050,          # +0.50% Maker Limit TP
+        "use_maker_tp": True,         # Pre-places limit TP in order book
+        "trailing_activation": 0.0060,
+    },
+    "NORMAL": {
+        "name": "NORMAL (Стандарт: Rocket Rider)",
+        "badge_color": "#10b981",     # Emerald green
+        "is_calm_split": False,
+        "step_1_discount": 0.0055,    # -0.55%
+        "step_2_discount": 0.0200,    # -2.00%
+        "step_3_discount": 0.0400,    # -4.00%
+        "budget_1": 7.95,
+        "budget_2": 14.15,
+        "budget_3": 17.00,
+        "tp_target": 0.0070,          # +0.70% Trailing Target
+        "use_maker_tp": False,        # Managed via Rocket Rider Trailing
+        "trailing_activation": 0.0070,
+    },
+    "STORM": {
+        "name": "STORM (Шторм: Deep Defense)",
+        "badge_color": "#a855f7",     # Purple
+        "is_calm_split": False,
+        "step_1_discount": 0.0110,    # -1.10%
+        "step_2_discount": 0.0320,    # -3.20%
+        "step_3_discount": 0.0600,    # -6.00%
+        "budget_1": 7.50,
+        "budget_2": 14.00,
+        "budget_3": 17.00,
+        "tp_target": 0.0180,          # +1.80% Rocket Rider
+        "use_maker_tp": False,
+        "trailing_activation": 0.0180,
+    },
+}
+
 # Continuous Adaptive Spacing Benchmarks
 BASE_SPACING = {"step_1": 0.0055, "step_2": 0.0175, "step_3": 0.0320}
 VOLATILITY_BENCHMARK_15M = 0.0080    # 0.80% 15m range is baseline (multiplier = 1.0)
@@ -527,7 +575,12 @@ class MarketGuard:
     @staticmethod
     def fetch_klines(symbol: str, limit: int = 15) -> List[List[Any]]:
         """Fetches public Kline data directly from Bybit KZ Spot endpoint (Zero API Key)."""
-        url = f"https://api.bybit.kz/v5/market/kline?category=spot&symbol={symbol}&interval=1&limit={limit}"
+        return MarketGuard.fetch_klines_interval(symbol, interval="1", limit=limit)
+
+    @staticmethod
+    def fetch_klines_interval(symbol: str, interval: str = "1", limit: int = 15) -> List[List[Any]]:
+        """Fetches public Kline data with custom interval (1, 15, 60, etc.) from Bybit KZ Spot."""
+        url = f"https://api.bybit.kz/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=4) as resp:
@@ -535,8 +588,66 @@ class MarketGuard:
                 if data.get("retCode") == 0:
                     return data.get("result", {}).get("list", [])
         except Exception as e:
-            logger.debug(f"Kline fetch failed for {symbol}: {e}")
+            logger.debug(f"Kline fetch failed for {symbol} (interval={interval}): {e}")
         return []
+
+    def classify_market_regime(self, symbol: str, klines_15m: List[List[Any]]) -> Tuple[str, float]:
+        """
+        Classifies market regime into CALM, NORMAL, or STORM based on 15m normalized range (2h / 8 candles).
+        Includes 30-minute time hysteresis and fail-safe priority for BTC SLIDING/CRASH.
+        Returns: (regime_name, range_15m_pct)
+        """
+        now = time.time()
+        m = self.token_metrics.setdefault(symbol, {})
+        current_regime = m.get("market_regime", "NORMAL")
+        last_switch_ts = m.get("regime_switch_ts", 0.0)
+
+        # 1. Fail-Safe: If BTC Lead-Lag is SLIDING or CRASH, force STORM immediately (no hysteresis)
+        if self.lead_lag_status in ("SLIDING", "CRASH") or self.global_cooldown_active:
+            m["market_regime"] = "STORM"
+            m["regime_switch_ts"] = now
+            return "STORM", m.get("range_15m", 0.0) * 100.0
+
+        if not klines_15m or len(klines_15m) < 4:
+            return current_regime, m.get("range_15m", 0.0) * 100.0
+
+        # Take last 8 candles (or available up to 8)
+        recent = klines_15m[:8]
+        highs = [float(k[2]) for k in recent]
+        lows = [float(k[3]) for k in recent]
+        close = float(recent[0][4]) if float(recent[0][4]) > 0 else 1.0
+
+        min_l = min(lows) if lows else 1.0
+        max_h = max(highs) if highs else 1.0
+        amplitude_pct = ((max_h - min_l) / close) * 100.0
+
+        # Raw candidate regime
+        if amplitude_pct < 0.80:
+            candidate = "CALM"
+        elif amplitude_pct >= 1.50:
+            candidate = "STORM"
+        else:
+            candidate = "NORMAL"
+
+        # 2. Time Hysteresis: Maintain regime for at least 30 minutes (1800s) unless upgrading to STORM
+        if candidate == current_regime:
+            return current_regime, amplitude_pct
+
+        if candidate == "STORM":
+            # Upgrading to STORM is instant for risk protection
+            m["market_regime"] = "STORM"
+            m["regime_switch_ts"] = now
+            logger.info(f"⚡ [MarketRegime: {symbol}] Всплеск волатильности ({amplitude_pct:.2f}%)! Мгновенный переход -> STORM.")
+            return "STORM", amplitude_pct
+
+        # Transitioning between CALM and NORMAL requires 30m cooldown
+        if (now - last_switch_ts) >= 1800.0 or last_switch_ts == 0.0:
+            logger.info(f"🔄 [MarketRegime: {symbol}] Смена режима {current_regime} -> {candidate} (Размах 15m: {amplitude_pct:.2f}%).")
+            m["market_regime"] = candidate
+            m["regime_switch_ts"] = now
+            return candidate, amplitude_pct
+
+        return current_regime, amplitude_pct
 
     def evaluate_btc_lead_lag(self, btc_klines: List[List[Any]]) -> Dict[str, Any]:
         """
@@ -703,6 +814,12 @@ class MarketGuard:
                 chg_3m = (c0 - o2) / o2 if o2 > 0 else 0.0
             m["last_3m_chg"] = chg_3m
 
+            # Fetch 15m klines for Regime Classification (2-hour window / 8 candles)
+            klines_15m = self.fetch_klines_interval(sym, interval="15", limit=10)
+            regime_name, range_15m_pct = self.classify_market_regime(sym, klines_15m)
+            m["market_regime"] = regime_name
+            m["range_15m_pct"] = range_15m_pct
+
             # Continuous Volatility Spacing
             highs = [float(k[2]) for k in klines]
             lows = [float(k[3]) for k in klines]
@@ -713,7 +830,7 @@ class MarketGuard:
 
             mult = max(MIN_VOL_MULTIPLIER, min(MAX_VOL_MULTIPLIER, range_15m / VOLATILITY_BENCHMARK_15M))
             m["vol_multiplier"] = round(mult, 2)
-            m["volatility_regime"] = "STORM" if range_15m >= 0.0120 else "NORMAL"
+            m["volatility_regime"] = regime_name
             m["step1_discount"] = round(BASE_SPACING["step_1"] * mult, 4)
             # Cap step2 at 0.0220 (-2.20%) and step3 at 0.0480 (-4.80%) to prevent runaway grid
             m["step2_discount"] = round(min(BASE_SPACING["step_2"] * mult, 0.0220), 4)
@@ -855,6 +972,8 @@ class StandaloneBybitBot:
         self.token_last_cycles: Dict[str, Optional[int]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None, TERTIARY_SYMBOL: None}
         self.recent_buys: Dict[str, List[Dict[str, Any]]] = {PRIMARY_SYMBOL: [], SECONDARY_SYMBOL: [], TERTIARY_SYMBOL: []}
         self.last_scale_out_ts: Dict[str, float] = {PRIMARY_SYMBOL: 0.0, SECONDARY_SYMBOL: 0.0, TERTIARY_SYMBOL: 0.0}
+        # Cycle Lock: Locks active regime while position is held
+        self.token_locked_regime: Dict[str, Optional[str]] = {PRIMARY_SYMBOL: None, SECONDARY_SYMBOL: None, TERTIARY_SYMBOL: None}
 
         # Unified live statistics
         if self.mode == "desktop":
@@ -1568,53 +1687,62 @@ class StandaloneBybitBot:
                                     f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
                                 )
 
-                # Budget allocation based on active profile and portfolio mode
-                if self.mode == "desktop":
-                    # Desktop Asymmetric Smart Step with Reserve Buffer
-                    eff_equity = max(15.00, est_total_equity - self.reserve_usdt)
-                    if self.trio_mode_active:
-                        deployable = eff_equity / 3.0
-                    elif self.dual_mode_active:
-                        deployable = eff_equity * 0.50
-                    else:
-                        deployable = eff_equity
-                    step_budget_1 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_1"], 2))
-                    step_budget_2 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_2"], 2))
-                    step_budget_3 = max(5.05, round(deployable * DESKTOP_STEP_WEIGHTS["step_3"], 2))
-                    spendable_usdt = max(0.0, avail_usdt - self.reserve_usdt)
+                # =============================================================
+                # MARKET REGIME PROFILE & CYCLE LOCK
+                # =============================================================
+                raw_regime = t_metric.get("market_regime", "NORMAL")
+                # Cycle Lock: If holding position >= $4.50, lock the regime to avoid mid-cycle drift
+                if holding_val >= 4.50:
+                    if not self.token_locked_regime.get(sym):
+                        self.token_locked_regime[sym] = raw_regime
+                    active_regime = self.token_locked_regime[sym]
                 else:
-                    # Mobile Symmetric Conservative Grid
-                    if self.trio_mode_active:
-                        pair_total_equity = est_total_equity / 3.0
-                    elif self.dual_mode_active:
-                        pair_total_equity = est_total_equity * 0.50
-                    else:
-                        pair_total_equity = est_total_equity
-                    step_budget = max(5.05, round(pair_total_equity * 0.30, 2))
-                    step_budget_1 = step_budget
-                    step_budget_2 = step_budget
-                    step_budget_3 = step_budget
-                    spendable_usdt = avail_usdt
+                    self.token_locked_regime[sym] = None
+                    active_regime = raw_regime
 
-                step1_held = holding_val >= 5.00
+                regime_cfg = REGIME_PROFILES.get(active_regime, REGIME_PROFILES["NORMAL"])
+                is_calm = bool(regime_cfg.get("is_calm_split", False))
+
+                # Budget allocation based on active regime and portfolio mode
+                spendable_usdt = max(0.0, avail_usdt - self.reserve_usdt) if self.mode == "desktop" else avail_usdt
+                if is_calm:
+                    step_budget_1a = regime_cfg.get("budget_1a", 5.25)
+                    step_budget_1b = regime_cfg.get("budget_1b", 5.50)
+                    step_budget_2 = regime_cfg.get("budget_2", 10.50)
+                    step_budget_3 = regime_cfg.get("budget_3", 15.00)
+                else:
+                    step_budget_1 = regime_cfg.get("budget_1", 7.95)
+                    step_budget_2 = regime_cfg.get("budget_2", 14.15)
+                    step_budget_3 = regime_cfg.get("budget_3", 17.00)
+
+                step1_held = holding_val >= 4.50
                 step2_held = holding_val >= (step_budget_2 * 1.5)
 
-                # Dynamic Adaptive Spacing Targets (Anchor DCA when position held)
-                s1_disc = t_metric.get("step1_discount", BASE_SPACING["step_1"])
-                s2_disc = min(t_metric.get("step2_discount", BASE_SPACING["step_2"]), 0.0220)
-                s3_disc = min(t_metric.get("step3_discount", BASE_SPACING["step_3"]), 0.0480)
                 p_dec = meta.get("price_decimals", 4)
                 q_dec = meta.get("qty_decimals", 2)
-                t1 = round(cur_price * (1.0 - s1_disc), p_dec)
+
+                # Dynamic Adaptive Spacing Targets from active regime
+                if is_calm:
+                    s1a_disc = regime_cfg.get("step_1a_discount", 0.0035)
+                    s1b_disc = regime_cfg.get("step_1b_discount", 0.0065)
+                    s2_disc = regime_cfg.get("step_2_discount", 0.0160)
+                    s3_disc = regime_cfg.get("step_3_discount", 0.0350)
+                    t1a = round(cur_price * (1.0 - s1a_disc), p_dec)
+                    t1b = round(cur_price * (1.0 - s1b_disc), p_dec)
+                    t1 = t1a
+                    s1_disc = s1a_disc
+                else:
+                    s1_disc = regime_cfg.get("step_1_discount", 0.0055)
+                    s2_disc = regime_cfg.get("step_2_discount", 0.0200)
+                    s3_disc = regime_cfg.get("step_3_discount", 0.0400)
+                    t1 = round(cur_price * (1.0 - s1_disc), p_dec)
 
                 if step1_held and entry_price > 0:
                     t2 = round(entry_price * (1.0 - s2_disc), p_dec)
                     t3 = round(entry_price * (1.0 - s3_disc), p_dec)
-                    # When holding loaded position, Step 3 must be at least 2.50% below cur_price
                     min_t3_dist = 0.0250
                     if t3 >= (cur_price * (1.0 - min_t3_dist)):
                         t3 = round(cur_price * (1.0 - min_t3_dist), p_dec)
-                    # And at least 2.50% below the lowest fill of currently held position
                     if active_position_buys:
                         lowest_active_buy = min(float(b.get("execPrice") or 999.0) for b in active_position_buys if float(b.get("execPrice") or 0) > 0)
                         if lowest_active_buy < 900.0 and t3 >= (lowest_active_buy * (1.0 - min_t3_dist)):
@@ -1625,10 +1753,18 @@ class StandaloneBybitBot:
                     t2 = round(cur_price * (1.0 - s2_disc), p_dec)
                     t3 = round(cur_price * (1.0 - s3_disc), p_dec)
 
-                # Valid buy targets based on inventory
+                # Valid buy targets based on inventory and regime
                 valid_targets: List[Tuple[str, float]] = []
-                if not step1_held:
-                    valid_targets.append(("step_1", t1))
+                if is_calm:
+                    if not step1_held:
+                        valid_targets.append(("step_1a", t1a))
+                        valid_targets.append(("step_1b", t1b))
+                    elif holding_val < (step_budget_1a + step_budget_1b * 0.8):
+                        valid_targets.append(("step_1b", t1b))
+                else:
+                    if not step1_held:
+                        valid_targets.append(("step_1", t1))
+
                 if not step2_held:
                     valid_targets.append(("step_2", t2))
                 valid_targets.append(("step_3", t3))
@@ -1697,23 +1833,59 @@ class StandaloneBybitBot:
                 # Sizing & Order Placement
                 if can_buy_token:
 
-                    # Step 1 (Micro-Scalp / First Dip) - Protected by Lead-Lag Radar Gate
-                    if not step1_held:
-                        if not self.guard.gate_step1_open:
-                            # Pre-emptive knife-catch prevention: do NOT enter Step 1 while BTC is sliding/crashing
-                            if not any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys):
-                                logger.info(
-                                    f"⏳ [{sym}][Lead-Lag BTC] Вход в Ступень 1 заморожен: "
-                                    f"статус BTC {self.guard.lead_lag_status} ({self.guard.lead_lag_reason})"
-                                )
-                        else:
+                    # Step 1 placement (Calm 1A / 1B or Normal 1) - Protected by Lead-Lag Gate
+                    if not self.guard.gate_step1_open:
+                        if not any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys):
+                            logger.info(
+                                f"⏳ [{sym}][Lead-Lag BTC] Вход в Ступень 1 заморожен: "
+                                f"статус BTC {self.guard.lead_lag_status} ({self.guard.lead_lag_reason})"
+                            )
+                    elif is_calm:
+                        # Step 1A (Micro-Scalp -0.35%)
+                        if not step1_held:
+                            has_1a = any(abs(float(o.get("price", 0)) - t1a) / t1a < 0.010 for o in open_buys)
+                            if not has_1a and spendable_usdt >= step_budget_1a:
+                                clip_1a = math.floor((step_budget_1a / t1a) * (10 ** q_dec)) / float(10 ** q_dec)
+                                val_1a = clip_1a * t1a
+                                if val_1a >= 5.00 and val_1a <= spendable_usdt:
+                                    logger.info(
+                                        f"🔵 [{sym}][Ступень 1A ШТИЛЬ] Покупка: {clip_1a} {base_c} @ ${t1a} "
+                                        f"(-{s1a_disc*100:.2f}%) [Бюджет: ${step_budget_1a:.2f}]"
+                                    )
+                                    resp1a = self.client.create_limit_order(
+                                        sym, "Buy", clip_1a, t1a, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                                    )
+                                    if resp1a.get("retCode") == 0:
+                                        avail_usdt -= val_1a
+                                        spendable_usdt -= val_1a
+
+                        # Step 1B (Main Wave -0.65%)
+                        if holding_val < (step_budget_1a + step_budget_1b * 0.8):
+                            has_1b = any(abs(float(o.get("price", 0)) - t1b) / t1b < 0.010 for o in open_buys)
+                            if not has_1b and spendable_usdt >= step_budget_1b:
+                                clip_1b = math.floor((step_budget_1b / t1b) * (10 ** q_dec)) / float(10 ** q_dec)
+                                val_1b = clip_1b * t1b
+                                if val_1b >= 5.00 and val_1b <= spendable_usdt:
+                                    logger.info(
+                                        f"🔵 [{sym}][Ступень 1B ШТИЛЬ] Покупка: {clip_1b} {base_c} @ ${t1b} "
+                                        f"(-{s1b_disc*100:.2f}%) [Бюджет: ${step_budget_1b:.2f}]"
+                                    )
+                                    resp1b = self.client.create_limit_order(
+                                        sym, "Buy", clip_1b, t1b, post_only=True, qty_precision=q_dec, price_precision=p_dec
+                                    )
+                                    if resp1b.get("retCode") == 0:
+                                        avail_usdt -= val_1b
+                                        spendable_usdt -= val_1b
+                    else:
+                        # Standard / Storm Step 1
+                        if not step1_held:
                             has_step1 = any(abs(float(o.get("price", 0)) - t1) / t1 < 0.010 for o in open_buys)
                             if not has_step1 and spendable_usdt >= step_budget_1:
                                 clip_1 = math.floor((step_budget_1 / t1) * (10 ** q_dec)) / float(10 ** q_dec)
                                 val_1 = clip_1 * t1
                                 if val_1 >= 5.00 and val_1 <= spendable_usdt:
                                     logger.info(
-                                        f"🟡 [{sym}][Ступень 1] Покупка: {clip_1} {base_c} @ ${t1} "
+                                        f"🟡 [{sym}][Ступень 1 {active_regime}] Покупка: {clip_1} {base_c} @ ${t1} "
                                         f"(-{s1_disc*100:.2f}%) [Бюджет: ${step_budget_1:.2f}]"
                                     )
                                     resp1 = self.client.create_limit_order(
@@ -1726,13 +1898,12 @@ class StandaloneBybitBot:
                     # Step 2 (Medium Pullback)
                     if not step2_held:
                         has_step2 = any(abs(float(o.get("price", 0)) - t2) / t2 < 0.010 for o in open_buys)
-                        # If BTC is sliding, postpone placing new Step 2 limit until BTC stabilizes
                         if not has_step2 and spendable_usdt >= step_budget_2 and not self.guard.dca_protection_active:
                             clip_2 = math.floor((step_budget_2 / t2) * (10 ** q_dec)) / float(10 ** q_dec)
                             val_2 = clip_2 * t2
                             if val_2 >= 5.00 and val_2 <= spendable_usdt:
                                 logger.info(
-                                    f"🟡 [{sym}][Ступень 2] Покупка: {clip_2} {base_c} @ ${t2} "
+                                    f"🟡 [{sym}][Ступень 2 {active_regime}] Покупка: {clip_2} {base_c} @ ${t2} "
                                     f"(-{s2_disc*100:.2f}%) [Бюджет: ${step_budget_2:.2f}]"
                                 )
                                 resp2 = self.client.create_limit_order(
@@ -1745,13 +1916,12 @@ class StandaloneBybitBot:
                     # Step 3 (Deepest Protection Floor)
                     has_step3 = any(abs(float(o.get("price", 0)) - t3) / t3 < 0.010 for o in open_buys)
                     alloc_3 = min(spendable_usdt, step_budget_3)
-                    # If BTC is sliding, postpone placing new Step 3 limit until BTC stabilizes
                     if not has_step3 and spendable_usdt >= 5.00 and not self.guard.dca_protection_active:
                         clip_3 = math.floor((alloc_3 / t3) * (10 ** q_dec)) / float(10 ** q_dec)
                         val_3 = clip_3 * t3
                         if val_3 >= 5.00 and val_3 <= spendable_usdt:
                             logger.info(
-                                f"🟡 [{sym}][Ступень 3 Защита] Покупка: {clip_3} {base_c} @ ${t3} "
+                                f"🟡 [{sym}][Ступень 3 {active_regime}] Покупка: {clip_3} {base_c} @ ${t3} "
                                 f"(-{s3_disc*100:.2f}%) [Бюджет: ${alloc_3:.2f}]"
                             )
                             resp3 = self.client.create_limit_order(
@@ -1801,8 +1971,12 @@ class StandaloneBybitBot:
                     "step2_discount_pct": round(s2_disc * 100, 2),
                     "step3_discount_pct": round(s3_disc * 100, 2),
                     "vol_multiplier": t_metric.get("vol_multiplier", 1.0),
-                    "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
-                    "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
+                    "volatility_regime": active_regime,
+                    "market_regime": active_regime,
+                    "regime_name": regime_cfg.get("name", active_regime),
+                    "regime_badge_color": regime_cfg.get("badge_color", "#10b981"),
+                    "cycle_locked": bool(self.token_locked_regime.get(sym) is not None),
+                    "range_15m_pct": round(t_metric.get("range_15m_pct", t_metric.get("range_15m", 0.0) * 100), 2),
                     "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
                     "cooldown_active": t_metric.get("cooldown_active", False),
                     "cooldown_reason": t_metric.get("cooldown_reason", ""),
@@ -2054,12 +2228,17 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             <div class="card" style="border-left: 4px solid {col};">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <h3 style="margin: 0; color: {col}; text-shadow: 0 0 10px {col}55;">{t.get('name')} ({sym})</h3>
-                    <span class="badge" style="background: {col}22; color: {col}; border: 1px solid {col};">{mode_badge}</span>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <span class="badge" style="background: {t.get('regime_badge_color', '#10b981')}22; color: {t.get('regime_badge_color', '#10b981')}; border: 1px solid {t.get('regime_badge_color', '#10b981')};">
+                            {t.get('regime_name', t.get('market_regime', 'NORMAL'))} {'🔒' if t.get('cycle_locked') else ''}
+                        </span>
+                        <span class="badge" style="background: {col}22; color: {col}; border: 1px solid {col};">{mode_badge}</span>
+                    </div>
                 </div>
-                <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: {t.get('range_15m_pct', 0.0):.2f}%)</div>
+                <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: <b>{t.get('range_15m_pct', 0.0):.2f}%</b>)</div>
                 <div class="label" style="margin-top: 4px;">На руках: <b>{t.get('free_coin', 0.0)} {t.get('base_coin')}</b> (~${t.get('holding_value_usd', 0.0):.2f})</div>
                 <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто циклов: <b>{t.get('completed_cycles', 0)}</b> | Профит: <b>+${t.get('net_profit_usd', 0.0):.4f} USDT</b></div>
-                <div class="label" style="margin-top: 4px;">Сетка ({t.get('volatility_regime')} x{t.get('vol_multiplier')}): -{t.get('step1_discount_pct')}% / -{t.get('step2_discount_pct')}% / -{t.get('step3_discount_pct')}%</div>
+                <div class="label" style="margin-top: 4px;">Сетка ({t.get('market_regime', t.get('volatility_regime'))}): -{t.get('step1_discount_pct')}% / -{t.get('step2_discount_pct')}% / -{t.get('step3_discount_pct')}%</div>
                 <div class="label" style="margin-top: 4px;">Тейк-профит: <b>{t.get('tp_mode')}</b> (удержание: {t.get('position_age_hours')}ч)</div>
                 {rocket_box}
             </div>
