@@ -2854,23 +2854,32 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
                         f"Развертывание торговой сетки."
                     )
                 elif bot.mode == "mobile":
-                    # Check if office window has ended, even if desktop failed to cleanly handover
-                    if not is_desktop_schedule_window():
-                        logger.info("📱 [Desktop Schedule End] Наступило 17:30 по Астане. Телефон принимает вечернюю смену.")
-                        bot.is_active_controller = True
-                        bot.role = "ACTIVE_CONTROLLER"
-                        bot.cluster_board_msg_id = write_cluster_state(
-                            "mobile",
-                            "Окончание офисных часов (17:30 по Астане)",
-                            bot.cluster_board_msg_id,
-                        )
-                        send_telegram(
-                            "📱 *[КЛАСТЕР: ВЕЧЕРНЯЯ СМЕНА]*\n\n"
-                            "Наступило 17:30 по Астане (окончание рабочего дня ПК).\n"
-                            "Телефон автоматически активировал `ACTIVE_CONTROLLER` и перешел на сетку STORM x2.0."
-                        )
-                    # Dead Man's Switch / Failover: check if desktop died (via Canary Order or Telegram Heartbeat)
+                    # Check Canary Order first: if Desktop is running 24/7 and updating canary, Desktop is healthy!
                     canary_st = bot.get_canary_status()
+                    canary_alive = (canary_st.get("found") and canary_st.get("age_sec", 999.0) < CANARY_FAILOVER_TIMEOUT_SEC)
+
+                    # Check if office window has ended, BUT only take over if desktop is NOT actively running (no live canary)
+                    if not is_desktop_schedule_window():
+                        if canary_alive:
+                            # Desktop is running in 24/7 mode or still active. Mobile remains PASSIVE_OBSERVER!
+                            logger.info(
+                                f"🖥️ [Desktop 24/7 Active] Наступило 17:30, но Desktop активен (Канарейка свежая: {canary_st.get('age_sec', 0):.0f}с). "
+                                f"Телефон остается в PASSIVE_OBSERVER (ночной сторож)."
+                            )
+                        else:
+                            logger.info("📱 [Desktop Schedule End] Наступило 17:30 по Астане и ПК не удерживает канарейку. Телефон принимает смену.")
+                            bot.is_active_controller = True
+                            bot.role = "ACTIVE_CONTROLLER"
+                            bot.cluster_board_msg_id = write_cluster_state(
+                                "mobile",
+                                "Окончание офисных часов (17:30 по Астане)",
+                                bot.cluster_board_msg_id,
+                            )
+                            send_telegram(
+                                "📱 *[КЛАСТЕР: ВЕЧЕРНЯЯ СМЕНА]*\n\n"
+                                "Наступило 17:30 по Астане (ПК не в 24/7).\n"
+                                "Телефон автоматически активировал `ACTIVE_CONTROLLER` и перешел на сетку STORM x2.0."
+                            )
                     canary_stale = (canary_st.get("found") and canary_st.get("age_sec", 0.0) >= CANARY_FAILOVER_TIMEOUT_SEC)
                     canary_missing = (not canary_st.get("found") and active_host == "desktop" and hb_age >= CANARY_FAILOVER_TIMEOUT_SEC)
                     telegram_stale = (active_host == "desktop" and hb_age >= HEARTBEAT_TIMEOUT_SECONDS)
