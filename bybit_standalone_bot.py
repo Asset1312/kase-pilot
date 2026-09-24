@@ -1087,6 +1087,25 @@ class MomentumBreakoutController:
             else:
                 return None
 
+        # Check if held position was already sold/closed on exchange (e.g. external fill or balance sweep)
+        if self.state.status == "IN_FLIGHT" and free_qty <= 0.05:
+            if self.state.position_qty > 0 and self.state.entry_price > 0:
+                realized = round((cur_price - self.state.entry_price) * self.state.position_qty, 4) if cur_price > 0 else 0.0
+                self.state.completed_cycles += 1
+                self.state.total_profit_usd += realized
+                logger.info(
+                    f"⚡💰 [Breakout Reconciled] Позиция {self.symbol} закрыта на бирже! Цикл #{self.state.completed_cycles}, "
+                    f"PnL: {realized:+.4f} USDT. Перезарядка в IDLE..."
+                )
+            self.state.status = "IDLE"
+            self.state.position_qty = 0.0
+            self.state.entry_price = 0.0
+            self.state.peak_price = 0.0
+            self.state.stop_price = 0.0
+            self.state.floor_price = 0.0
+            self.state.trailing_active = False
+            return {"action": "EXTERNAL_CLOSE"}
+
         # 2. Manage Active IN_FLIGHT Position
         if self.state.status == "IN_FLIGHT":
             if self.state.position_qty <= 0 or self.state.entry_price <= 0:
@@ -2204,8 +2223,21 @@ class StandaloneBybitBot:
                 meta = TOKEN_METADATA.get(sym, {})
                 base_c = meta.get("base_coin", sym)
                 cur_price = prices.get(sym, 0.0)
-                cur_free = free_coins.get(sym, 0.0)
-                cur_total = total_coins.get(sym, 0.0)
+                cur_free_raw = free_coins.get(sym, 0.0)
+                cur_total_raw = total_coins.get(sym, 0.0)
+
+                # Deduct inventory held by dedicated sub-strategies (Breakout Engine, Flash Sniper)
+                # so the main Grid engine only manages Grid inventory and never touches or sells Breakout/Sniper coins!
+                sub_strat_held = 0.0
+                if self.breakout_engine and self.breakout_engine.symbol == sym:
+                    if self.breakout_engine.state.status == "IN_FLIGHT":
+                        sub_strat_held += self.breakout_engine.state.position_qty
+                if self.flash_sniper and self.flash_sniper.symbol == sym:
+                    if self.flash_sniper.state.status in ("POSITION_HELD", "ROCKET_ACTIVE", "TP_PLACED"):
+                        sub_strat_held += self.flash_sniper.state.position_qty
+
+                cur_free = max(0.0, cur_free_raw - sub_strat_held)
+                cur_total = max(0.0, cur_total_raw - sub_strat_held)
                 holding_val = cur_total * cur_price
                 free_val = cur_free * cur_price
                 t_metric = self.guard.token_metrics.get(sym, {})

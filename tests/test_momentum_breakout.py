@@ -208,3 +208,29 @@ def test_breakout_trailing_rocket_exit():
     assert controller.state.status == "COOLDOWN"
     assert controller.state.total_profit_usd > 0
     client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Sell", 5.25)
+
+
+def test_breakout_reconciles_when_coins_closed_externally():
+    controller = MomentumBreakoutController(symbol="SUIUSDT", budget_usd=5.25)
+    controller.state.status = "IN_FLIGHT"
+    controller.state.entry_price = 0.9674
+    controller.state.position_qty = 5.60
+
+    client_mock = MagicMock()
+    # Coins are no longer on balance (free_qty <= 0.05)
+    res = controller.tick(
+        client=client_mock,
+        cur_price=0.9670,
+        avail_usdt=10.0,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        klines=[],
+    )
+
+    assert res is not None
+    assert res["action"] == "EXTERNAL_CLOSE"
+    assert controller.state.status == "IDLE"
+    assert controller.state.position_qty == 0.0
+    assert controller.state.entry_price == 0.0
+    client_mock.create_market_order.assert_not_called()
+
