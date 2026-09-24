@@ -267,3 +267,79 @@ def test_flash_sniper_token_dump_guard_aborts_trap():
     client_mock.cancel_order.assert_called_once_with("NEARUSDT", "sniper_ord_dump")
 
 
+def test_flash_sniper_obi_guard_cancels_hunting_order():
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25)
+    sniper.state.status = "HUNTING"
+    sniper.state.buy_order_id = "sniper_ord_obi"
+    sniper.state.buy_price = 4.300
+
+    client_mock = MagicMock()
+    client_mock.cancel_order.return_value = {"retCode": 0}
+
+    # Severe sell imbalance in orderbook (OBI = -0.45 < -0.35) -> massive ask wall, bid vacuum!
+    res = sniper.tick(
+        client=client_mock,
+        cur_price=4.400,
+        avail_usdt=10.00,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        price_decimals=3,
+        qty_decimals=2,
+        obi=-0.45,
+    )
+
+    assert res is None
+    assert sniper.state.status == "IDLE"
+    assert sniper.state.buy_order_id is None
+    assert sniper.state.buy_price == 0.0
+    client_mock.cancel_order.assert_called_once_with("NEARUSDT", "sniper_ord_obi")
+    assert sniper.to_dict()["obi"] == -0.45
+
+
+def test_flash_sniper_obi_guard_blocks_idle_placement():
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25)
+    client_mock = MagicMock()
+
+    # When OBI is -0.40 (< -0.35), IDLE trap placement should be completely blocked
+    res = sniper.tick(
+        client=client_mock,
+        cur_price=4.400,
+        avail_usdt=10.00,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        price_decimals=3,
+        qty_decimals=2,
+        obi=-0.40,
+    )
+
+    assert res is None
+    assert sniper.state.status == "IDLE"
+    assert sniper.state.buy_order_id is None
+    client_mock.create_limit_order.assert_not_called()
+
+
+def test_flash_sniper_normal_obi_allows_placement():
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25, dip_depth_pct=0.0250)
+    client_mock = MagicMock()
+    client_mock.create_limit_order.return_value = {"retCode": 0, "result": {"orderId": "sniper_ok_1"}}
+
+    # When OBI is healthy (-0.10 >= -0.35), IDLE trap is placed normally
+    res = sniper.tick(
+        client=client_mock,
+        cur_price=4.400,
+        avail_usdt=10.00,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        price_decimals=3,
+        qty_decimals=2,
+        obi=-0.10,
+    )
+
+    assert res is not None
+    assert res["action"] == "BUY_PLACED"
+    assert sniper.state.status == "HUNTING"
+    assert sniper.state.buy_order_id == "sniper_ok_1"
+    client_mock.create_limit_order.assert_called_once()
+
+
+

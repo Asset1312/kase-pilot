@@ -607,6 +607,7 @@ class FlashSniperState:
     peak_price: float = 0.0
     stop_price: float = 0.0
     floor_price: float = 0.0
+    last_obi: float = 0.0
 
 
 class FlashSniperController:
@@ -619,7 +620,7 @@ class FlashSniperController:
       - Secures guaranteed profit floor at +1.20%
       - Rides upward momentum, ratcheting stop 0.35% beneath peak
       - Ejects at the crest of the bounce for maximal profit
-    Shielded by Lead-Lag CRASH guard to prevent catching knives during systemic market crashes.
+    Shielded by Lead-Lag CRASH guard, Dump Guard, and Order Book Imbalance (OBI) guard.
     """
 
     def __init__(
@@ -668,6 +669,7 @@ class FlashSniperController:
             "floor_price": self.state.floor_price,
             "completed_cycles": self.state.completed_cycles,
             "total_profit_usd": round(self.state.total_profit_usd, 4),
+            "obi": self.state.last_obi,
         }
 
     def sync_on_exchange_orders(self, open_orders: List[Dict[str, Any]]) -> None:
@@ -732,9 +734,11 @@ class FlashSniperController:
         token_1m_chg: float = 0.0,
         token_3m_chg: float = 0.0,
         volatility_regime: str = "NORMAL",
+        obi: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
         """Main execution tick for Flash Sniper."""
         now = time.time()
+        self.state.last_obi = round(obi, 3)
 
         # 1. Lead-Lag Safety Guard: Emergency abort on systemic BTC CRASH
         if lead_lag_status == "CRASH":
@@ -754,6 +758,21 @@ class FlashSniperController:
                     f"🚨 [Flash Sniper Dump Guard] Обнаружен резкий слив {self.symbol} "
                     f"(1m: {token_1m_chg*100:+.2f}%, 3m: {token_3m_chg*100:+.2f}%)! "
                     f"Экстренный отзыв ловушки ${self.state.buy_price:.4f} для защиты от ножа!"
+                )
+                client.cancel_order(self.symbol, self.state.buy_order_id)
+                self.state.status = "IDLE"
+                self.state.buy_order_id = None
+                self.state.buy_price = 0.0
+            return None
+
+        # 1.2 Order Book Imbalance (OBI) Guard: Emergency abort on severe sell wall / vacuum of bids
+        # OBI < -0.35 indicates massive ask pressure and lack of bid depth (high risk of slicing through)
+        if obi < -0.35:
+            if self.state.status == "HUNTING" and self.state.buy_order_id:
+                logger.warning(
+                    f"🚨 [Flash Sniper OBI Guard] Критический дисбаланс стакана {self.symbol} "
+                    f"(OBI: {obi:+.3f} < -0.35)! Давит стена продавцов, глубина покупок истощена. "
+                    f"Экстренный отзыв ловушки ${self.state.buy_price:.4f} во избежание ножа!"
                 )
                 client.cancel_order(self.symbol, self.state.buy_order_id)
                 self.state.status = "IDLE"
@@ -924,8 +943,15 @@ class FlashSniperController:
                         else:
                             logger.error(f"Failed to execute Sniper Rocket market exit: {resp_sell}")
 
-        # 4. IDLE mode -> Place new dip trap if funds available and not currently dumping
+        # 4. IDLE mode -> Place new dip trap if funds available, not dumping, and orderbook is not imbalanced
         if self.state.status == "IDLE" and avail_usdt >= self.budget_usd and cur_price > 0 and not is_dumping:
+            if obi < -0.35:
+                logger.debug(
+                    f"🛡️ [Flash Sniper OBI Guard] Вход в ловушку {self.symbol} отложен: "
+                    f"OBI {obi:+.3f} < -0.35 (преобладание продавцов в стакане)"
+                )
+                return None
+
             target_price = round(cur_price * (1.0 - eff_dip_pct), price_decimals)
             target_qty = math.floor((self.budget_usd / target_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
             val = target_qty * target_price
@@ -987,7 +1013,31 @@ class MarketGuard:
                 "cooldown_active": False,
                 "cooldown_start_time": 0.0,
                 "cooldown_reason": "",
+                "obi": 0.0,
             }
+
+    @staticmethod
+    def fetch_order_book_imbalance(symbol: str, depth: int = 15) -> float:
+        """Computes Order Book Imbalance (OBI) from top depth levels of orderbook.
+        OBI = (Sum(bids) - Sum(asks)) / (Sum(bids) + Sum(asks))
+        Values range from -1.0 (pure sell wall / bid vacuum) to +1.0 (pure buy wall).
+        """
+        url = f"https://api.bybit.kz/v5/market/orderbook?category=spot&symbol={symbol}&limit={max(25, depth)}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("retCode") == 0:
+                    bids = data.get("result", {}).get("b", [])[:depth]
+                    asks = data.get("result", {}).get("a", [])[:depth]
+                    bid_vol = sum(float(b[1]) for b in bids if len(b) >= 2)
+                    ask_vol = sum(float(a[1]) for a in asks if len(a) >= 2)
+                    tot_vol = bid_vol + ask_vol
+                    if tot_vol > 0:
+                        return round((bid_vol - ask_vol) / tot_vol, 4)
+        except Exception as e:
+            logger.debug(f"Orderbook fetch failed for {symbol}: {e}")
+        return 0.0
 
     @staticmethod
     def fetch_klines(symbol: str, limit: int = 15) -> List[List[Any]]:
@@ -1214,7 +1264,11 @@ class MarketGuard:
                 "step2_discount": BASE_SPACING["step_2"],
                 "step3_discount": BASE_SPACING["step_3"],
                 "cooldown_active": False, "cooldown_start_time": 0.0, "cooldown_reason": "",
+                "obi": 0.0,
             })
+
+            # Order Book Imbalance (OBI) for early dump/slippage detection
+            m["obi"] = self.fetch_order_book_imbalance(sym, depth=15)
 
             klines = self.fetch_klines(sym, limit=15)
             if not klines:
@@ -1855,6 +1909,7 @@ class StandaloneBybitBot:
                         "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
                         "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
                         "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                        "obi": round(t_metric.get("obi", 0.0), 3),
                         "cooldown_active": t_metric.get("cooldown_active", False),
                         "cooldown_reason": t_metric.get("cooldown_reason", ""),
                     }
@@ -2070,6 +2125,7 @@ class StandaloneBybitBot:
                         "volatility_regime": t_metric.get("volatility_regime", "NORMAL"),
                         "range_15m_pct": round(t_metric.get("range_15m", 0.0) * 100, 2),
                         "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                        "obi": round(t_metric.get("obi", 0.0), 3),
                         "cooldown_active": t_metric.get("cooldown_active", False),
                         "cooldown_reason": t_metric.get("cooldown_reason", ""),
                     }
@@ -2419,6 +2475,7 @@ class StandaloneBybitBot:
                     "cycle_locked": bool(self.token_locked_regime.get(sym) is not None),
                     "range_15m_pct": round(t_metric.get("range_15m_pct", t_metric.get("range_15m", 0.0) * 100), 2),
                     "chg_1m_pct": round(t_metric.get("last_1m_chg", 0.0) * 100, 2),
+                    "obi": round(t_metric.get("obi", 0.0), 3),
                     "cooldown_active": t_metric.get("cooldown_active", False),
                     "cooldown_reason": t_metric.get("cooldown_reason", ""),
                 }
@@ -2523,6 +2580,7 @@ class StandaloneBybitBot:
                 t_1m = sniper_metrics.get("last_1m_chg", 0.0)
                 t_3m = sniper_metrics.get("last_3m_chg", 0.0)
                 v_reg = sniper_metrics.get("volatility_regime", "NORMAL")
+                t_obi = sniper_metrics.get("obi", 0.0)
 
                 # Run sniper tick
                 self.flash_sniper.tick(
@@ -2536,6 +2594,7 @@ class StandaloneBybitBot:
                     token_1m_chg=t_1m,
                     token_3m_chg=t_3m,
                     volatility_regime=v_reg,
+                    obi=t_obi,
                 )
 
             # 11. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
@@ -2741,7 +2800,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                         <span class="badge" style="background: {col}22; color: {col}; border: 1px solid {col};">{mode_badge}</span>
                     </div>
                 </div>
-                <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: <b>{t.get('range_15m_pct', 0.0):.2f}%</b>)</div>
+                <div class="label" style="margin-top: 6px;">Спот: <b>${t.get('price', 0.0):.4f}</b> | 1m: <b>{t.get('chg_1m_pct', 0.0):+.2f}%</b> (15m размах: <b>{t.get('range_15m_pct', 0.0):.2f}%</b>) | OBI: <b>{t.get('obi', 0.0):+.3f}</b></div>
                 <div class="label" style="margin-top: 4px;">На руках: <b>{t.get('free_coin', 0.0)} {t.get('base_coin')}</b> (~${t.get('holding_value_usd', 0.0):.2f})</div>
                 <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто циклов: <b>{t.get('completed_cycles', 0)}</b> | Профит: <b>+${t.get('net_profit_usd', 0.0):.4f} USDT</b></div>
                 <div class="label" style="margin-top: 4px;">Сетка ({t.get('market_regime', t.get('volatility_regime'))}): -{t.get('step1_discount_pct')}% / -{t.get('step2_discount_pct')}% / -{t.get('step3_discount_pct')}%</div>
@@ -2940,12 +2999,16 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
 
             s_badge_label = "🚀 ROCKET ACTIVE" if s_status == "ROCKET_ACTIVE" else s_status
             s_alloc_lbl = f"Изолирован ${snp.get('allocated_usd', 5.25):.2f}"
+            s_obi = snp.get('obi', 0.0)
+            s_obi_col = "#10b981" if s_obi >= 0.0 else ("#f59e0b" if s_obi >= -0.35 else "#ef4444")
+            s_obi_lbl = f"OBI: {s_obi:+.3f}"
 
             sniper_html = f"""
             <div class="card" style="border: 1px solid rgba(234, 179, 8, 0.35); background: rgba(30, 27, 75, 0.45);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <h3 style="margin: 0; color: #facc15; text-shadow: 0 0 10px #facc1555;">🎯 Flash Sniper ({snp.get('symbol')})</h3>
                     <div style="display: flex; gap: 6px; align-items: center;">
+                        <span class="badge" style="background: {s_obi_col}22; color: {s_obi_col}; border: 1px solid {s_obi_col};">{s_obi_lbl}</span>
                         <span class="badge" style="background: {s_badge_col}22; color: {s_badge_col}; border: 1px solid {s_badge_col};">{s_badge_label}</span>
                         <span class="badge" style="background: #eab30822; color: #facc15; border: 1px solid #facc15;">{s_alloc_lbl}</span>
                     </div>
@@ -2956,6 +3019,11 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             """
         else:
             sniper_html = ""
+
+        total_usd_val = float(st.get('total_usd', 0.0))
+        net_dep_profit = round(total_usd_val - 52.47, 2)
+        net_dep_pct = round((net_dep_profit / 52.47) * 100, 2) if 52.47 > 0 else 0.0
+        pnl_col = "#10b981" if net_dep_profit >= 0 else "#ef4444"
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -3000,7 +3068,7 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
     <div class="card">
         <h2>⚡ Bybit Kazakhstan Autonomous Fund {profile_badge_html} {cmp_badge_html}</h2>
         <div class="label">Режим портфеля: <b>{st.get('portfolio_mode')}</b></div>
-        <div class="metric">${st.get('total_usd', 0.0):.2f} USDT</div>
+        <div class="metric">${st.get('total_usd', 0.0):.2f} USDT <span style="font-size: 0.95rem; font-weight: normal; color: {pnl_col}; text-shadow: none;">(Депозит: $52.47 | PnL: <b>{net_dep_profit:+.2f} USDT</b> / <b>{net_dep_pct:+.2f}%</b>)</span></div>
         <div class="label">Свободно: ${st.get('available_usdt', 0.0):.2f}{reserve_html} | В ордерах: ${st.get('locked_usdt', 0.0):.2f} | Компаундинг: <b>{cmp_mult:.2f}x</b></div>
         <div class="label" style="margin-top: 6px; color: #38bdf8;">Топливо комиссий: <b>{st.get('mnt_balance', 0.0):.4f} MNT</b></div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
