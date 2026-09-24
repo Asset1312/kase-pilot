@@ -984,6 +984,104 @@ class FlashSniperController:
         return None
 
 
+class InventorySkewController:
+    """Управляет смещением ступеней сетки и тейк-профита в зависимости от загрузки капитала (модель Авелланеды-Стойкова)."""
+
+    def __init__(self, base_tp_pct: float = 0.0070) -> None:
+        self.base_tp_pct = base_tp_pct
+
+    def get_skewed_step_offset(self, step_idx: int, base_offset_pct: float) -> float:
+        """Отодвигает шаг глубже, если предыдущие ступени уже в инвентаре.
+
+        Step 1 -> без изменений (1.0x)
+        Step 2 -> базовый отступ * 1.25 (требуем большую скидку)
+        Step 3 -> базовый отступ * 1.50 (глубокий бункер)
+        """
+        multipliers = {1: 1.0, 2: 1.25, 3: 1.50}
+        return round(base_offset_pct * multipliers.get(step_idx, 1.0), 4)
+
+    def get_skewed_tp_pct(self, active_steps_count: int) -> float:
+        """Сжимает целевой тейк-профит к безубытку при росте риска инвентаря.
+
+        1 ступень  -> полный тейк (+0.70% .. +0.90%)
+        2 ступени  -> умеренный тейк (+0.45%)
+        3 ступени  -> быстрый сброс груза в кэш (+0.25% чистыми)
+        """
+        if active_steps_count >= 3:
+            return 0.0025
+        elif active_steps_count == 2:
+            return 0.0045
+        return self.base_tp_pct
+
+
+class L2WallScanner:
+    """Сканирует стакан глубиной 50 и находит институциональные плиты-щиты."""
+
+    def __init__(self, client: Any = None, min_wall_qty: float = 30000.0, min_wall_usd: float = 15000.0) -> None:
+        self.client = client
+        self.min_wall_qty = min_wall_qty  # Порог объема для SUI (крупная лимитная стена)
+        self.min_wall_usd = min_wall_usd
+
+    def find_front_run_price(
+        self,
+        symbol: str,
+        calc_price: float,
+        window_pct: float = 0.0035,
+        tick_size: float = 0.0001,
+        price_decimals: int = 4,
+    ) -> float:
+        """Ищет максимальную стену покупателей в коридоре +-0.35% от расчетной цены
+        и ставит ордер на 1 тик ПЕРЕД ней.
+        """
+        try:
+            res: Dict[str, Any] = {}
+            if self.client and hasattr(self.client, "_request"):
+                res = self.client._request(
+                    "GET",
+                    "/v5/market/orderbook",
+                    params={"category": "spot", "symbol": symbol, "limit": 50},
+                )
+            else:
+                url = f"https://api.bybit.kz/v5/market/orderbook?category=spot&symbol={symbol}&limit=50"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    res = json.loads(resp.read().decode())
+
+            bids = res.get("result", {}).get("b", [])  # [[price, size], ...]
+            if not bids:
+                return calc_price
+
+            min_p = calc_price * (1.0 - window_pct)
+            max_p = calc_price * (1.0 + window_pct)
+
+            zone_bids = [
+                (float(p), float(sz))
+                for p, sz in bids
+                if min_p <= float(p) <= max_p
+            ]
+
+            if not zone_bids:
+                return calc_price
+
+            # Ищем уровень с наибольшей плотностью
+            wall_price, max_vol = max(zone_bids, key=lambda x: x[1])
+
+            if max_vol >= self.min_wall_qty or (max_vol * wall_price) >= self.min_wall_usd:
+                front_price = round(wall_price + tick_size, price_decimals)
+                logger.info(
+                    f"🛡️ [L2 WALL] Найдена плита {max_vol:.0f} {symbol} (~${max_vol*wall_price:,.0f}) @ ${wall_price}. "
+                    f"Сдвиг ордера: ${calc_price:.4f} -> ${front_price:.4f}"
+                )
+                return front_price
+
+            return calc_price
+        except Exception as e:
+            logger.warning(
+                f"⚠️ [L2 WALL] Ошибка чтения стакана {symbol}: {e}. Используем базовую цену ${calc_price}."
+            )
+            return calc_price
+
+
 class MarketGuard:
     """Market crash detection, lead-lag spillover, and dynamic adaptive spacing engine."""
 
@@ -1437,6 +1535,8 @@ class StandaloneBybitBot:
         self.running = True
         self.trailing_controller = TrailingTakeProfitController()
         self.flash_sniper = FlashSniperController(symbol=SNIPER_TARGET_SYMBOL) if SNIPER_ENABLED else None
+        self.inventory_skew = InventorySkewController(base_tp_pct=STANDARD_TP_PCT)
+        self.wall_scanner = L2WallScanner(client=self.client, min_wall_qty=30000.0, min_wall_usd=15000.0)
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
@@ -1968,10 +2068,23 @@ class StandaloneBybitBot:
                 trailing_active = False
                 position_closed_by_trailing = False
 
+                active_steps_count = 1 if holding_val >= 4.50 else 0
+                if holding_val >= 13.50:
+                    active_steps_count = 2
+                if holding_val >= 24.00:
+                    active_steps_count = 3
+                skewed_tp_pct = self.inventory_skew.get_skewed_tp_pct(active_steps_count)
+
                 if self.mode == "desktop":
                     sym_act_pct = meta.get("trailing_activation_pct", TRAILING_ACTIVATION_PCT)
                     sym_cb_pct = meta.get("trailing_callback_pct", TRAILING_CALLBACK_PCT)
                     sym_fl_pct = meta.get("trailing_min_floor_pct", TRAILING_MIN_FLOOR_PCT)
+
+                    # Inventory Skew: with 2 or 3 steps held, tighten trailing threshold to quickly derisk
+                    if active_steps_count >= 2:
+                        sym_act_pct = min(sym_act_pct, round(skewed_tp_pct * 1.5, 4))
+                        sym_fl_pct = min(sym_fl_pct, skewed_tp_pct)
+
                     trailing_res = self.trailing_controller.update_price(
                         sym, cur_price, entry_price, cur_free, free_val,
                         activation_pct=sym_act_pct,
@@ -2166,7 +2279,7 @@ class StandaloneBybitBot:
                 # Place Fresh Take-Profit SELL Order (Mobile profile only; Desktop uses Trailing)
                 if self.mode != "desktop":
                     if free_val >= 5.00 and len(open_sells) < 2:
-                        tp_pct = STANDARD_TP_PCT
+                        tp_pct = skewed_tp_pct
                         tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
                         sell_qty = math.floor(cur_free * 100) / 100.0
                         use_post_only = tp_price > cur_price
@@ -2223,14 +2336,21 @@ class StandaloneBybitBot:
                     s1b_disc = regime_cfg.get("step_1b_discount", 0.0065)
                     s2_disc = regime_cfg.get("step_2_discount", 0.0160)
                     s3_disc = regime_cfg.get("step_3_discount", 0.0350)
+                else:
+                    s1_disc = regime_cfg.get("step_1_discount", 0.0055)
+                    s2_disc = regime_cfg.get("step_2_discount", 0.0200)
+                    s3_disc = regime_cfg.get("step_3_discount", 0.0400)
+
+                # Apply Inventory Skew: push Step 2 (* 1.25) and Step 3 (* 1.50) deeper as risk increases
+                s2_disc = self.inventory_skew.get_skewed_step_offset(2, s2_disc)
+                s3_disc = self.inventory_skew.get_skewed_step_offset(3, s3_disc)
+
+                if is_calm:
                     t1a = round(cur_price * (1.0 - s1a_disc), p_dec)
                     t1b = round(cur_price * (1.0 - s1b_disc), p_dec)
                     t1 = t1a
                     s1_disc = s1a_disc
                 else:
-                    s1_disc = regime_cfg.get("step_1_discount", 0.0055)
-                    s2_disc = regime_cfg.get("step_2_discount", 0.0200)
-                    s3_disc = regime_cfg.get("step_3_discount", 0.0400)
                     t1 = round(cur_price * (1.0 - s1_disc), p_dec)
 
                 if step1_held and entry_price > 0:
@@ -2248,6 +2368,16 @@ class StandaloneBybitBot:
                 else:
                     t2 = round(cur_price * (1.0 - s2_disc), p_dec)
                     t3 = round(cur_price * (1.0 - s3_disc), p_dec)
+
+                # Scan L2 Order Book Walls (Front-run institutional bid walls by 1 tick)
+                tick_sz = 10 ** (-p_dec)
+                if is_calm:
+                    t1a = self.wall_scanner.find_front_run_price(sym, t1a, window_pct=0.0035, tick_size=tick_sz, price_decimals=p_dec)
+                    t1b = self.wall_scanner.find_front_run_price(sym, t1b, window_pct=0.0035, tick_size=tick_sz, price_decimals=p_dec)
+                else:
+                    t1 = self.wall_scanner.find_front_run_price(sym, t1, window_pct=0.0035, tick_size=tick_sz, price_decimals=p_dec)
+                t2 = self.wall_scanner.find_front_run_price(sym, t2, window_pct=0.0035, tick_size=tick_sz, price_decimals=p_dec)
+                t3 = self.wall_scanner.find_front_run_price(sym, t3, window_pct=0.0035, tick_size=tick_sz, price_decimals=p_dec)
 
                 # Valid buy targets based on inventory and regime
                 valid_targets: List[Tuple[str, float]] = []
