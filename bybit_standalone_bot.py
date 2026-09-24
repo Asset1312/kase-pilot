@@ -729,6 +729,9 @@ class FlashSniperController:
         lead_lag_status: str,
         price_decimals: int = 4,
         qty_decimals: int = 2,
+        token_1m_chg: float = 0.0,
+        token_3m_chg: float = 0.0,
+        volatility_regime: str = "NORMAL",
     ) -> Optional[Dict[str, Any]]:
         """Main execution tick for Flash Sniper."""
         now = time.time()
@@ -743,24 +746,49 @@ class FlashSniperController:
                 self.state.buy_price = 0.0
             return None
 
-        # 2. Check if resting buy filled
-        if self.state.status == "HUNTING" and self.state.buy_order_id:
-            # If buy order filled, free_qty should have increased by position_qty
-            # Or if buy order is gone from open_buys
-            target_price = round(cur_price * (1.0 - self.dip_depth_pct), price_decimals)
+        # 1.1 Local Token Dump Guard: Emergency abort on acute idiosyncratic dump (falling knife)
+        is_dumping = (token_1m_chg <= -0.0070) or (token_3m_chg <= -0.0150)
+        if is_dumping:
+            if self.state.status == "HUNTING" and self.state.buy_order_id:
+                logger.warning(
+                    f"🚨 [Flash Sniper Dump Guard] Обнаружен резкий слив {self.symbol} "
+                    f"(1m: {token_1m_chg*100:+.2f}%, 3m: {token_3m_chg*100:+.2f}%)! "
+                    f"Экстренный отзыв ловушки ${self.state.buy_price:.4f} для защиты от ножа!"
+                )
+                client.cancel_order(self.symbol, self.state.buy_order_id)
+                self.state.status = "IDLE"
+                self.state.buy_order_id = None
+                self.state.buy_price = 0.0
+            return None
 
-            # Check soft chase (upward amend only)
-            if (
-                cur_price > 0
-                and target_price > self.state.buy_price
-                and (target_price - self.state.buy_price) / self.state.buy_price >= self.amend_threshold_pct
-                and (now - self.state.last_amend_time) >= self.amend_cooldown_sec
-            ):
+        # Adaptive Dip Depth: in STORM regime, expand trap depth to prevent premature fills
+        eff_dip_pct = max(self.dip_depth_pct, 0.0350) if volatility_regime == "STORM" else self.dip_depth_pct
+        target_price = round(cur_price * (1.0 - eff_dip_pct), price_decimals) if cur_price > 0 else 0.0
+
+        # 2. Smart Float: Upward chase on rally, and Downward retract on market slide
+        if self.state.status == "HUNTING" and self.state.buy_order_id and target_price > 0 and self.state.buy_price > 0:
+            price_delta_pct = (target_price - self.state.buy_price) / self.state.buy_price
+            time_since_amend = now - self.state.last_amend_time
+
+            # Upward chase: market drifted higher -> pull trap up
+            should_amend_up = (
+                price_delta_pct >= self.amend_threshold_pct
+                and time_since_amend >= self.amend_cooldown_sec
+            )
+
+            # Downward retract: market slides down -> push trap deeper to maintain safety cushion
+            should_amend_down = (
+                price_delta_pct <= -self.amend_threshold_pct
+                and time_since_amend >= 30.0  # Responsive 30s retract to avoid getting caught on slow bleed
+            )
+
+            if should_amend_up or should_amend_down:
                 new_qty = math.floor((self.budget_usd / target_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
                 if (new_qty * target_price) >= 5.00:
+                    action_label = "Подтягивание ловушки вверх" if should_amend_up else "🛡️ Оттягивание ловушки глубже"
                     logger.info(
-                        f"🎯 [Flash Sniper Amend] Подтягивание ловушки: ${self.state.buy_price:.4f} -> ${target_price:.4f} "
-                        f"(-{self.dip_depth_pct*100:.2f}%) [Объем: {new_qty}]"
+                        f"🎯 [Flash Sniper Smart-Float] {action_label}: ${self.state.buy_price:.4f} -> ${target_price:.4f} "
+                        f"(-{eff_dip_pct*100:.2f}%) [Объем: {new_qty}]"
                     )
                     resp_amend = client.amend_order(
                         self.symbol,
@@ -776,7 +804,6 @@ class FlashSniperController:
                     elif resp_amend.get("retCode") in (10001, 20001):
                         self.state.last_amend_time = now
                     else:
-                        # Order might have filled or vanished
                         logger.debug(f"Flash sniper amend result: {resp_amend}")
 
         # Check if held position was already sold/closed on exchange (e.g. by Trailing Take-Profit)
@@ -897,9 +924,9 @@ class FlashSniperController:
                         else:
                             logger.error(f"Failed to execute Sniper Rocket market exit: {resp_sell}")
 
-        # 4. IDLE mode -> Place new dip trap if funds available
-        if self.state.status == "IDLE" and avail_usdt >= self.budget_usd and cur_price > 0:
-            target_price = round(cur_price * (1.0 - self.dip_depth_pct), price_decimals)
+        # 4. IDLE mode -> Place new dip trap if funds available and not currently dumping
+        if self.state.status == "IDLE" and avail_usdt >= self.budget_usd and cur_price > 0 and not is_dumping:
+            target_price = round(cur_price * (1.0 - eff_dip_pct), price_decimals)
             target_qty = math.floor((self.budget_usd / target_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
             val = target_qty * target_price
 
@@ -907,7 +934,7 @@ class FlashSniperController:
                 unique_link_id = f"{SNIPER_ORDER_LINK_PREFIX}_BUY_{int(now)}"
                 logger.info(
                     f"🎯 [Flash Sniper Trap] Расстановка ловушки пролива: {target_qty} {self.symbol} @ "
-                    f"${target_price:.4f} (-{self.dip_depth_pct*100:.2f}%) [Бюджет: ${val:.2f} USDT]"
+                    f"${target_price:.4f} (-{eff_dip_pct*100:.2f}%) [Бюджет: ${val:.2f} USDT]"
                 )
                 resp_buy = client.create_limit_order(
                     self.symbol,
@@ -2492,6 +2519,11 @@ class StandaloneBybitBot:
                             f"🎯⚡ [Flash Sniper Execution] Ордер-ловушка {SNIPER_TARGET_SYMBOL} исполнен! "
                             f"Куплено {calc_qty} @ ${self.flash_sniper.state.entry_price:.4f}"
                         )
+                sniper_metrics = self.guard.token_metrics.get(SNIPER_TARGET_SYMBOL, {})
+                t_1m = sniper_metrics.get("last_1m_chg", 0.0)
+                t_3m = sniper_metrics.get("last_3m_chg", 0.0)
+                v_reg = sniper_metrics.get("volatility_regime", "NORMAL")
+
                 # Run sniper tick
                 self.flash_sniper.tick(
                     client=self.client,
@@ -2501,6 +2533,9 @@ class StandaloneBybitBot:
                     lead_lag_status=self.guard.lead_lag_status,
                     price_decimals=target_p_dec,
                     qty_decimals=target_q_dec,
+                    token_1m_chg=t_1m,
+                    token_3m_chg=t_3m,
+                    volatility_regime=v_reg,
                 )
 
             # 11. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)

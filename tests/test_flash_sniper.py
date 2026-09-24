@@ -211,3 +211,59 @@ def test_flash_sniper_auto_compounding():
     sniper.update_budget(2.00)
     assert sniper.budget_usd == 5.05
 
+
+def test_flash_sniper_retracts_trap_deeper_on_market_slide():
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25, dip_depth_pct=0.0250)
+    sniper.state.status = "HUNTING"
+    sniper.state.buy_order_id = "sniper_ord_slide"
+    sniper.state.buy_price = 4.600
+    sniper.state.last_amend_time = 0.0  # Cooldown passed
+
+    client_mock = MagicMock()
+    client_mock.amend_order.return_value = {"retCode": 0}
+
+    # Market slides down from 4.718 to 4.500: target is 4.500 * (1 - 0.025) = 4.388
+    # Price delta: (4.388 - 4.600) / 4.600 = -4.6% -> should retract deeper!
+    res = sniper.tick(
+        client=client_mock,
+        cur_price=4.500,
+        avail_usdt=10.00,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        price_decimals=3,
+        qty_decimals=2,
+    )
+
+    client_mock.amend_order.assert_called_once()
+    args, kwargs = client_mock.amend_order.call_args
+    assert kwargs["price"] == 4.388
+    assert sniper.state.buy_price == 4.388
+
+
+def test_flash_sniper_token_dump_guard_aborts_trap():
+    sniper = FlashSniperController(symbol="NEARUSDT", budget_usd=5.25)
+    sniper.state.status = "HUNTING"
+    sniper.state.buy_order_id = "sniper_ord_dump"
+    sniper.state.buy_price = 4.500
+
+    client_mock = MagicMock()
+    client_mock.cancel_order.return_value = {"retCode": 0}
+
+    # Token drops rapidly by -0.80% in 1m -> falling knife!
+    res = sniper.tick(
+        client=client_mock,
+        cur_price=4.450,
+        avail_usdt=10.00,
+        free_qty=0.0,
+        lead_lag_status="CLEAR",
+        price_decimals=3,
+        qty_decimals=2,
+        token_1m_chg=-0.0080,
+    )
+
+    assert res is None
+    assert sniper.state.status == "IDLE"
+    assert sniper.state.buy_order_id is None
+    client_mock.cancel_order.assert_called_once_with("NEARUSDT", "sniper_ord_dump")
+
+
