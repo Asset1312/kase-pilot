@@ -2647,6 +2647,8 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             tr_floor = float(t.get("trailing_floor_price", 0.0))
 
             if is_tr:
+                tr_stop_gain = round(((tr_stop - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+                tr_floor_gain = round(((tr_floor - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
                 rocket_box = f"""
                 <div style="margin-top: 10px; padding: 12px; border-radius: 8px; background: linear-gradient(135deg, rgba(234, 179, 8, 0.15), rgba(16, 185, 129, 0.15)); border: 1px solid #eab308;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
@@ -2656,8 +2658,8 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 8px;">
                         <div class="label">Вход (VWAP): <b style="color: #f8fafc;">${entry_p:.4f}</b></div>
                         <div class="label">Пик цены: <b style="color: #facc15;">${tr_peak:.4f}</b></div>
-                        <div class="label">Трейлинг-стоп: <b style="color: #ef4444;">${tr_stop:.4f}</b></div>
-                        <div class="label">Пол прибыли: <b style="color: #10b981;">${tr_floor:.4f} (+0.50%)</b></div>
+                        <div class="label">Защита прибыли: <b style="color: #10b981;">${tr_stop:.4f} (+{tr_stop_gain:.2f}%)</b></div>
+                        <div class="label">Пол прибыли: <b style="color: #38bdf8;">${tr_floor:.4f} (+{tr_floor_gain:.2f}%)</b></div>
                     </div>
                 </div>
                 """
