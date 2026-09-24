@@ -225,6 +225,19 @@ SNIPER_ROCKET_ACTIVATION_PCT = 0.0120 # +1.20% rebound activates Rocket Rider Tr
 SNIPER_ROCKET_CALLBACK_PCT = 0.0050 # 0.50% pullback from peak triggers instant exit (noise buffer)
 SNIPER_ROCKET_FLOOR_PCT = 0.0090    # +0.90% guaranteed profit floor once activated
 
+# Momentum Breakout (Squeeze Explosion / Volatility Expansion) Parameters
+BREAKOUT_ENABLED = True
+BREAKOUT_TARGET_SYMBOL = PRIMARY_SYMBOL       # SUIUSDT (high liquidity, clean impulse moves)
+BREAKOUT_ORDER_LINK_PREFIX = "BREAKOUT"        # Unique orderLinkId prefix
+BREAKOUT_BUDGET_USD = 5.25                    # Strictly isolated budget (matches Bybit $5.00 min)
+BREAKOUT_LOOKBACK_BARS = 15                   # Lookback period for resistance calculation (15 1m candles)
+BREAKOUT_VOLUME_FACTOR = 2.0                  # Volume spike confirmation threshold (2.0x avg volume)
+BREAKOUT_STOP_LOSS_PCT = 0.0120               # -1.20% hard stop-loss against fakeouts
+BREAKOUT_ROCKET_ACTIVATION_PCT = 0.0090       # +0.90% gain triggers Trailing Rocket
+BREAKOUT_ROCKET_CALLBACK_PCT = 0.0035         # 0.35% pullback from peak triggers market sell
+BREAKOUT_ROCKET_FLOOR_PCT = 0.0065            # +0.65% guaranteed profit floor once activated
+BREAKOUT_COOLDOWN_SEC = 300.0                 # 5-minute cooldown between trades
+
 TOKEN_METADATA = {
     PRIMARY_SYMBOL: {
         "base_coin": "SUI",
@@ -984,6 +997,238 @@ class FlashSniperController:
         return None
 
 
+@dataclass
+class BreakoutState:
+    symbol: str
+    status: str = "IDLE"  # IDLE | ARMED | IN_FLIGHT | COOLDOWN
+    entry_price: float = 0.0
+    position_qty: float = 0.0
+    allocated_usd: float = BREAKOUT_BUDGET_USD
+    peak_price: float = 0.0
+    stop_price: float = 0.0
+    floor_price: float = 0.0
+    trailing_active: bool = False
+    resistance_price: float = 0.0
+    last_volume_ratio: float = 0.0
+    completed_cycles: int = 0
+    total_profit_usd: float = 0.0
+    last_exit_time: float = 0.0
+
+
+class MomentumBreakoutController:
+    """Autonomous Momentum Breakout Engine (Squeeze Explosion & Impulse Scalper).
+
+    Monitors for price compression, confirms upward explosion through resistance
+    with >= 2.0x volume spike and supportive orderbook (OBI >= -0.15), enters with isolated $5.25 USDT,
+    and rides the expansion crest via Rocket Rider Trailing Take-Profit.
+    Shielded by -1.20% hard stop-loss against bull traps.
+    """
+
+    def __init__(
+        self,
+        symbol: str = BREAKOUT_TARGET_SYMBOL,
+        budget_usd: float = BREAKOUT_BUDGET_USD,
+        lookback_bars: int = BREAKOUT_LOOKBACK_BARS,
+        volume_factor: float = BREAKOUT_VOLUME_FACTOR,
+        stop_loss_pct: float = BREAKOUT_STOP_LOSS_PCT,
+        rocket_activation_pct: float = BREAKOUT_ROCKET_ACTIVATION_PCT,
+        rocket_callback_pct: float = BREAKOUT_ROCKET_CALLBACK_PCT,
+        rocket_floor_pct: float = BREAKOUT_ROCKET_FLOOR_PCT,
+        cooldown_sec: float = BREAKOUT_COOLDOWN_SEC,
+    ) -> None:
+        self.symbol = symbol
+        self.budget_usd = budget_usd
+        self.lookback_bars = lookback_bars
+        self.volume_factor = volume_factor
+        self.stop_loss_pct = stop_loss_pct
+        self.rocket_activation_pct = rocket_activation_pct
+        self.rocket_callback_pct = rocket_callback_pct
+        self.rocket_floor_pct = rocket_floor_pct
+        self.cooldown_sec = cooldown_sec
+        self.state = BreakoutState(symbol=symbol, allocated_usd=budget_usd)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.state.symbol,
+            "status": self.state.status,
+            "allocated_usd": self.state.allocated_usd,
+            "entry_price": self.state.entry_price,
+            "position_qty": self.state.position_qty,
+            "peak_price": self.state.peak_price,
+            "stop_price": self.state.stop_price,
+            "floor_price": self.state.floor_price,
+            "resistance_price": self.state.resistance_price,
+            "volume_ratio": round(self.state.last_volume_ratio, 2),
+            "trailing_active": self.state.trailing_active,
+            "completed_cycles": self.state.completed_cycles,
+            "total_profit_usd": round(self.state.total_profit_usd, 4),
+        }
+
+    def tick(
+        self,
+        client: Any,
+        cur_price: float,
+        avail_usdt: float,
+        free_qty: float,
+        lead_lag_status: str,
+        klines: List[List[Any]],
+        obi: float = 0.0,
+        price_decimals: int = 4,
+        qty_decimals: int = 2,
+    ) -> Optional[Dict[str, Any]]:
+        """Main execution tick for Momentum Breakout."""
+        now = time.time()
+
+        # 1. Cooldown period check after exit
+        if self.state.status == "COOLDOWN":
+            if (now - self.state.last_exit_time) >= self.cooldown_sec:
+                self.state.status = "IDLE"
+                logger.info(f"⚡ [Breakout] Пауза {int(self.cooldown_sec)}с завершена. Мониторинг пробоев активен.")
+            else:
+                return None
+
+        # 2. Manage Active IN_FLIGHT Position
+        if self.state.status == "IN_FLIGHT":
+            if self.state.position_qty <= 0 or self.state.entry_price <= 0:
+                self.state.status = "IDLE"
+                return None
+
+            gain_pct = (cur_price - self.state.entry_price) / self.state.entry_price
+
+            # Hard Stop-Loss check (Protection against bull traps / fakeouts)
+            if gain_pct <= -self.stop_loss_pct:
+                sell_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                logger.warning(
+                    f"⚡🛑 [Breakout Stop-Loss] Ложный пробой {self.symbol}! "
+                    f"Текущая: ${cur_price:.4f} ({gain_pct*100:+.2f}%). Сброс {sell_qty} {self.symbol}..."
+                )
+                resp = client.create_market_order(self.symbol, "Sell", sell_qty)
+                realized = round((cur_price - self.state.entry_price) * sell_qty, 4)
+                self.state.completed_cycles += 1
+                self.state.total_profit_usd += realized
+                self.state.status = "COOLDOWN"
+                self.state.last_exit_time = now
+                self.state.position_qty = 0.0
+                self.state.entry_price = 0.0
+                self.state.peak_price = 0.0
+                self.state.stop_price = 0.0
+                self.state.floor_price = 0.0
+                self.state.trailing_active = False
+                return {"action": "STOP_LOSS", "loss_usd": realized, "gain_pct": gain_pct}
+
+            # Rocket Rider Trailing Take-Profit
+            if not self.state.trailing_active:
+                if gain_pct >= self.rocket_activation_pct:
+                    self.state.trailing_active = True
+                    self.state.peak_price = cur_price
+                    self.state.floor_price = round(self.state.entry_price * (1.0 + self.rocket_floor_pct), price_decimals)
+                    raw_stop = round(cur_price * (1.0 - self.rocket_callback_pct), price_decimals)
+                    self.state.stop_price = max(raw_stop, self.state.floor_price)
+                    logger.info(
+                        f"⚡🚀 [Breakout Rocket] ИМПУЛЬС ПОШЕЛ! +{gain_pct*100:.2f}% | "
+                        f"Пик: ${cur_price:.4f}, Пол: ${self.state.floor_price:.4f}, Стоп: ${self.state.stop_price:.4f}"
+                    )
+                    return {"action": "ROCKET_ARMED", "gain_pct": gain_pct}
+            else:
+                # Ratchet up trailing stop
+                if cur_price > self.state.peak_price:
+                    self.state.peak_price = cur_price
+                    raw_stop = round(cur_price * (1.0 - self.rocket_callback_pct), price_decimals)
+                    self.state.floor_price = round(self.state.entry_price * (1.0 + self.rocket_floor_pct), price_decimals)
+                    self.state.stop_price = max(raw_stop, self.state.floor_price, self.state.stop_price)
+
+                # Pullback exit on momentum break
+                if cur_price <= self.state.stop_price:
+                    sell_qty = math.floor(self.state.position_qty * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                    logger.info(
+                        f"⚡🚀💰 [Breakout Rocket Exit] Фиксация импульса {self.symbol} @ ${cur_price:.4f} (+{gain_pct*100:.2f}%)!"
+                    )
+                    resp = client.create_market_order(self.symbol, "Sell", sell_qty)
+                    realized = round((cur_price - self.state.entry_price) * sell_qty, 4)
+                    self.state.completed_cycles += 1
+                    self.state.total_profit_usd += max(0.0, realized)
+                    self.state.status = "COOLDOWN"
+                    self.state.last_exit_time = now
+                    self.state.position_qty = 0.0
+                    self.state.entry_price = 0.0
+                    self.state.peak_price = 0.0
+                    self.state.stop_price = 0.0
+                    self.state.floor_price = 0.0
+                    self.state.trailing_active = False
+                    return {"action": "PROFIT_EXIT", "profit_usd": realized, "gain_pct": gain_pct}
+
+            return None
+
+        # 3. IDLE / ARMED: Evaluate Breakout Trigger
+        if self.state.status in ("IDLE", "ARMED"):
+            # Market conditions check
+            if lead_lag_status in ("CRASH", "SLIDING"):
+                self.state.status = "IDLE"
+                return None
+
+            if avail_usdt < self.budget_usd or cur_price <= 0:
+                return None
+
+            if not klines or len(klines) < self.lookback_bars:
+                return None
+
+            # Calculate Resistance (max high of last completed 1m candles, excluding forming candle k[0])
+            past_candles = klines[1:self.lookback_bars]
+            past_highs = [float(k[2]) for k in past_candles if len(k) >= 3]
+            resistance = max(past_highs) if past_highs else 0.0
+            self.state.resistance_price = resistance
+
+            # Calculate Volume Spike Ratio
+            past_volumes = [float(k[5]) for k in past_candles if len(k) >= 6]
+            avg_volume = (sum(past_volumes) / len(past_volumes)) if past_volumes else 1.0
+            curr_volume = float(klines[0][5]) if len(klines) > 0 and len(klines[0]) >= 6 else 0.0
+            vol_ratio = (curr_volume / avg_volume) if avg_volume > 0 else 0.0
+            self.state.last_volume_ratio = vol_ratio
+
+            # Check breakout trigger
+            is_price_breakout = (cur_price >= resistance * 1.0005)
+            is_volume_confirmed = (vol_ratio >= self.volume_factor)
+            is_orderbook_supportive = (obi >= -0.15)  # No heavy sell wall blocking path
+
+            if is_price_breakout and is_volume_confirmed and is_orderbook_supportive:
+                buy_qty = math.floor((self.budget_usd / cur_price) * (10 ** qty_decimals)) / float(10 ** qty_decimals)
+                order_val = buy_qty * cur_price
+
+                if order_val >= 5.00 and order_val <= avail_usdt:
+                    logger.info(
+                        f"⚡🔥 [Breakout Triggered] Импульсный пробой {self.symbol}! "
+                        f"Цена: ${cur_price:.4f} > Уровень: ${resistance:.4f} | "
+                        f"Всплеск объема: {vol_ratio:.1f}x (Порог: {self.volume_factor:.1f}x) | OBI: {obi:+.3f} | "
+                        f"Покупка {buy_qty} {self.symbol} (~${order_val:.2f} USDT)..."
+                    )
+                    resp = client.create_market_order(self.symbol, "Buy", buy_qty)
+                    if resp.get("retCode") == 0:
+                        self.state.status = "IN_FLIGHT"
+                        self.state.entry_price = cur_price
+                        self.state.position_qty = buy_qty
+                        self.state.peak_price = cur_price
+                        self.state.trailing_active = False
+                        logger.info(
+                            f"⚡✅ [Breakout Entered] Вход в импульс {self.symbol} @ ${cur_price:.4f} выполнен! "
+                            f"Активирован Trailing Rocket Rider."
+                        )
+                        return {
+                            "action": "BREAKOUT_ENTERED",
+                            "symbol": self.symbol,
+                            "price": cur_price,
+                            "qty": buy_qty,
+                            "val": order_val,
+                        }
+                    else:
+                        logger.warning(f"Breakout market buy failed: {resp}")
+            elif is_price_breakout and not is_volume_confirmed:
+                self.state.status = "ARMED"
+            else:
+                self.state.status = "IDLE"
+
+        return None
+
+
 class InventorySkewController:
     """Управляет смещением ступеней сетки и тейк-профита в зависимости от загрузки капитала (модель Авелланеды-Стойкова)."""
 
@@ -1537,6 +1782,7 @@ class StandaloneBybitBot:
         self.flash_sniper = FlashSniperController(symbol=SNIPER_TARGET_SYMBOL) if SNIPER_ENABLED else None
         self.inventory_skew = InventorySkewController(base_tp_pct=STANDARD_TP_PCT)
         self.wall_scanner = L2WallScanner(client=self.client, min_wall_qty=30000.0, min_wall_usd=15000.0)
+        self.breakout_engine = MomentumBreakoutController(symbol=BREAKOUT_TARGET_SYMBOL) if BREAKOUT_ENABLED else None
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
@@ -1975,11 +2221,13 @@ class StandaloneBybitBot:
                     if o.get("side") == "Buy"
                     and not str(o.get("orderLinkId", "")).startswith(CANARY_ORDER_LINK_PREFIX)
                     and not str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
+                    and not str(o.get("orderLinkId", "")).startswith(BREAKOUT_ORDER_LINK_PREFIX)
                 ]
                 open_sells = [
                     o for o in open_orders
                     if o.get("side") == "Sell"
                     and not str(o.get("orderLinkId", "")).startswith(SNIPER_ORDER_LINK_PREFIX)
+                    and not str(o.get("orderLinkId", "")).startswith(BREAKOUT_ORDER_LINK_PREFIX)
                 ]
 
                 # PASSIVE OBSERVER: Strictly observe and collect telemetry.
@@ -2662,6 +2910,7 @@ class StandaloneBybitBot:
                 "tokens": token_stats_map,
                 "all_open_orders": all_open_orders_list,
                 "sniper": self.flash_sniper.to_dict() if self.flash_sniper else None,
+                "breakout": self.breakout_engine.to_dict() if self.breakout_engine else None,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
@@ -2727,7 +2976,28 @@ class StandaloneBybitBot:
                     obi=t_obi,
                 )
 
-            # 11. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
+            # 11. Momentum Breakout Tick (Impulse Scalper on SUI)
+            if self.breakout_engine and self.is_active_controller and not self.is_paused:
+                brk_sym = self.breakout_engine.symbol
+                brk_spot = prices.get(brk_sym, 0.0)
+                brk_free = free_coins.get(brk_sym, 0.0)
+                brk_klines = self.guard.fetch_klines(brk_sym, limit=20)
+                brk_obi = self.guard.token_metrics.get(brk_sym, {}).get("obi", 0.0)
+                brk_meta = TOKEN_METADATA.get(brk_sym, {})
+
+                self.breakout_engine.tick(
+                    client=self.client,
+                    cur_price=brk_spot,
+                    avail_usdt=avail_usdt,
+                    free_qty=brk_free,
+                    lead_lag_status=self.guard.lead_lag_status,
+                    klines=brk_klines,
+                    obi=brk_obi,
+                    price_decimals=brk_meta.get("price_decimals", 4),
+                    qty_decimals=brk_meta.get("qty_decimals", 2),
+                )
+
+            # 12. Desktop Heartbeat Canary Maintenance (On-Exchange Canary Ping)
             if self.mode == "desktop" and self.is_active_controller and not self.is_paused:
                 self.maintain_canary_order()
 
@@ -3150,6 +3420,46 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
         else:
             sniper_html = ""
 
+        brk = st.get("breakout")
+        if brk:
+            b_status = brk.get("status", "IDLE")
+            b_badge_col = "#a855f7" if b_status == "IN_FLIGHT" else ("#eab308" if b_status == "ARMED" else ("#64748b" if b_status == "COOLDOWN" else "#38bdf8"))
+            b_desc = ""
+            if b_status == "IN_FLIGHT":
+                b_gain = ((float(st.get("tokens", {}).get(brk.get("symbol"), {}).get("price", 0.0)) - float(brk.get("entry_price", 1.0))) / float(brk.get("entry_price", 1.0))) * 100.0 if float(brk.get("entry_price", 0.0)) > 0 else 0.0
+                b_desc = (
+                    f"🚀🔥 <b>ИМПУЛЬС В ПОЛЕТЕ!</b> Вход: <b>${brk.get('entry_price', 0.0):.4f}</b> | "
+                    f"Пик: <b>${brk.get('peak_price', 0.0):.4f}</b> | Стоп: <b>${brk.get('stop_price', 0.0):.4f}</b> | Профит: <b>{b_gain:+.2f}%</b>"
+                )
+            elif b_status == "ARMED":
+                b_desc = (
+                    f"🎯 <b>ПРОБОЙ НА ПРИЦЕЛЕ!</b> Цена выше сопротивления <b>${brk.get('resistance_price', 0.0):.4f}</b>. "
+                    f"Ожидание всплеска объема (текущий: <b>{brk.get('volume_ratio', 0.0)}x</b> / порог 2.0x)"
+                )
+            elif b_status == "COOLDOWN":
+                b_desc = "⏳ Защитная пауза после выхода из сделки (предотвращение пилы)."
+            else:
+                b_desc = (
+                    f"Мониторинг сжатия и уровней | Сопротивление: <b>${brk.get('resistance_price', 0.0):.4f}</b> | "
+                    f"Объем: <b>{brk.get('volume_ratio', 0.0)}x</b> | Режим: 🚀 Rocket Trailing"
+                )
+
+            breakout_html = f"""
+            <div class="card" style="border: 1px solid rgba(168, 85, 247, 0.35); background: rgba(30, 27, 75, 0.45);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <h3 style="margin: 0; color: #c084fc; text-shadow: 0 0 10px #c084fc55;">⚡ Momentum Breakout ({brk.get('symbol')})</h3>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <span class="badge" style="background: {b_badge_col}22; color: {b_badge_col}; border: 1px solid {b_badge_col};">{b_status}</span>
+                        <span class="badge" style="background: #a855f722; color: #c084fc; border: 1px solid #c084fc;">Изолирован ${brk.get('allocated_usd', 5.25):.2f}</span>
+                    </div>
+                </div>
+                <div class="label" style="margin-top: 6px;">{b_desc}</div>
+                <div class="label" style="margin-top: 4px; color: #10b981;">Закрыто импульсов: <b>{brk.get('completed_cycles', 0)}</b> | Профит стратегии: <b>+${brk.get('total_profit_usd', 0.0):.4f} USDT</b></div>
+            </div>
+            """
+        else:
+            breakout_html = ""
+
         total_usd_val = float(st.get('total_usd', 0.0))
         net_dep_profit = round(total_usd_val - 52.47, 2)
         net_dep_pct = round((net_dep_profit / 52.47) * 100, 2) if 52.47 > 0 else 0.0
@@ -3216,6 +3526,8 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
     </div>
 
     {sniper_html}
+
+    {breakout_html}
 
     {tokens_html}
 
@@ -3922,11 +4234,16 @@ def cluster_watchdog_thread(bot: StandaloneBybitBot) -> None:
             time.sleep(10)
 
 
+class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def start_server(bot: StandaloneBybitBot) -> None:
     """Runs local mobile dashboard on background thread."""
     SimpleDashboardHandler.bot_instance = bot
     try:
-        with socketserver.TCPServer(("", PORT), SimpleDashboardHandler) as httpd:
+        with ThreadingTCPServer(("", PORT), SimpleDashboardHandler) as httpd:
             logger.info(f"📱 Мобильный дашборд: http://localhost:{PORT}/")
             httpd.serve_forever()
     except Exception as e:
