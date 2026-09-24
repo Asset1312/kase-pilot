@@ -80,6 +80,10 @@ ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "true").lower() not in ("0", "fal
 ENABLE_AUTO_FAILOVER = os.getenv("ENABLE_AUTO_FAILOVER", "false").lower() in ("1", "true", "yes")
 PORT = int(os.getenv("PORT", "8080"))
 
+# ==============================================================================
+# RULE: Whenever adding ANY new trading pair (e.g. SOL, ETH, TON, DOGE):
+# ALWAYS proactively remind the user to add the symbol to the Bybit API Key Whitelist!
+# ==============================================================================
 # Pair Architecture (3-Tier Scalable Basket)
 PRIMARY_SYMBOL = "SUIUSDT"
 SECONDARY_SYMBOL = "NEARUSDT"
