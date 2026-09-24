@@ -227,7 +227,7 @@ SNIPER_ROCKET_FLOOR_PCT = 0.0090    # +0.90% guaranteed profit floor once activa
 
 # Momentum Breakout (Squeeze Explosion / Volatility Expansion) Parameters
 BREAKOUT_ENABLED = True
-BREAKOUT_TARGET_SYMBOL = PRIMARY_SYMBOL       # SUIUSDT (high liquidity, clean impulse moves)
+BREAKOUT_TARGET_SYMBOL = TERTIARY_SYMBOL      # AVAXUSDT (dedicated momentum & impulse scalper)
 BREAKOUT_ORDER_LINK_PREFIX = "BREAKOUT"        # Unique orderLinkId prefix
 BREAKOUT_BUDGET_USD = 5.25                    # Strictly isolated budget (matches Bybit $5.00 min)
 BREAKOUT_LOOKBACK_BARS = 15                   # Lookback period for resistance calculation (15 1m candles)
@@ -2150,17 +2150,32 @@ class StandaloneBybitBot:
 
             # Determine Active Managed Symbols
             symbols_to_process = [PRIMARY_SYMBOL]
-            near_has_holdings = (near_free * prices[SECONDARY_SYMBOL] >= 4.5) or (total_near * prices[SECONDARY_SYMBOL] >= 4.5)
+
+            sub_strat_held_near = 0.0
+            if self.flash_sniper and self.flash_sniper.symbol == SECONDARY_SYMBOL:
+                if self.flash_sniper.state.status in ("POSITION_HELD", "ROCKET_ACTIVE", "TP_PLACED"):
+                    sub_strat_held_near += self.flash_sniper.state.position_qty
+            near_grid_free = max(0.0, near_free - sub_strat_held_near)
+            near_grid_total = max(0.0, total_near - sub_strat_held_near)
+            near_has_holdings = (near_grid_free * prices[SECONDARY_SYMBOL] >= 4.5) or (near_grid_total * prices[SECONDARY_SYMBOL] >= 4.5)
             if self.dual_mode_active or near_has_holdings:
                 symbols_to_process.append(SECONDARY_SYMBOL)
 
-            avax_has_holdings = (avax_free * prices[TERTIARY_SYMBOL] >= 4.5) or (total_avax * prices[TERTIARY_SYMBOL] >= 4.5)
+            sub_strat_held_avax = 0.0
+            if self.breakout_engine and self.breakout_engine.symbol == TERTIARY_SYMBOL:
+                if self.breakout_engine.state.status == "IN_FLIGHT":
+                    sub_strat_held_avax += self.breakout_engine.state.position_qty
+            avax_grid_free = max(0.0, avax_free - sub_strat_held_avax)
+            avax_grid_total = max(0.0, total_avax - sub_strat_held_avax)
+            avax_has_holdings = (avax_grid_free * prices[TERTIARY_SYMBOL] >= 4.5) or (avax_grid_total * prices[TERTIARY_SYMBOL] >= 4.5)
             if self.trio_mode_active or avax_has_holdings:
                 symbols_to_process.append(TERTIARY_SYMBOL)
 
-            # Ensure Flash Sniper target asset is always monitored and processed
+            # Ensure Flash Sniper and Breakout target assets are always monitored and processed
             if SNIPER_ENABLED and SNIPER_TARGET_SYMBOL not in symbols_to_process:
                 symbols_to_process.append(SNIPER_TARGET_SYMBOL)
+            if BREAKOUT_ENABLED and BREAKOUT_TARGET_SYMBOL not in symbols_to_process:
+                symbols_to_process.append(BREAKOUT_TARGET_SYMBOL)
 
             # 5. MarketGuard: Update Klines, BTC Lead-Lag & Idiosyncratic Dumps
             global_dump, global_reason, token_dumps = self.guard.update_market_state(symbols_to_process)
