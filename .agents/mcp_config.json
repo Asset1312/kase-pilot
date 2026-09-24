@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "description": "Enables the agent to fetch, convert to markdown, and analyze live web pages, documentation, and financial reports."
+    }
+  }
+}

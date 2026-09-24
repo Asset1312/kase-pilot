@@ -2835,6 +2835,46 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
             </div>
             """
 
+        # News Sentinel Feed Integration
+        news_items_html = ""
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+            from kase_pilot.crypto.news_sentinel import get_latest_market_news
+            news_list = get_latest_market_news(max_items=5)
+            if news_list:
+                news_rows = []
+                for n in news_list:
+                    n_badge = n.get("badge", "⚪")
+                    n_color = n.get("color", "#94a3b8")
+                    n_title = n.get("title", "")
+                    n_src = n.get("source", "Crypto")
+                    n_link = n.get("link", "#")
+                    news_rows.append(
+                        f"<div style='display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(51, 65, 85, 0.4); font-size: 0.85rem;'>"
+                        f"<div style='flex: 1;'><span class='badge' style='background: {n_color}22; color: {n_color}; border: 1px solid {n_color}; font-size: 0.72rem; margin-right: 6px;'>{n_badge}</span>"
+                        f"<a href='{n_link}' target='_blank' style='color: #f1f5f9; text-decoration: none;'>{n_title}</a></div>"
+                        f"<span style='color: #94a3b8; font-size: 0.72rem; white-space: nowrap;'>{n_src}</span>"
+                        f"</div>"
+                    )
+                news_items_html = "".join(news_rows)
+        except Exception:
+            pass
+
+        if news_items_html:
+            news_card_html = f"""
+            <div class="card" style="border: 1px solid rgba(139, 92, 246, 0.35); background: rgba(30, 27, 75, 0.40);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;">
+                    <h2 style="margin: 0; color: #a78bfa; text-shadow: 0 0 10px #a78bfa55;">📰 Радар новостей и макроэкономики</h2>
+                    <span class="badge" style="background: #a78bfa22; color: #c4b5fd; border: 1px solid #a78bfa;">Live Feed & Sentiment</span>
+                </div>
+                <div style="display: flex; flex-direction: column;">
+                    {news_items_html}
+                </div>
+            </div>
+            """
+        else:
+            news_card_html = ""
+
         guard_color = "#10b981"
         if "🚨" in st.get("global_guard_status", ""):
             guard_color = "#ef4444"
@@ -2982,6 +3022,8 @@ class SimpleDashboardHandler(http.server.BaseHTTPRequestHandler):
     {tokens_html}
 
     {ta_html}
+
+    {news_card_html}
 
     <div class="card">
         <h2>📖 Активные ордера портфеля</h2>
