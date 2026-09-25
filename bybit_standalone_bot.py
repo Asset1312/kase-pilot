@@ -1125,7 +1125,7 @@ class MomentumBreakoutController:
                     f"⚡🛑 [Breakout Stop-Loss] Ложный пробой {self.symbol}! "
                     f"Текущая: ${cur_price:.4f} ({gain_pct*100:+.2f}%). Сброс {sell_qty} {self.symbol}..."
                 )
-                resp = client.create_market_order(self.symbol, "Sell", sell_qty)
+                resp = client.create_market_order(self.symbol, "Sell", sell_qty, qty_precision=qty_decimals)
                 realized = round((cur_price - self.state.entry_price) * sell_qty, 4)
                 self.state.completed_cycles += 1
                 self.state.total_profit_usd += realized
@@ -1166,7 +1166,7 @@ class MomentumBreakoutController:
                     logger.info(
                         f"⚡🚀💰 [Breakout Rocket Exit] Фиксация импульса {self.symbol} @ ${cur_price:.4f} (+{gain_pct*100:.2f}%)!"
                     )
-                    resp = client.create_market_order(self.symbol, "Sell", sell_qty)
+                    resp = client.create_market_order(self.symbol, "Sell", sell_qty, qty_precision=qty_decimals)
                     realized = round((cur_price - self.state.entry_price) * sell_qty, 4)
                     self.state.completed_cycles += 1
                     self.state.total_profit_usd += max(0.0, realized)
@@ -1224,7 +1224,7 @@ class MomentumBreakoutController:
                         f"Всплеск объема: {vol_ratio:.1f}x (Порог: {self.volume_factor:.1f}x) | OBI: {obi:+.3f} | "
                         f"Покупка {buy_qty} {self.symbol} (~${order_val:.2f} USDT)..."
                     )
-                    resp = client.create_market_order(self.symbol, "Buy", buy_qty)
+                    resp = client.create_market_order(self.symbol, "Buy", buy_qty, qty_precision=qty_decimals)
                     if resp.get("retCode") == 0:
                         self.state.status = "IN_FLIGHT"
                         self.state.entry_price = cur_price

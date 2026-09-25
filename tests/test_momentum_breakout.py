@@ -57,7 +57,7 @@ def test_breakout_triggers_on_price_and_volume_breakout():
     assert controller.state.status == "IN_FLIGHT"
     assert controller.state.entry_price == cur_price
     assert controller.state.position_qty > 0
-    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Buy", controller.state.position_qty)
+    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Buy", controller.state.position_qty, qty_precision=2)
 
 
 def test_breakout_ignores_when_volume_not_confirmed():
@@ -158,7 +158,7 @@ def test_breakout_hard_stop_loss():
     assert res is not None
     assert res["action"] == "STOP_LOSS"
     assert controller.state.status == "COOLDOWN"
-    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Sell", 5.25)
+    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Sell", 5.25, qty_precision=2)
 
 
 def test_breakout_trailing_rocket_exit():
@@ -207,7 +207,7 @@ def test_breakout_trailing_rocket_exit():
     assert res2["action"] == "PROFIT_EXIT"
     assert controller.state.status == "COOLDOWN"
     assert controller.state.total_profit_usd > 0
-    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Sell", 5.25)
+    client_mock.create_market_order.assert_called_once_with("SUIUSDT", "Sell", 5.25, qty_precision=2)
 
 
 def test_breakout_reconciles_when_coins_closed_externally():

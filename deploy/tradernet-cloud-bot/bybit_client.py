@@ -218,6 +218,8 @@ class BybitV5Client:
             "orderType": "Market",
             "qty": f"{qty:.{qty_precision}f}",
         }
+        if category == "spot" and side.capitalize() == "Buy":
+            data["marketUnit"] = "baseCoin"
         return self._request("POST", "/v5/order/create", data=data)
 
     def cancel_order(self, symbol: str, order_id: str, category: str = "spot") -> Dict[str, Any]:
