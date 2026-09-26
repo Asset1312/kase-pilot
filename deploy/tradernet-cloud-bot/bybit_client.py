@@ -28,13 +28,14 @@ class BybitV5Client:
         api_key: str = "",
         api_secret: str = "",
         domain: str = "api.bybit.kz",
-        recv_window: int = 5000,
+        recv_window: int = 20000,
     ) -> None:
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
         self.domain = domain.strip()
         self.recv_window = str(recv_window)
         self.base_url = f"https://{self.domain}"
+        self.time_offset_ms = 0
         self.session = requests.Session()
         proxy = os.environ.get("BYBIT_PROXY", os.environ.get("HTTPS_PROXY", "")).strip()
         if proxy:
@@ -43,6 +44,20 @@ class BybitV5Client:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json",
         })
+        self._sync_time()
+
+    def _sync_time(self) -> None:
+        """Synchronizes local clock with Bybit server time to avoid error 10002."""
+        try:
+            url = f"{self.base_url}/v5/market/time"
+            r = self.session.get(url, timeout=4)
+            if r.status_code == 200:
+                server_time = int(r.json().get("time", 0))
+                if server_time > 0:
+                    local_time = int(time.time() * 1000)
+                    self.time_offset_ms = server_time - local_time
+        except Exception:
+            pass
 
     @property
     def is_configured(self) -> bool:
@@ -69,7 +84,7 @@ class BybitV5Client:
         if not self.is_configured:
             return {"retCode": -1, "retMsg": "API credentials not configured", "result": {}}
 
-        timestamp = str(int(time.time() * 1000))
+        timestamp = str(int(time.time() * 1000 + self.time_offset_ms))
         url = f"{self.base_url}{endpoint}"
         payload_str = ""
 

@@ -71,6 +71,11 @@ try:
 except ImportError:
     from deploy.tradernet_cloud_bot.bybit_client import BybitV5Client
 
+try:
+    from google_c2_bridge import GoogleDriveC2Bridge
+except ImportError:
+    from deploy.tradernet_cloud_bot.google_c2_bridge import GoogleDriveC2Bridge
+
 # Credentials & Telegram
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "").strip()
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "").strip()
@@ -79,6 +84,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "455103299").strip()
 ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "true").lower() not in ("0", "false", "no")
 ENABLE_AUTO_FAILOVER = os.getenv("ENABLE_AUTO_FAILOVER", "false").lower() in ("1", "true", "yes")
 PORT = int(os.getenv("PORT", "8080"))
+GOOGLE_C2_URL = os.getenv("GOOGLE_C2_URL", "https://script.google.com/macros/s/AKfycbwLipI0DQH6QMWp99gwYVV4fAZukvqnJyGcuBu718Br2gFICel3Lbntiu3Cffm5LEsI/exec").strip()
 
 # ==============================================================================
 # RULE: Whenever adding ANY new trading pair (e.g. SOL, ETH, TON, DOGE):
@@ -1806,6 +1812,9 @@ class StandaloneBybitBot:
         self.inventory_skew = InventorySkewController(base_tp_pct=STANDARD_TP_PCT)
         self.wall_scanner = L2WallScanner(client=self.client, min_wall_qty=30000.0, min_wall_usd=15000.0)
         self.breakout_engine = MomentumBreakoutController(symbol=BREAKOUT_TARGET_SYMBOL) if BREAKOUT_ENABLED else None
+        self.google_c2 = GoogleDriveC2Bridge(webhook_url=GOOGLE_C2_URL) if GOOGLE_C2_URL else None
+        if self.google_c2 and self.google_c2.is_configured:
+            logger.info("📡 [Google C2] Канал дистанционного управления активирован через Google Apps Script.")
 
         # Per-token execution and PnL trackers
         self.token_cycles: Dict[str, int] = {PRIMARY_SYMBOL: 0, SECONDARY_SYMBOL: 0, TERTIARY_SYMBOL: 0}
@@ -2021,6 +2030,56 @@ class StandaloneBybitBot:
 
         try:
             now = time.time()
+
+            # 0. Process Google C2 Remote Commands (Cloud Command & Control)
+            if self.google_c2 and self.google_c2.is_configured:
+                c2_cmds = self.google_c2.check_commands()
+                for cmd in c2_cmds:
+                    cid = cmd.get("command_id", "")
+                    act = cmd.get("action", "").upper()
+                    sym = cmd.get("symbol", "").upper()
+                    param = cmd.get("param", "")
+                    logger.info(f"📡 [Google C2] Получена команда {cid}: {act} {sym} {param}")
+
+                    ack_msg = ""
+                    try:
+                        if act == "STATUS":
+                            ack_msg = f"Status OK. Mode: {self.mode}, Paused: {self.is_paused}"
+                        elif act == "PAUSE":
+                            self.is_paused = True
+                            self.cancel_all_portfolio_buys()
+                            ack_msg = "Bot paused. All buy orders cancelled."
+                            logger.warning(f"⏸️ [Google C2] Бот поставлен на паузу по удаленной команде!")
+                        elif act == "RESUME":
+                            self.is_paused = False
+                            ack_msg = "Bot resumed trading."
+                            logger.info(f"▶️ [Google C2] Торговля возобновлена по удаленной команде!")
+                        elif act == "SELL_MARKET":
+                            target_sym = sym if sym in (PRIMARY_SYMBOL, SECONDARY_SYMBOL, TERTIARY_SYMBOL) else "NEARUSDT"
+                            base_c = TOKEN_METADATA.get(target_sym, {}).get("base_coin", "NEAR")
+                            # Fetch current balance
+                            cur_b = self.client.get_wallet_balance()
+                            c_info = cur_b.get("coins", {}).get(base_c, {})
+                            f_qty = float(c_info.get("free", 0.0))
+                            if f_qty > 0:
+                                q_dec = TOKEN_METADATA.get(target_sym, {}).get("qty_decimals", 2)
+                                resp_sell = self.client.create_market_order(target_sym, "Sell", f_qty, qty_precision=q_dec)
+                                ack_msg = f"Sold {f_qty} {base_c} at market. Resp: {resp_sell.get('retMsg')}"
+                            else:
+                                ack_msg = f"No free {base_c} to sell"
+                        elif act == "FREEZE_PAIR":
+                            if sym == SECONDARY_SYMBOL:
+                                self.dual_mode_active = False
+                                ack_msg = f"{SECONDARY_SYMBOL} frozen (EXIT_ONLY)"
+                        elif act == "CANCEL_ALL":
+                            self.cancel_all_portfolio_buys()
+                            ack_msg = "All buy orders cancelled."
+                        else:
+                            ack_msg = f"Unknown action: {act}"
+                        self.google_c2.acknowledge_command(cid, status="EXECUTED", message=ack_msg)
+                    except Exception as ce:
+                        logger.error(f"Google C2 exec error for {cid}: {ce}")
+                        self.google_c2.acknowledge_command(cid, status="FAILED", message=str(ce))
 
             # 1. Sync Wallet Balance
             bal = self.client.get_wallet_balance("UNIFIED")
@@ -2964,6 +3023,20 @@ class StandaloneBybitBot:
                 "breakout": self.breakout_engine.to_dict() if self.breakout_engine else None,
                 "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
+
+            # 9.1 Push Live Telemetry to Google Sheets C2 Bridge
+            if self.google_c2 and self.google_c2.is_configured:
+                self.google_c2.push_telemetry({
+                    "bot_status": "PAUSED" if self.is_paused else ("CIRCUIT_BREAKER" if self.circuit_breaker_active else "ONLINE"),
+                    "total_equity": round(est_total_equity, 2),
+                    "free_usdt": round(avail_usdt, 2),
+                    "locked_usdt": round(locked_usdt, 2),
+                    "active_mode": port_mode_str,
+                    "sui_free": round(sui_free, 4),
+                    "near_free": round(near_free, 4),
+                    "near_mode": "EXIT_ONLY" if not self.dual_mode_active else "ACTIVE",
+                    "last_log": f"Active: {PRIMARY_SYMBOL} | Guard: {global_guard_str}"
+                })
 
             # 10. Flash Sniper Tick (Parallel Flash-Crash Harvester on NEAR)
             if self.flash_sniper and self.is_active_controller and not self.is_paused:
