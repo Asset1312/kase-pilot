@@ -2074,6 +2074,29 @@ class StandaloneBybitBot:
                         elif act == "CANCEL_ALL":
                             self.cancel_all_portfolio_buys()
                             ack_msg = "All buy orders cancelled."
+                        elif act in ("UPDATE", "GIT_PULL", "RESTART", "REBOOT"):
+                            # 1. Cancel all buy orders for safety
+                            self.cancel_all_portfolio_buys()
+                            
+                            # 2. Git pull updates
+                            pull_output = "No git pull performed"
+                            if act in ("UPDATE", "GIT_PULL"):
+                                try:
+                                    import subprocess
+                                    pull_res = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True, timeout=30)
+                                    pull_output = pull_res.stdout.strip() or pull_res.stderr.strip()
+                                    logger.info(f"🔄 [Google C2] Git pull output: {pull_output}")
+                                except Exception as ge:
+                                    pull_output = f"Git pull error: {ge}"
+                            
+                            ack_msg = f"Action {act} accepted. Git: {pull_output}. Restarting process in 2 seconds..."
+                            self.google_c2.acknowledge_command(cid, status="EXECUTED", message=ack_msg)
+                            
+                            # 3. Gracefully re-exec the python process
+                            logger.warning(f"🔄 [Google C2] Перезапуск процесса бота по удаленной команде {act}!")
+                            time.sleep(2)
+                            python_exe = sys.executable
+                            os.execv(python_exe, [python_exe] + sys.argv)
                         else:
                             ack_msg = f"Unknown action: {act}"
                         self.google_c2.acknowledge_command(cid, status="EXECUTED", message=ack_msg)
@@ -2638,19 +2661,29 @@ class StandaloneBybitBot:
                 if self.mode != "desktop":
                     if free_val >= 5.00 and len(open_sells) < 2:
                         tp_pct = skewed_tp_pct
-                        tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
+                        calc_tp_price = round(entry_price * (1.0 + tp_pct), meta.get("price_decimals", 4))
+                        
+                        # HARD SAFEGUARD: TP must be strictly higher than the highest buy in the current position
+                        highest_buy_price = max([float(b.get("execPrice") or 0.0) for b in active_position_buys], default=entry_price)
+                        min_guaranteed_tp = round(highest_buy_price * 1.0040, meta.get("price_decimals", 4)) # Minimum +0.40% profit above top buy
+                        tp_price = max(calc_tp_price, min_guaranteed_tp)
+
+                        # Enforce post_only=True so Bybit NEVER matches as a taker sell below market!
+                        # If market has already crossed above tp_price, we want to place it at current market or let trailing handle it.
+                        if tp_price <= cur_price:
+                            tp_price = round(cur_price * 1.0020, meta.get("price_decimals", 4))
+
                         sell_qty = math.floor(cur_free * 100) / 100.0
-                        use_post_only = tp_price > cur_price
 
                         if (sell_qty * tp_price) >= 5.00:
-                            logger.info(f"🟢 [{sym}] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} {base_c} @ ${tp_price} (+{tp_pct*100:.2f}%)")
-                            resp = self.client.create_limit_order(sym, "Sell", sell_qty, tp_price, post_only=use_post_only)
+                            logger.info(f"🟢 [{sym}] Выставляем ТЕЙК-ПРОФИТ: {sell_qty} {base_c} @ ${tp_price} (+{(tp_price-entry_price)/entry_price*100:.2f}%)")
+                            resp = self.client.create_limit_order(sym, "Sell", sell_qty, tp_price, post_only=True)
                             if resp.get("retCode") == 0:
                                 send_telegram(
                                     f"🟢 **[BYBIT.KZ: ТЕЙК-ПРОФИТ ВЫСТАВЛЕН]**\n\n"
                                     f"Пара: **{sym}**\n"
                                     f"Объем: **{sell_qty} {base_c}** (~${round(sell_qty * tp_price, 2)})\n"
-                                    f"Цена выхода: **${tp_price}** (+{tp_pct*100:.2f}%)\n"
+                                    f"Цена выхода: **${tp_price}** (+{(tp_price-entry_price)/entry_price*100:.2f}%)\n"
                                     f"Ордер ID: `{resp.get('result', {}).get('orderId')}`"
                                 )
 
